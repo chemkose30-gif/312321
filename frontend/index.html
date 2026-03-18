@@ -539,71 +539,88 @@ function renderGameCard(g,injMap,isSoccer,scoreMap={}){
     return b||'<span style="font-size:11px;color:var(--text3)">이상없음</span>';
   };
 
-  return `<div class="game-card${isFinished?' finished':''}" id="card-${gid}" onclick="toggleDetail('${gid}','${g.home_team.replace(/'/g,"\\'")}','${g.away_team.replace(/'/g,"\\'")}')">
-    <div class="game-meta">
-      <span class="game-time">${isFinished?'경기 종료':isLiveNow?`🔴 진행 중 Q${score?.period||'?'} ${score?.clock||''}`:formatTime(g.commence_time)}</span>
-      <div style="display:flex;gap:4px;align-items:center">
-        ${isLiveNow?'<span class="badge badge-live">LIVE</span>':''}
-        ${isFinished?'<span class="badge" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.2)">종료</span>':''}
-        ${hasAlert&&!isFinished?'<span class="badge badge-alert">주목</span>':''}
-        ${!isFinished&&(homeFav?`<span class="badge badge-fav">${shortName(g.home_team)} 유리</span>`:awayFav?`<span class="badge badge-fav">${shortName(g.away_team)} 유리</span>`:''):''}
-        <span style="font-size:10px;color:var(--text3)">${bm?.title||''}</span>
-      </div>
-    </div>
-    <div class="game-teams">
-      <div>
-        <div class="team-name">${shortName(g.home_team)}</div>
-        ${isFinished||isLiveNow
-          ? `<div style="font-size:36px;font-weight:800;line-height:1.1;color:${homeWon?'var(--blue)':isLiveNow&&parseInt(hs)>parseInt(as)?'var(--green)':'var(--text)'}">${hs??'-'}</div>
-             ${isFinished?`<div style="font-size:11px;margin-top:2px;color:${homeWon?'var(--blue)':'var(--text3)'}">${homeWon?'🏆 승':'패'}</div>`:''}`
-          : `<div class="team-prob" style="color:${homeFav?'var(--blue)':'var(--text2)'}">${homePct}%</div>
-             <div class="team-odds">${hp?`배당 ${hp.toFixed(2)}`:''}</div>`}
-        <div style="margin-top:6px">${injBadge(homeOuts,homeQ)}</div>
-      </div>
-      <div class="vs-text">
-        ${isSoccer&&drawPct&&!isFinished&&!isLiveNow?`<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">${drawPct}%</div><div style="font-size:10px">${dp?dp.toFixed(2):''}</div>`:'<div style="font-size:18px;color:var(--text3)">vs</div>'}
-      </div>
-      <div class="team-away">
-        <div class="team-name">${shortName(g.away_team)}</div>
-        ${isFinished||isLiveNow
-          ? `<div style="font-size:36px;font-weight:800;line-height:1.1;color:${awayWon?'var(--blue)':isLiveNow&&parseInt(as)>parseInt(hs)?'var(--green)':'var(--text)'}">${as??'-'}</div>
-             ${isFinished?`<div style="font-size:11px;margin-top:2px;color:${awayWon?'var(--blue)':'var(--text3)'}">${awayWon?'🏆 승':'패'}</div>`:''}`
-          : `<div class="team-prob" style="color:${awayFav?'var(--blue)':'var(--text2)'}">${awayPct}%</div>
-             <div class="team-odds">${ap?`배당 ${ap.toFixed(2)}`:''}</div>`}
-        <div style="margin-top:6px;text-align:right">${injBadge(awayOuts,awayQ)}</div>
-      </div>
-    </div>
-    ${!isFinished?`<div class="prob-bar">
-      <div class="prob-home" style="width:${homePct}%"></div>
-      ${isSoccer&&drawPct?`<div class="prob-draw" style="width:${drawPct}%"></div>`:''}
-      <div class="prob-away"></div>
-    </div>`:`<div style="height:4px;border-radius:3px;background:var(--border);margin:10px 0 6px;overflow:hidden">
-      <div style="height:100%;width:${parseInt(hs||0)/(parseInt(hs||1)+parseInt(as||1))*100}%;background:${homeWon?'var(--blue)':'var(--text3)'}"></div>
-    </div>`}
-    <div class="bet-row">
-      ${isFinished
-        ? `<div class="bet-chip"><span class="lbl">최종 스코어</span><span class="val" style="font-size:13px">${score?.homeAbbr||'홈'} ${hs} – ${as} ${score?.awayAbbr||'원정'}</span></div>
-           ${totalLine!==null?`<div class="bet-chip"><span class="lbl">O/U 기준</span><span class="val">${totalLine} → 합계 ${parseInt(hs||0)+parseInt(as||0)} (${parseInt(hs||0)+parseInt(as||0)>totalLine?'오버 ✓':'언더 ✓'})</span></div>`:''}` 
-        : `${totalLine!==null?`
-          <div class="bet-chip">
-            <span class="lbl">O/U</span>
-            <span class="val">${totalLine}</span>
-          </div>
-          ${overPct!==null?`
-          <div class="bet-chip over"><span class="lbl">오버</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
-          <div class="bet-chip under"><span class="lbl">언더</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
-        `:''}
-        ${homeSpread?`
-          <div class="bet-chip">
-            <span class="lbl">핸디캡</span>
-            <span class="val">${homeSpread.point>0?'+':''}${homeSpread.point} (${homeSpread.price.toFixed(2)})</span>
-          </div>`:''}
-        `}
-    </div>
-    <div class="detail-panel" id="detail-${gid}">
-      <div class="loading" style="padding:1rem"><div class="spinner"></div>상세 배당 불러오는 중...</div>
-    </div>
-  </div>`;
+  // 스코어 / 배당 표시 HTML 분리 (중첩 템플릿 리터럴 오류 방지)
+  let homeStatHtml, awayStatHtml, barHtml, betRowHtml;
+
+  if(isFinished||isLiveNow){
+    const hColor=homeWon?'var(--blue)':(isLiveNow&&parseInt(hs)>parseInt(as))?'var(--green)':'var(--text)';
+    const aColor=awayWon?'var(--blue)':(isLiveNow&&parseInt(as)>parseInt(hs))?'var(--green)':'var(--text)';
+    homeStatHtml='<div style="font-size:36px;font-weight:800;line-height:1.1;color:'+hColor+'">'+(hs||'-')+'</div>'
+      +(isFinished?'<div style="font-size:11px;margin-top:2px;color:'+(homeWon?'var(--blue)':'var(--text3)')+'">'+( homeWon?'🏆 승':'패')+'</div>':'');
+    awayStatHtml='<div style="font-size:36px;font-weight:800;line-height:1.1;color:'+aColor+'">'+(as||'-')+'</div>'
+      +(isFinished?'<div style="font-size:11px;margin-top:2px;color:'+(awayWon?'var(--blue)':'var(--text3)')+'">'+( awayWon?'🏆 승':'패')+'</div>':'');
+  } else {
+    homeStatHtml='<div class="team-prob" style="color:'+(homeFav?'var(--blue)':'var(--text2)')+'">'+homePct+'%</div>'
+      +(hp?'<div class="team-odds">배당 '+hp.toFixed(2)+'</div>':'');
+    awayStatHtml='<div class="team-prob" style="color:'+(awayFav?'var(--blue)':'var(--text2)')+'">'+awayPct+'%</div>'
+      +(ap?'<div class="team-odds">배당 '+ap.toFixed(2)+'</div>':'');
+  }
+
+  if(isFinished){
+    const total=parseInt(hs||0)+parseInt(as||0);
+    const pct=Math.round(parseInt(hs||0)/(total||1)*100);
+    barHtml='<div style="height:4px;border-radius:3px;background:var(--border);margin:10px 0 6px;overflow:hidden">'
+      +'<div style="height:100%;width:'+pct+'%;background:'+(homeWon?'var(--blue)':'var(--text3)')+'"></div></div>';
+    betRowHtml='<div class="bet-chip"><span class="lbl">최종 스코어</span><span class="val" style="font-size:13px">'
+      +(score?.homeAbbr||'홈')+' '+hs+' – '+as+' '+(score?.awayAbbr||'원정')+'</span></div>';
+    if(totalLine!==null){
+      const ou=total>totalLine?'오버 ✓':'언더 ✓';
+      betRowHtml+='<div class="bet-chip"><span class="lbl">O/U 결과</span><span class="val">기준 '+totalLine+' → 합계 '+total+' ('+ou+')</span></div>';
+    }
+  } else {
+    barHtml='<div class="prob-bar"><div class="prob-home" style="width:'+homePct+'%"></div>'
+      +(isSoccer&&drawPct?'<div class="prob-draw" style="width:'+drawPct+'%"></div>':'')
+      +'<div class="prob-away"></div></div>';
+    betRowHtml='';
+    if(totalLine!==null){
+      betRowHtml+='<div class="bet-chip"><span class="lbl">O/U</span><span class="val">'+totalLine+'</span></div>';
+      if(overPct!==null){
+        betRowHtml+='<div class="bet-chip over"><span class="lbl">오버</span><span class="val">'+overPct+'% · '+over.price.toFixed(2)+'</span></div>';
+        betRowHtml+='<div class="bet-chip under"><span class="lbl">언더</span><span class="val">'+underPct+'% · '+under.price.toFixed(2)+'</span></div>';
+      }
+    }
+    if(homeSpread){
+      betRowHtml+='<div class="bet-chip"><span class="lbl">핸디캡</span><span class="val">'+(homeSpread.point>0?'+':'')+homeSpread.point+' ('+homeSpread.price.toFixed(2)+')</span></div>';
+    }
+  }
+
+  let statusBadges='';
+  if(isLiveNow) statusBadges+='<span class="badge badge-live">LIVE</span>';
+  if(isFinished) statusBadges+='<span class="badge" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.2)">종료</span>';
+  if(hasAlert&&!isFinished) statusBadges+='<span class="badge badge-alert">주목</span>';
+  if(!isFinished){
+    if(homeFav) statusBadges+='<span class="badge badge-fav">'+shortName(g.home_team)+' 유리</span>';
+    else if(awayFav) statusBadges+='<span class="badge badge-fav">'+shortName(g.away_team)+' 유리</span>';
+  }
+
+  const gameTimeStr=isFinished?'경기 종료'
+    :isLiveNow?('🔴 Q'+(score?.period||'?')+' '+(score?.clock||''))
+    :formatTime(g.commence_time);
+
+  const vsHtml=(isSoccer&&drawPct&&!isFinished&&!isLiveNow)
+    ?'<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">'+drawPct+'%</div><div style="font-size:10px">'+(dp?dp.toFixed(2):'')+'</div>'
+    :'<div style="font-size:18px;color:var(--text3)">vs</div>';
+
+  return '<div class="game-card'+(isFinished?' finished':'')+'" id="card-'+gid+'" onclick="toggleDetail(\''+gid+'\',\''+g.home_team.replace(/'/g,"\\'")+'\\',\''+g.away_team.replace(/'/g,"\\'")+'\')">'+
+    '<div class="game-meta">'+
+      '<span class="game-time">'+gameTimeStr+'</span>'+
+      '<div style="display:flex;gap:4px;align-items:center">'+statusBadges+
+        '<span style="font-size:10px;color:var(--text3)">'+(bm?.title||'')+'</span>'+
+      '</div>'+
+    '</div>'+
+    '<div class="game-teams">'+
+      '<div><div class="team-name">'+shortName(g.home_team)+'</div>'+homeStatHtml+
+        '<div style="margin-top:6px">'+injBadge(homeOuts,homeQ)+'</div></div>'+
+      '<div class="vs-text">'+vsHtml+'</div>'+
+      '<div class="team-away"><div class="team-name">'+shortName(g.away_team)+'</div>'+awayStatHtml+
+        '<div style="margin-top:6px;text-align:right">'+injBadge(awayOuts,awayQ)+'</div></div>'+
+    '</div>'+
+    barHtml+
+    '<div class="bet-row">'+betRowHtml+'</div>'+
+    '<div class="detail-panel" id="detail-'+gid+'">'+
+      '<div class="loading" style="padding:1rem"><div class="spinner"></div>상세 배당 불러오는 중...</div>'+
+    '</div>'+
+  '</div>';
 }
 
 async function toggleDetail(gid,homeTeam,awayTeam){
