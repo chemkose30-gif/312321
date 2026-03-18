@@ -601,7 +601,9 @@ function renderGameCard(g,injMap,isSoccer,scoreMap={}){
     ?'<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">'+drawPct+'%</div><div style="font-size:10px">'+(dp?dp.toFixed(2):'')+'</div>'
     :'<div style="font-size:18px;color:var(--text3)">vs</div>';
 
-  return '<div class="game-card'+(isFinished?' finished':'')+'" id="card-'+gid+'" onclick="toggleDetail(\''+gid+'\',\''+g.home_team.replace(/'/g,"\\'")+'\\',\''+g.away_team.replace(/'/g,"\\'")+'\')">'+
+  const ht=g.home_team.replace(/'/g,"\\'");
+  const at2=g.away_team.replace(/'/g,"\\'");
+  return '<div class="game-card'+(isFinished?' finished':'')+'" id="card-'+gid+'" onclick="toggleDetail(\''+gid+'\',\''+ht+'\',\''+at2+'\')">'+
     '<div class="game-meta">'+
       '<span class="game-time">'+gameTimeStr+'</span>'+
       '<div style="display:flex;gap:4px;align-items:center">'+statusBadges+
