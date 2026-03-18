@@ -149,8 +149,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 
 <div class="main">
   <div class="topbar">
-    <div><div class="topbar-title" id="topbarTitle">NBA</div><div class="topbar-sub" id="topbarSub">National Basketball Association</div></div>
+    <div><div class="topbar-title" id="topbarTitle">NBA</div><div class="topbar-sub" id="topbarSub">미국프로농구 (NBA)</div></div>
     <div class="topbar-spacer"></div>
+    <div id="todayDate" style="font-size:12px;color:var(--text2);background:var(--bg3);padding:4px 12px;border-radius:var(--radius-sm);border:1px solid var(--border)"></div>
     <div id="tabRow" class="tab-row">
       <button class="tab active" onclick="switchTab('games',this)">경기 배당</button>
       <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>
@@ -170,6 +171,14 @@ let currentLeague = 'basketball_nba';
 let currentTab = 'games';
 let injuryCache = {};
 let openDetails = {};
+
+// 날짜 표시
+(function(){
+  const d=new Date();
+  const days=['일','월','화','수','목','금','토'];
+  const el=document.getElementById('todayDate');
+  if(el) el.textContent=`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${days[d.getDay()]})`;
+})();
 
 const LEAGUE_INFO = {
   basketball_nba:{label:'NBA',full:'미국프로농구 (NBA)',cat:'basketball'},
@@ -407,6 +416,34 @@ async function loadGames(){
       }catch(e){injuries={injuries:[]};}
     }
     const injMap=buildInjuryMap(injuries);
+
+    // ESPN 스코어보드 - 완료 경기 결과
+    let scoreMap={};
+    try{
+      const sr=await fetch(`${API}/espn/scoreboard/${currentLeague}`);
+      if(sr.ok){
+        const sd=await sr.json();
+        (sd.events||[]).forEach(ev=>{
+          const comp=ev.competitions?.[0];
+          if(!comp)return;
+          const state=ev.status?.type?.state;
+          const home=comp.competitors?.find(c=>c.homeAway==='home');
+          const away=comp.competitors?.find(c=>c.homeAway==='away');
+          if(!home||!away)return;
+          const key=`${home.team?.displayName}|${away.team?.displayName}`;
+          scoreMap[key]={
+            state,
+            homeScore:home.score,
+            awayScore:away.score,
+            period:ev.status?.period||0,
+            clock:ev.status?.displayClock||'',
+            homeAbbr:home.team?.abbreviation,
+            awayAbbr:away.team?.abbreviation,
+          };
+        });
+      }
+    }catch(e){}
+
     const games=data.games||[];
     const withOdds=games.filter(g=>g.bookmakers?.length>0);
     const isSoccer=LEAGUE_INFO[currentLeague].cat==='soccer';
@@ -434,7 +471,7 @@ async function loadGames(){
     </div>
     <div class="section-title"><span style="width:6px;height:6px;border-radius:50%;background:var(--blue);display:inline-block"></span>경기 목록 <span style="font-size:10px;color:var(--text3);font-weight:400">카드 클릭 → 상세 배당</span></div>
     <div class="game-grid">`;
-    withOdds.forEach(g=>{html+=renderGameCard(g,injMap,isSoccer);});
+    withOdds.forEach(g=>{html+=renderGameCard(g,injMap,isSoccer,scoreMap);});
     html+='</div>';
     setContent(html);
   }catch(e){
@@ -442,7 +479,7 @@ async function loadGames(){
   }
 }
 
-function renderGameCard(g,injMap,isSoccer){
+function renderGameCard(g,injMap,isSoccer,scoreMap={}){
   const bm=g.bookmakers?.[0];
   const h2hMkt=bm?.markets?.find(m=>m.key==='h2h');
   if(!h2hMkt?.outcomes?.length)return'';
@@ -486,6 +523,15 @@ function renderGameCard(g,injMap,isSoccer){
   const gid=g.id;
   const isNBA=currentLeague==='basketball_nba';
 
+  // ESPN 스코어 매칭
+  const scoreKey=`${g.home_team}|${g.away_team}`;
+  const score=scoreMap[scoreKey]||null;
+  const isFinished=score?.state==='post';
+  const isLiveNow=score?.state==='in';
+  const hs=score?.homeScore,as=score?.awayScore;
+  const homeWon=isFinished&&parseInt(hs)>parseInt(as);
+  const awayWon=isFinished&&parseInt(as)>parseInt(hs);
+
   const injBadge=(o,q)=>{
     let b='';
     if(o)b+=`<span class="badge badge-out" style="margin-right:3px">OUT ${o}</span>`;
@@ -493,53 +539,66 @@ function renderGameCard(g,injMap,isSoccer){
     return b||'<span style="font-size:11px;color:var(--text3)">이상없음</span>';
   };
 
-  return `<div class="game-card" id="card-${gid}" onclick="toggleDetail('${gid}','${g.home_team.replace(/'/g,"\\'")}','${g.away_team.replace(/'/g,"\\'")}')">
+  return `<div class="game-card${isFinished?' finished':''}" id="card-${gid}" onclick="toggleDetail('${gid}','${g.home_team.replace(/'/g,"\\'")}','${g.away_team.replace(/'/g,"\\'")}')">
     <div class="game-meta">
-      <span class="game-time">${formatTime(g.commence_time)}</span>
+      <span class="game-time">${isFinished?'경기 종료':isLiveNow?`🔴 진행 중 Q${score?.period||'?'} ${score?.clock||''}`:formatTime(g.commence_time)}</span>
       <div style="display:flex;gap:4px;align-items:center">
-        ${isLive?'<span class="badge badge-live">LIVE</span>':''}
-        ${hasAlert?'<span class="badge badge-alert">주목</span>':''}
-        ${homeFav?`<span class="badge badge-fav">${shortName(g.home_team)} 유리</span>`:awayFav?`<span class="badge badge-fav">${shortName(g.away_team)} 유리</span>`:''}
+        ${isLiveNow?'<span class="badge badge-live">LIVE</span>':''}
+        ${isFinished?'<span class="badge" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.2)">종료</span>':''}
+        ${hasAlert&&!isFinished?'<span class="badge badge-alert">주목</span>':''}
+        ${!isFinished&&(homeFav?`<span class="badge badge-fav">${shortName(g.home_team)} 유리</span>`:awayFav?`<span class="badge badge-fav">${shortName(g.away_team)} 유리</span>`:''):''}
         <span style="font-size:10px;color:var(--text3)">${bm?.title||''}</span>
       </div>
     </div>
     <div class="game-teams">
       <div>
         <div class="team-name">${shortName(g.home_team)}</div>
-        <div class="team-prob" style="color:${homeFav?'var(--blue)':'var(--text2)'}">${homePct}%</div>
-        <div class="team-odds">${hp?`배당 ${hp.toFixed(2)}`:''}</div>
+        ${isFinished||isLiveNow
+          ? `<div style="font-size:36px;font-weight:800;line-height:1.1;color:${homeWon?'var(--blue)':isLiveNow&&parseInt(hs)>parseInt(as)?'var(--green)':'var(--text)'}">${hs??'-'}</div>
+             ${isFinished?`<div style="font-size:11px;margin-top:2px;color:${homeWon?'var(--blue)':'var(--text3)'}">${homeWon?'🏆 승':'패'}</div>`:''}`
+          : `<div class="team-prob" style="color:${homeFav?'var(--blue)':'var(--text2)'}">${homePct}%</div>
+             <div class="team-odds">${hp?`배당 ${hp.toFixed(2)}`:''}</div>`}
         <div style="margin-top:6px">${injBadge(homeOuts,homeQ)}</div>
       </div>
       <div class="vs-text">
-        ${isSoccer&&drawPct?`<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">${drawPct}%</div><div style="font-size:10px">${dp?dp.toFixed(2):''}</div>`:'<div>vs</div>'}
+        ${isSoccer&&drawPct&&!isFinished&&!isLiveNow?`<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">${drawPct}%</div><div style="font-size:10px">${dp?dp.toFixed(2):''}</div>`:'<div style="font-size:18px;color:var(--text3)">vs</div>'}
       </div>
       <div class="team-away">
         <div class="team-name">${shortName(g.away_team)}</div>
-        <div class="team-prob" style="color:${awayFav?'var(--blue)':'var(--text2)'}">${awayPct}%</div>
-        <div class="team-odds">${ap?`배당 ${ap.toFixed(2)}`:''}</div>
+        ${isFinished||isLiveNow
+          ? `<div style="font-size:36px;font-weight:800;line-height:1.1;color:${awayWon?'var(--blue)':isLiveNow&&parseInt(as)>parseInt(hs)?'var(--green)':'var(--text)'}">${as??'-'}</div>
+             ${isFinished?`<div style="font-size:11px;margin-top:2px;color:${awayWon?'var(--blue)':'var(--text3)'}">${awayWon?'🏆 승':'패'}</div>`:''}`
+          : `<div class="team-prob" style="color:${awayFav?'var(--blue)':'var(--text2)'}">${awayPct}%</div>
+             <div class="team-odds">${ap?`배당 ${ap.toFixed(2)}`:''}</div>`}
         <div style="margin-top:6px;text-align:right">${injBadge(awayOuts,awayQ)}</div>
       </div>
     </div>
-    <div class="prob-bar">
+    ${!isFinished?`<div class="prob-bar">
       <div class="prob-home" style="width:${homePct}%"></div>
       ${isSoccer&&drawPct?`<div class="prob-draw" style="width:${drawPct}%"></div>`:''}
       <div class="prob-away"></div>
-    </div>
+    </div>`:`<div style="height:4px;border-radius:3px;background:var(--border);margin:10px 0 6px;overflow:hidden">
+      <div style="height:100%;width:${parseInt(hs||0)/(parseInt(hs||1)+parseInt(as||1))*100}%;background:${homeWon?'var(--blue)':'var(--text3)'}"></div>
+    </div>`}
     <div class="bet-row">
-      ${totalLine!==null?`
-        <div class="bet-chip">
-          <span class="lbl">O/U</span>
-          <span class="val">${totalLine}</span>
-        </div>
-        ${overPct!==null?`
-        <div class="bet-chip over"><span class="lbl">오버</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
-        <div class="bet-chip under"><span class="lbl">언더</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
-      `:''}
-      ${homeSpread?`
-        <div class="bet-chip">
-          <span class="lbl">핸디캡</span>
-          <span class="val">${homeSpread.point>0?'+':''}${homeSpread.point} (${homeSpread.price.toFixed(2)})</span>
-        </div>`:''}
+      ${isFinished
+        ? `<div class="bet-chip"><span class="lbl">최종 스코어</span><span class="val" style="font-size:13px">${score?.homeAbbr||'홈'} ${hs} – ${as} ${score?.awayAbbr||'원정'}</span></div>
+           ${totalLine!==null?`<div class="bet-chip"><span class="lbl">O/U 기준</span><span class="val">${totalLine} → 합계 ${parseInt(hs||0)+parseInt(as||0)} (${parseInt(hs||0)+parseInt(as||0)>totalLine?'오버 ✓':'언더 ✓'})</span></div>`:''}` 
+        : `${totalLine!==null?`
+          <div class="bet-chip">
+            <span class="lbl">O/U</span>
+            <span class="val">${totalLine}</span>
+          </div>
+          ${overPct!==null?`
+          <div class="bet-chip over"><span class="lbl">오버</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
+          <div class="bet-chip under"><span class="lbl">언더</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
+        `:''}
+        ${homeSpread?`
+          <div class="bet-chip">
+            <span class="lbl">핸디캡</span>
+            <span class="val">${homeSpread.point>0?'+':''}${homeSpread.point} (${homeSpread.price.toFixed(2)})</span>
+          </div>`:''}
+        `}
     </div>
     <div class="detail-panel" id="detail-${gid}">
       <div class="loading" style="padding:1rem"><div class="spinner"></div>상세 배당 불러오는 중...</div>
