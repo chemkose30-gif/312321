@@ -241,7 +241,8 @@ function selectLeague(key,btn){
   document.getElementById('topbarSub').textContent=info.full;
   document.getElementById('tabRow').innerHTML=`
     <button class="tab active" onclick="switchTab('games',this)">경기 배당</button>
-    <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>`;
+    <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>
+    <button class="tab" onclick="switchTab('live',this)">🔴 쿼터 스코어</button>`;
   loadCurrent();
 }
 
@@ -252,6 +253,132 @@ function switchTab(tab,btn){
   loadCurrent();
 }
 
+async function loadLiveScores(){
+  setContent('<div class="loading"><div class="spinner"></div>ESPN 라이브 스코어 불러오는 중...</div>');
+  try{
+    const res=await fetch(`${API}/espn/scoreboard/${currentLeague}`);
+    if(!res.ok)throw new Error('ESPN 데이터 없음');
+    const data=await res.json();
+    const events=data.events||[];
+    if(!events.length){
+      setContent('<div class="empty"><div class="empty-icon">📺</div>진행 중인 경기 없음<br><span style="font-size:12px;color:var(--text3)">경기 시작 전이거나 오늘 경기가 없습니다</span></div>');
+      return;
+    }
+    const live=events.filter(e=>{const s=e.status?.type?.state;return s==='in';});
+    const finished=events.filter(e=>e.status?.type?.state==='post');
+    const upcoming=events.filter(e=>e.status?.type?.state==='pre');
+    let html='';
+
+    // 상단 요약
+    html+=`<div class="metric-grid" style="margin-bottom:20px">
+      <div class="metric-card"><div class="metric-label">🔴 라이브</div><div class="metric-val" style="color:var(--red)">${live.length}</div></div>
+      <div class="metric-card"><div class="metric-label">종료</div><div class="metric-val" style="color:var(--text2)">${finished.length}</div></div>
+      <div class="metric-card"><div class="metric-label">예정</div><div class="metric-val" style="color:var(--blue)">${upcoming.length}</div></div>
+      <div class="metric-card"><div class="metric-label">전체</div><div class="metric-val">${events.length}</div></div>
+    </div>`;
+
+    const renderEvent=(ev,state)=>{
+      const comp=ev.competitions?.[0];
+      if(!comp)return'';
+      const competitors=comp.competitors||[];
+      const home=competitors.find(c=>c.homeAway==='home')||competitors[0]||{};
+      const away=competitors.find(c=>c.homeAway==='away')||competitors[1]||{};
+      const status=ev.status||{};
+      const period=status.period||0;
+      const clock=status.displayClock||'';
+      const isLive=state==='in';
+      const isFinal=state==='post';
+
+      const homeScore=parseInt(home.score||0);
+      const awayScore=parseInt(away.score||0);
+      const homeWin=isFinal&&homeScore>awayScore;
+      const awayWin=isFinal&&awayScore>homeScore;
+
+      // 쿼터별 점수
+      const homeLines=home.linescores||[];
+      const awayLines=away.linescores||[];
+      const maxQ=Math.max(homeLines.length,awayLines.length,4);
+      const quarters=Array.from({length:maxQ},(_,i)=>({
+        label:i<4?`Q${i+1}`:`OT${i-3}`,
+        home:homeLines[i]?.value??'-',
+        away:awayLines[i]?.value??'-',
+      }));
+
+      const periodLabel=period>4?`OT${period-4}`:period>0?`Q${period}`:'';
+
+      return`<div class="card" style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="display:flex;gap:6px;align-items:center">
+            ${isLive?`<span class="badge badge-live">🔴 LIVE</span><span style="font-size:12px;color:var(--red);font-weight:600">${periodLabel} ${clock}</span>`:''}
+            ${isFinal?'<span class="badge" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.2)">종료</span>':''}
+            ${state==='pre'?`<span class="badge badge-q">예정</span><span style="font-size:11px;color:var(--text2)">${formatTime(ev.date)}</span>`:''}
+          </div>
+          <span style="font-size:11px;color:var(--text3)">${comp.venue?.fullName||''}</span>
+        </div>
+
+        <!-- 팀 스코어 -->
+        <div style="display:grid;grid-template-columns:1fr 60px 1fr;align-items:center;gap:8px;margin-bottom:14px">
+          <div>
+            <div style="font-size:13px;font-weight:500;color:${homeWin?'var(--text)':'var(--text2)'}">${home.team?.displayName||'홈'}</div>
+            <div style="font-size:36px;font-weight:800;line-height:1.1;color:${homeWin?'var(--blue)':isLive&&homeScore>awayScore?'var(--green)':'var(--text)'}">${home.score??'-'}</div>
+          </div>
+          <div style="text-align:center;color:var(--text3);font-size:12px">vs</div>
+          <div style="text-align:right">
+            <div style="font-size:13px;font-weight:500;color:${awayWin?'var(--text)':'var(--text2)'}">${away.team?.displayName||'원정'}</div>
+            <div style="font-size:36px;font-weight:800;line-height:1.1;color:${awayWin?'var(--blue)':isLive&&awayScore>homeScore?'var(--green)':'var(--text)'}">${away.score??'-'}</div>
+          </div>
+        </div>
+
+        <!-- 쿼터 테이블 -->
+        ${quarters.some(q=>q.home!=='-'||q.away!=='-')?`
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:300px">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="padding:5px 8px;text-align:left;color:var(--text3);font-size:10px;font-weight:500">팀</th>
+                ${quarters.map(q=>`<th style="padding:5px 8px;text-align:center;color:${isLive&&q.label===periodLabel?'var(--red)':'var(--text3)'};font-size:10px;font-weight:${isLive&&q.label===periodLabel?700:500}">${q.label}</th>`).join('')}
+                <th style="padding:5px 8px;text-align:center;color:var(--text3);font-size:10px;font-weight:600">합계</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+                <td style="padding:6px 8px;font-weight:500;color:${homeWin?'var(--blue)':'var(--text2)'}">
+                  ${home.team?.abbreviation||'홈'}
+                </td>
+                ${quarters.map(q=>`<td style="padding:6px 8px;text-align:center;font-weight:${q.home!=='-'?500:400};color:${q.home!=='-'?'var(--text)':'var(--text3)'}">${q.home}</td>`).join('')}
+                <td style="padding:6px 8px;text-align:center;font-weight:700;color:${homeWin?'var(--blue)':'var(--text)'}">${home.score??'-'}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 8px;font-weight:500;color:${awayWin?'var(--blue)':'var(--text2)'}">
+                  ${away.team?.abbreviation||'원정'}
+                </td>
+                ${quarters.map(q=>`<td style="padding:6px 8px;text-align:center;font-weight:${q.away!=='-'?500:400};color:${q.away!=='-'?'var(--text)':'var(--text3)'}">${q.away}</td>`).join('')}
+                <td style="padding:6px 8px;text-align:center;font-weight:700;color:${awayWin?'var(--blue)':'var(--text)'}">${away.score??'-'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>`:`<div style="font-size:12px;color:var(--text3);text-align:center;padding:8px 0">쿼터 데이터 없음 (경기 시작 후 업데이트)</div>`}
+      </div>`;
+    };
+
+    if(live.length){
+      html+=`<div class="section-title" style="color:var(--red)">🔴 진행 중 (${live.length})</div>`;
+      live.forEach(ev=>{html+=renderEvent(ev,'in');});
+    }
+    if(finished.length){
+      html+=`<div class="section-title" style="margin-top:20px">✅ 종료 (${finished.length})</div>`;
+      finished.forEach(ev=>{html+=renderEvent(ev,'post');});
+    }
+    if(upcoming.length){
+      html+=`<div class="section-title" style="margin-top:20px">📅 예정 (${upcoming.length})</div>`;
+      upcoming.forEach(ev=>{html+=renderEvent(ev,'pre');});
+    }
+    setContent(html);
+  }catch(e){
+    setContent(`<div class="empty"><div class="empty-icon">⚠️</div>오류: ${e.message}</div>`);
+  }
+}
+
 async function loadCurrent(){
   if(currentLeague==='__kbl__')return;
   const icon=document.getElementById('refreshIcon');
@@ -259,7 +386,7 @@ async function loadCurrent(){
   try{
     if(currentTab==='games')await loadGames();
     else if(currentTab==='injuries')await loadInjuries();
-    else if(currentTab==='quarter')await loadQuarter();
+    else if(currentTab==='live')await loadLiveScores();
   }finally{icon.style.animation='';}
 }
 
