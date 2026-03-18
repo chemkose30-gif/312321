@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sports Analytics Dashboard</title>
+<title>스포츠 분석 대시보드</title>
 <style>
 :root {
   --bg:#0a0c10;--bg2:#111318;--bg3:#181c24;
@@ -172,17 +172,17 @@ let injuryCache = {};
 let openDetails = {};
 
 const LEAGUE_INFO = {
-  basketball_nba:{label:'NBA',full:'National Basketball Association',cat:'basketball'},
-  basketball_kbl:{label:'KBL',full:'Korean Basketball League',cat:'basketball'},
-  baseball_mlb:{label:'MLB',full:'Major League Baseball',cat:'baseball'},
-  baseball_kbo:{label:'KBO',full:'Korean Baseball Organization',cat:'baseball'},
-  baseball_npb:{label:'NPB',full:'Nippon Professional Baseball',cat:'baseball'},
-  soccer_korea_kleague1:{label:'K리그1',full:'Korea K League 1',cat:'soccer'},
-  soccer_epl:{label:'EPL',full:'English Premier League',cat:'soccer'},
-  soccer_spain_la_liga:{label:'La Liga',full:'Spanish La Liga',cat:'soccer'},
-  soccer_germany_bundesliga:{label:'Bundesliga',full:'German Bundesliga',cat:'soccer'},
-  soccer_italy_serie_a:{label:'Serie A',full:'Italian Serie A',cat:'soccer'},
-  soccer_uefa_champs_league:{label:'UCL',full:'UEFA Champions League',cat:'soccer'},
+  basketball_nba:{label:'NBA',full:'미국프로농구 (NBA)',cat:'basketball'},
+  basketball_kbl:{label:'KBL',full:'한국프로농구 (KBL)',cat:'basketball'},
+  baseball_mlb:{label:'MLB',full:'미국프로야구 (MLB)',cat:'baseball'},
+  baseball_kbo:{label:'KBO',full:'한국프로야구 (KBO)',cat:'baseball'},
+  baseball_npb:{label:'NPB',full:'일본프로야구 (NPB)',cat:'baseball'},
+  soccer_korea_kleague1:{label:'K리그1',full:'한국 K리그1',cat:'soccer'},
+  soccer_epl:{label:'EPL',full:'잉글랜드 프리미어리그',cat:'soccer'},
+  soccer_spain_la_liga:{label:'라리가',full:'스페인 라리가',cat:'soccer'},
+  soccer_germany_bundesliga:{label:'분데스리가',full:'독일 분데스리가',cat:'soccer'},
+  soccer_italy_serie_a:{label:'세리에A',full:'이탈리아 세리에A',cat:'soccer'},
+  soccer_uefa_champs_league:{label:'UCL',full:'UEFA 챔피언스리그',cat:'soccer'},
 };
 
 function removeVig(prices){
@@ -532,12 +532,12 @@ function renderGameCard(g,injMap,isSoccer){
           <span class="val">${totalLine}</span>
         </div>
         ${overPct!==null?`
-        <div class="bet-chip over"><span class="lbl">OVER</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
-        <div class="bet-chip under"><span class="lbl">UNDER</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
+        <div class="bet-chip over"><span class="lbl">오버</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
+        <div class="bet-chip under"><span class="lbl">언더</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
       `:''}
       ${homeSpread?`
         <div class="bet-chip">
-          <span class="lbl">스프레드</span>
+          <span class="lbl">핸디캡</span>
           <span class="val">${homeSpread.point>0?'+':''}${homeSpread.point} (${homeSpread.price.toFixed(2)})</span>
         </div>`:''}
     </div>
@@ -662,7 +662,7 @@ async function loadNBADetail(gid,homeTeam,awayTeam,panel){
       const tabId=`props-tabs-${gid}`;
       const contentId=`props-content-${gid}`;
 
-      html+=`<div><div class="section-title">🎯 선수 U/O Props</div>
+      html+=`<div><div class="section-title">🎯 선수 언오버 프롭스</div>
         <div class="props-tabs" id="${tabId}">
           ${mktKeys.map((mk,i)=>`<button class="props-tab${i===0?' active':''}" onclick="switchPropsTab('${gid}','${mk}',this)">${mktLabel[mk]||mk}</button>`).join('')}
         </div>
@@ -691,9 +691,9 @@ function renderPropsTable(players){
   if(!players.length)return'<div style="font-size:12px;color:var(--text3);padding:8px">데이터 없음</div>';
   return`<table class="props-table">
     <thead><tr>
-      <th>선수</th><th>라인</th>
-      <th>OVER%</th><th style="font-size:10px;color:var(--text3)">배당</th>
-      <th>UNDER%</th><th style="font-size:10px;color:var(--text3)">배당</th>
+      <th>선수</th><th>기준선</th>
+      <th>오버%</th><th style="font-size:10px;color:var(--text3)">배당</th>
+      <th>언더%</th><th style="font-size:10px;color:var(--text3)">배당</th>
       <th>추천</th><th>신뢰도</th>
     </tr></thead>
     <tbody>
@@ -711,7 +711,7 @@ function renderPropsTable(players){
           <td style="color:var(--text3)">${over?over.toFixed(2):'-'}</td>
           <td style="color:var(--red);font-weight:600">${up}%</td>
           <td style="color:var(--text3)">${under?under.toFixed(2):'-'}</td>
-          <td class="${isOver?'rec-over':'rec-under'}">${isOver?'▲ OVER':'▼ UNDER'}</td>
+          <td class="${isOver?'rec-over':'rec-under'}">${isOver?'▲ 오버':'▼ 언더'}</td>
           <td style="font-weight:700;color:${confColor}">${conf}%</td>
         </tr>`;
       }).join('')}
@@ -957,9 +957,9 @@ async function loadKBLLeaders(){
       </div>`;
     };
     setContent(`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-      ${renderList('득점 PPG',data.points)}
-      ${renderList('리바운드 RPG',data.rebounds)}
-      ${renderList('어시스트 APG',data.assists)}
+      ${renderList('득점 (경기당)',data.points)}
+      ${renderList('리바운드 (경기당)',data.rebounds)}
+      ${renderList('어시스트 (경기당)',data.assists)}
     </div>`);
   }catch(e){setContent(`<div class="empty">⚠️ ${e.message}</div>`);}
 }
@@ -988,9 +988,9 @@ async function showPlan(){
       </div>
       <div class="card">
         <div class="section-title">마켓 접근</div>
-        <div class="plan-row"><span>H2H · Totals · Spreads</span><span class="check-ok">✓ 사용 가능</span></div>
-        <div class="plan-row"><span>Player Props</span><span class="${propOk?'check-ok':'check-no'}">${propOk?'✓ 가능':'✗ Pro 플랜 필요'}</span></div>
-        <div class="plan-row"><span>하프 마켓 (H1/H2)</span><span class="${qOk?'check-ok':'check-no'}">${qOk?'✓ 가능':'✗ Pro 플랜 필요'}</span></div>
+        <div class="plan-row"><span>승패 · 합계 · 핸디캡</span><span class="check-ok">✓ 사용 가능</span></div>
+        <div class="plan-row"><span>선수 언오버 (Props)</span><span class="${propOk?'check-ok':'check-no'}">${propOk?'✓ 가능':'✗ 상위 플랜 필요'}</span></div>
+        <div class="plan-row"><span>전/후반 배당 (H1/H2)</span><span class="${qOk?'check-ok':'check-no'}">${qOk?'✓ 가능':'✗ 상위 플랜 필요'}</span></div>
       </div>
     </div>`);
   }catch(e){setContent(`<div class="empty">⚠️ ${e.message}</div>`);}
@@ -1024,7 +1024,7 @@ async function searchPlayer(){
     players.forEach(p=>{html+=`<div class="card" style="cursor:pointer" onclick="loadPlayerStats(${p.id},'${p.first_name} ${p.last_name}')">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div><div style="font-size:14px;font-weight:600">${p.first_name} ${p.last_name}</div>
-          <div style="font-size:12px;color:var(--text2);margin-top:2px">${p.position||'-'} · ${p.team?.full_name||'Free Agent'}</div></div>
+          <div style="font-size:12px;color:var(--text2);margin-top:2px">${p.position||'-'} · ${p.team?.full_name||'자유계약'}</div></div>
         <span style="font-size:11px;color:var(--text3)">클릭하여 스탯 보기 →</span>
       </div></div>`;});
     html+='</div>';
@@ -1051,10 +1051,10 @@ async function loadPlayerStats(id,name){
         <div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead><tr style="border-bottom:1px solid var(--border)">
             <th style="padding:8px 10px;text-align:left;color:var(--text3)">날짜</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--text3)">PTS</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--text3)">REB</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--text3)">AST</th>
-            <th style="padding:8px 10px;text-align:center;color:var(--text3)">MIN</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">득점</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">리바운드</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">어시스트</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">출전</th>
           </tr></thead><tbody>
           ${recent.slice(0,10).map(g=>`<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
             <td style="padding:8px 10px;color:var(--text2)">${g.game?.date?.slice(0,10)||'-'}</td>
