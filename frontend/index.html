@@ -1262,22 +1262,27 @@ async function showPicks(btn){
           const favTeam=isFavHome?g.home_team:g.away_team;
           const favPct=isFavHome?homePct:awayPct;
           const favOdds=isFavHome?hp:ap;
-          const outs=isFavHome?homeOuts:awayOuts;
+          const myOuts=isFavHome?homeOuts:awayOuts;   // 픽한 팀 결장자
+          const opOuts=isFavHome?awayOuts:homeOuts;   // 상대 결장자
           let conf=favPct;
-          if(outs>0)conf-=outs*4; // 결장자당 -4%
+          conf-=myOuts*5;   // 내 팀 결장 → 불리 (-5%/명)
+          conf+=opOuts*3;   // 상대 결장 → 유리 (+3%/명)
           if(conf<50)return;
+          const injNote=[];
+          if(myOuts>0)injNote.push('우리팀 결장 '+myOuts+'명 -'+(myOuts*5)+'%');
+          if(opOuts>0)injNote.push('상대 결장 '+opOuts+'명 +'+(opOuts*3)+'%');
           allPicks.push({
             type:'ML',typeLabel:'머니라인',
             league:info.label,
             home:g.home_team,away:g.away_team,
             time:gameTime,
             pick:favTeam,
-            desc: (isFavHome?'홈':'원정')+' '+shortName(favTeam)+' 승리',
+            desc:(isFavHome?'홈':'원정')+' '+shortName(favTeam)+' 승리',
             odds:favOdds,
             rawConf:favPct,
             conf:Math.min(Math.round(conf),95),
-            reason:favPct.toFixed(1)+'% 승률'+(outs>0?' (결장 '+outs+'명 감점)':''),
-            alert:outs>0?'상대팀 결장자 있음':'',
+            reason:favPct.toFixed(1)+'% 승률'+(injNote.length?' ('+injNote.join(', ')+')':''),
+            alert:myOuts>0?'우리팀 결장자 있어 신뢰도 낮아짐':'',
           });
         }
 
@@ -1294,11 +1299,16 @@ async function showPicks(btn){
               const favTeam=isFavHome?g.home_team:g.away_team;
               const favSpreadVal=isFavHome?homeSpread.point:awaySpread.point;
               const favOdds=isFavHome?homeSpread.price:awaySpread.price;
-              const outs=isFavHome?homeOuts:awayOuts;
+              const myOuts=isFavHome?homeOuts:awayOuts;   // 픽한 팀 결장자
+              const opOuts=isFavHome?awayOuts:homeOuts;   // 상대 결장자
               let conf=favSpreadPct;
-              if(outs>0)conf-=outs*5;
+              conf-=myOuts*5;   // 내 팀 결장 → 불리
+              conf+=opOuts*3;   // 상대 결장 → 유리
               if(conf<52)return;
               const spreadStr=(favSpreadVal>0?'+':'')+favSpreadVal;
+              const injNote=[];
+              if(myOuts>0)injNote.push('우리팀 결장 '+myOuts+'명 -'+(myOuts*5)+'%');
+              if(opOuts>0)injNote.push('상대 결장 '+opOuts+'명 +'+(opOuts*3)+'%');
               allPicks.push({
                 type:'ATS',typeLabel:'핸디캡',
                 league:info.label,
@@ -1310,8 +1320,8 @@ async function showPicks(btn){
                 odds:favOdds,
                 rawConf:favSpreadPct,
                 conf:Math.min(Math.round(conf),90),
-                reason:favSpreadPct.toFixed(1)+'% ATS 확률'+(outs>0?' (결장 '+outs+'명 감점)':''),
-                alert:outs>0?'결장자 발생 시 재확인 필요':'',
+                reason:favSpreadPct.toFixed(1)+'% ATS 확률'+(injNote.length?' ('+injNote.join(', ')+')':''),
+                alert:myOuts>0?'우리팀 결장자 있어 신뢰도 낮아짐':'',
               });
             }
           }
@@ -1330,10 +1340,11 @@ async function showPicks(btn){
               const ouOdds=isOver?over.price:under.price;
               const totalOuts=homeOuts+awayOuts;
               let conf=ouPct;
-              // 결장자 많으면 언더 유리
-              if(!isOver&&totalOuts>0)conf+=totalOuts*2;
-              if(isOver&&totalOuts>2)conf-=totalOuts*2;
+              // 결장자 많으면 득점 감소 → 언더 유리, 오버 불리
+              if(!isOver&&totalOuts>0)conf+=totalOuts*3;  // 언더픽: 결장자 多 → 신뢰 ↑
+              if(isOver&&totalOuts>0)conf-=totalOuts*3;   // 오버픽: 결장자 多 → 신뢰 ↓
               if(conf<52)return;
+              const injNote=totalOuts>0?'양팀 결장 총 '+totalOuts+'명 → '+(isOver?'-':'+')+( totalOuts*3)+'%':'';
               allPicks.push({
                 type:'OU',typeLabel:isOver?'오버':'언더',
                 league:info.label,
@@ -1344,8 +1355,8 @@ async function showPicks(btn){
                 odds:ouOdds,
                 rawConf:ouPct,
                 conf:Math.min(Math.round(conf),92),
-                reason:ouPct.toFixed(1)+'% 확률'+(totalOuts>0?' (결장 '+totalOuts+'명 고려)':''),
-                alert:totalOuts>2?'다수 결장으로 득점 감소 예상':'',
+                reason:ouPct.toFixed(1)+'% 확률'+(injNote?' ('+injNote+')':''),
+                alert:isOver&&totalOuts>2?'다수 결장으로 득점 감소 → 오버 신뢰도 낮아짐':'',
               });
             }
           }
