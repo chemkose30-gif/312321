@@ -113,11 +113,66 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+
+/* ── 모바일 ── */
 @media(max-width:768px){
-  .sidebar{width:52px}
-  .sidebar-item span{display:none}
-  .metric-grid{grid-template-columns:1fr 1fr}
-  .game-grid{grid-template-columns:1fr}
+  /* 사이드바 → 하단 네비 */
+  .app{flex-direction:column}
+  .sidebar{
+    width:100%;height:auto;flex-shrink:0;
+    border-right:none;border-top:1px solid var(--border);
+    order:3;overflow-x:auto;overflow-y:hidden;
+    display:flex;flex-direction:row;align-items:center;
+    padding:0 6px;gap:2px;
+  }
+  .sidebar-section{display:none}
+  .sidebar-bottom{display:none}
+  .logo{display:none}
+  .sidebar-item{
+    flex-direction:column;gap:2px;padding:8px 10px;
+    min-width:56px;white-space:nowrap;font-size:10px;
+    margin:0;border-radius:8px;width:auto;
+  }
+  .sidebar-item .dot{width:5px;height:5px}
+  .sidebar-item span{display:block;font-size:10px}
+
+  /* 메인 */
+  .main{flex:1;overflow:hidden;order:1}
+  .topbar{
+    padding:0 12px;height:auto;min-height:48px;
+    flex-wrap:wrap;gap:6px;padding:8px 12px;
+  }
+  .topbar-title{font-size:14px}
+  .topbar-sub{display:none}
+  #todayDate{font-size:11px;padding:3px 8px}
+  .tab-row{overflow-x:auto;gap:1px;padding:2px}
+  .tab{padding:4px 10px;font-size:11px;white-space:nowrap}
+  .refresh-btn span:last-child{display:none}
+  .refresh-btn{padding:5px 8px}
+
+  /* 콘텐츠 */
+  .content{padding:12px}
+  .metric-grid{grid-template-columns:1fr 1fr;gap:8px}
+  .metric-val{font-size:22px}
+  .game-grid{grid-template-columns:1fr;gap:10px}
+
+  /* 게임 카드 */
+  .game-card{padding:12px}
+  .team-name{font-size:13px}
+  .team-prob{font-size:20px}
+  .bet-row{gap:4px}
+  .bet-chip{font-size:10px;padding:3px 7px}
+
+  /* 테이블 스크롤 */
+  .props-table{font-size:11px}
+  .props-table th,.props-table td{padding:5px 6px}
+
+  /* 상세 패널 */
+  .half-grid{grid-template-columns:1fr 1fr;gap:6px}
+  .section-title{font-size:11px}
+
+  /* 부상 */
+  .inj-row{font-size:11px}
 }
 </style>
 </head>
@@ -126,24 +181,24 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 <div class="sidebar">
   <div class="logo"><div class="logo-dot"></div><span>Lumina Sports</span></div>
   <div class="sidebar-section">농구</div>
-  <button class="sidebar-item active" onclick="selectLeague('basketball_nba',this)"><span class="dot" style="background:#F47321"></span><span>NBA</span></button>
-  <button class="sidebar-item" onclick="selectKBL(this)"><span class="dot" style="background:#e53e3e"></span><span>KBL</span></button>
+  <button class="sidebar-item active" onclick="selectLeague('basketball_nba',this)"><span class="dot" style="background:#F47321"></span><span>🏀 NBA</span></button>
+  <button class="sidebar-item" onclick="selectKBL(this)"><span class="dot" style="background:#e53e3e"></span><span>🏀 KBL</span></button>
   <div class="sidebar-section">야구</div>
-  <button class="sidebar-item" onclick="selectLeague('baseball_mlb',this)"><span class="dot" style="background:#4a90d9"></span><span>MLB</span></button>
-  <button class="sidebar-item" onclick="selectLeague('baseball_kbo',this)"><span class="dot" style="background:#e53e3e"></span><span>KBO</span></button>
-  <button class="sidebar-item" onclick="selectLeague('baseball_npb',this)"><span class="dot" style="background:#38a169"></span><span>NPB</span></button>
+  <button class="sidebar-item" onclick="selectLeague('baseball_mlb',this)"><span class="dot" style="background:#4a90d9"></span><span>⚾ MLB</span></button>
+  <button class="sidebar-item" onclick="selectLeague('baseball_kbo',this)"><span class="dot" style="background:#e53e3e"></span><span>⚾ KBO</span></button>
+  <button class="sidebar-item" onclick="selectLeague('baseball_npb',this)"><span class="dot" style="background:#38a169"></span><span>⚾ NPB</span></button>
   <div class="sidebar-section">축구</div>
-  <button class="sidebar-item" onclick="selectLeague('soccer_korea_kleague1',this)"><span class="dot" style="background:#2563eb"></span><span>K리그1</span></button>
-  <button class="sidebar-item" onclick="selectLeague('soccer_epl',this)"><span class="dot" style="background:#9f1239"></span><span>EPL</span></button>
-  <button class="sidebar-item" onclick="selectLeague('soccer_spain_la_liga',this)"><span class="dot" style="background:#dc2626"></span><span>La Liga</span></button>
-  <button class="sidebar-item" onclick="selectLeague('soccer_germany_bundesliga',this)"><span class="dot" style="background:#1d4ed8"></span><span>Bundesliga</span></button>
-  <button class="sidebar-item" onclick="selectLeague('soccer_italy_serie_a',this)"><span class="dot" style="background:#1a56db"></span><span>Serie A</span></button>
-  <button class="sidebar-item" onclick="selectLeague('soccer_uefa_champs_league',this)"><span class="dot" style="background:#7c3aed"></span><span>UCL</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_korea_kleague1',this)"><span class="dot" style="background:#2563eb"></span><span>⚽ K리그</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_epl',this)"><span class="dot" style="background:#9f1239"></span><span>⚽ EPL</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_spain_la_liga',this)"><span class="dot" style="background:#dc2626"></span><span>⚽ 라리가</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_germany_bundesliga',this)"><span class="dot" style="background:#1d4ed8"></span><span>⚽ 분데스</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_italy_serie_a',this)"><span class="dot" style="background:#1a56db"></span><span>⚽ 세리에</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_uefa_champs_league',this)"><span class="dot" style="background:#7c3aed"></span><span>⚽ UCL</span></button>
   <div class="sidebar-section">분석</div>
   <button class="sidebar-item" onclick="showPicks(this)"><span class="dot" style="background:#f59e0b"></span><span>⚡ 추천픽</span></button>
   <div class="sidebar-section">도구</div>
-  <button class="sidebar-item" onclick="showPlan()"><span class="dot" style="background:#6b7280"></span><span>API 플랜</span></button>
-  <button class="sidebar-item" onclick="showPlayers()"><span class="dot" style="background:#6b7280"></span><span>선수 검색</span></button>
+  <button class="sidebar-item" onclick="showPlan()"><span class="dot" style="background:#6b7280"></span><span>📊 플랜</span></button>
+  <button class="sidebar-item" onclick="showPlayers()"><span class="dot" style="background:#6b7280"></span><span>🔍 선수</span></button>
   <div class="sidebar-bottom">
     <div id="remainingInfo" style="font-size:11px;color:var(--text3)">잔여 요청 확인 중...</div>
   </div>
