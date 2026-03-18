@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sports Analytics Dashboard</title>
+<style>
+:root {
+  --bg:#0a0c10;--bg2:#111318;--bg3:#181c24;
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
+  --text:#e8eaf0;--text2:#8892a4;--text3:#4a5568;
+  --blue:#3b82f6;--green:#10b981;--red:#ef4444;--amber:#f59e0b;--purple:#8b5cf6;
+  --radius:10px;--radius-sm:6px;
+  --font:'Pretendard','Apple SD Gothic Neo',-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:220px;flex-shrink:0;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:52px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:12px;flex-shrink:0}
+.content{flex:1;overflow-y:auto;padding:20px}
+.logo{padding:18px 16px 12px;font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+.logo-dot{width:8px;height:8px;border-radius:50%;background:var(--blue);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.sidebar-section{padding:16px 10px 6px;font-size:10px;font-weight:600;color:var(--text3);letter-spacing:.08em;text-transform:uppercase}
+.sidebar-item{display:flex;align-items:center;gap:8px;padding:7px 12px;margin:1px 6px;border-radius:var(--radius-sm);cursor:pointer;color:var(--text2);font-size:13px;transition:all .12s;border:none;background:none;width:calc(100% - 12px);text-align:left}
+.sidebar-item:hover{background:var(--bg3);color:var(--text)}
+.sidebar-item.active{background:rgba(59,130,246,.12);color:var(--blue);font-weight:500}
+.sidebar-item .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.sidebar-bottom{margin-top:auto;padding:12px;border-top:1px solid var(--border)}
+.topbar-title{font-size:15px;font-weight:600}
+.topbar-sub{font-size:12px;color:var(--text2)}
+.topbar-spacer{flex:1}
+.refresh-btn{background:none;border:1px solid var(--border2);color:var(--text2);padding:5px 12px;border-radius:var(--radius-sm);cursor:pointer;font-size:12px;font-family:var(--font);transition:all .12s;display:flex;align-items:center;gap:6px}
+.refresh-btn:hover{border-color:var(--blue);color:var(--blue)}
+.tab-row{display:flex;gap:2px;background:var(--bg3);padding:3px;border-radius:var(--radius-sm)}
+.tab{background:none;border:none;padding:4px 14px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--text2);font-family:var(--font);transition:all .12s}
+.tab.active{background:var(--bg2);color:var(--text);font-weight:500}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;transition:border-color .15s}
+.card:hover{border-color:var(--border2)}
+.game-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px}
+.metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
+.metric-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px}
+.metric-label{font-size:11px;color:var(--text2);margin-bottom:6px}
+.metric-val{font-size:26px;font-weight:700;line-height:1}
+.metric-sub{font-size:11px;color:var(--text3);margin-top:4px}
+.game-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px;cursor:pointer;transition:all .15s}
+.game-card:hover{border-color:var(--border2);transform:translateY(-1px)}
+.game-card.open{border-color:var(--blue)}
+.game-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.game-time{font-size:11px;color:var(--text2)}
+.game-teams{display:grid;grid-template-columns:1fr 48px 1fr;align-items:center;gap:6px}
+.team-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.team-prob{font-size:22px;font-weight:700;line-height:1;margin-top:3px}
+.team-odds{font-size:11px;color:var(--text2);margin-top:2px}
+.team-away{text-align:right}
+.vs-text{text-align:center;font-size:11px;color:var(--text3)}
+.prob-bar{height:4px;border-radius:3px;display:flex;overflow:hidden;margin:10px 0 6px}
+.prob-home{background:var(--blue);transition:width .5s}
+.prob-draw{background:#4a5568}
+.prob-away{flex:1;background:var(--red)}
+/* Bet info row */
+.bet-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.bet-chip{display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:4px 9px;font-size:11px;color:var(--text2)}
+.bet-chip .lbl{color:var(--text3);font-size:10px}
+.bet-chip .val{font-weight:600;color:var(--text)}
+.bet-chip.over .val{color:var(--green)}
+.bet-chip.under .val{color:var(--red)}
+/* Detail panel */
+.detail-panel{margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:none}
+.detail-panel.open{display:block}
+/* Props tabs */
+.props-tabs{display:flex;gap:2px;background:var(--bg3);padding:3px;border-radius:var(--radius-sm);margin-bottom:10px}
+.props-tab{background:none;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;color:var(--text2);font-family:var(--font);transition:all .12s}
+.props-tab.active{background:var(--bg2);color:var(--text);font-weight:500}
+/* Props table */
+.props-table{width:100%;border-collapse:collapse;font-size:12px}
+.props-table th{padding:6px 8px;text-align:left;color:var(--text3);font-weight:500;font-size:10px;border-bottom:1px solid var(--border)}
+.props-table td{padding:7px 8px;border-bottom:1px solid rgba(255,255,255,0.04)}
+.props-table tr:last-child td{border:none}
+.props-table tr:hover td{background:rgba(255,255,255,0.02)}
+.rec-over{color:var(--green);font-weight:700}
+.rec-under{color:var(--red);font-weight:700}
+/* Half odds */
+.half-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.half-card{background:var(--bg3);border-radius:var(--radius-sm);padding:10px}
+.half-label{font-size:10px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase}
+/* Badges */
+.badge{display:inline-flex;align-items:center;font-size:10px;font-weight:600;padding:2px 7px;border-radius:10px;white-space:nowrap}
+.badge-out{background:rgba(239,68,68,.15);color:#fc8181;border:1px solid rgba(239,68,68,.25)}
+.badge-q{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.25)}
+.badge-dtd{background:rgba(245,158,11,.1);color:#f6ad55;border:1px solid rgba(245,158,11,.2)}
+.badge-live{background:rgba(239,68,68,.15);color:#fc8181;border:1px solid rgba(239,68,68,.3);animation:pulse 1.5s infinite}
+.badge-alert{background:rgba(245,158,11,.12);color:#fbbf24;border:1px solid rgba(245,158,11,.2)}
+.badge-fav{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.2)}
+.inj-row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px}
+.inj-row:last-child{border:none}
+.section-title{font-size:12px;font-weight:600;color:var(--text2);letter-spacing:.04em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.search-box{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 12px;color:var(--text);font-family:var(--font);font-size:13px;width:100%;outline:none}
+.search-box:focus{border-color:var(--blue)}
+.search-box::placeholder{color:var(--text3)}
+.loading{display:flex;align-items:center;justify-content:center;padding:3rem;gap:10px;color:var(--text2);font-size:13px}
+.spinner{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.empty{text-align:center;padding:3rem;color:var(--text2);font-size:13px}
+.empty-icon{font-size:32px;margin-bottom:10px;opacity:.4}
+.plan-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px}
+.plan-row:last-child{border:none}
+.check-ok{color:var(--green);font-weight:600}
+.check-no{color:var(--red);font-weight:600}
+.check-warn{color:var(--amber);font-weight:600}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+@media(max-width:768px){
+  .sidebar{width:52px}
+  .sidebar-item span{display:none}
+  .metric-grid{grid-template-columns:1fr 1fr}
+  .game-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="sidebar">
+  <div class="logo"><div class="logo-dot"></div><span>Lumina Sports</span></div>
+  <div class="sidebar-section">농구</div>
+  <button class="sidebar-item active" onclick="selectLeague('basketball_nba',this)"><span class="dot" style="background:#F47321"></span><span>NBA</span></button>
+  <button class="sidebar-item" onclick="selectKBL(this)"><span class="dot" style="background:#e53e3e"></span><span>KBL</span></button>
+  <div class="sidebar-section">야구</div>
+  <button class="sidebar-item" onclick="selectLeague('baseball_mlb',this)"><span class="dot" style="background:#4a90d9"></span><span>MLB</span></button>
+  <button class="sidebar-item" onclick="selectLeague('baseball_kbo',this)"><span class="dot" style="background:#e53e3e"></span><span>KBO</span></button>
+  <button class="sidebar-item" onclick="selectLeague('baseball_npb',this)"><span class="dot" style="background:#38a169"></span><span>NPB</span></button>
+  <div class="sidebar-section">축구</div>
+  <button class="sidebar-item" onclick="selectLeague('soccer_korea_kleague1',this)"><span class="dot" style="background:#2563eb"></span><span>K리그1</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_epl',this)"><span class="dot" style="background:#9f1239"></span><span>EPL</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_spain_la_liga',this)"><span class="dot" style="background:#dc2626"></span><span>La Liga</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_germany_bundesliga',this)"><span class="dot" style="background:#1d4ed8"></span><span>Bundesliga</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_italy_serie_a',this)"><span class="dot" style="background:#1a56db"></span><span>Serie A</span></button>
+  <button class="sidebar-item" onclick="selectLeague('soccer_uefa_champs_league',this)"><span class="dot" style="background:#7c3aed"></span><span>UCL</span></button>
+  <div class="sidebar-section">도구</div>
+  <button class="sidebar-item" onclick="showPlan()"><span class="dot" style="background:#6b7280"></span><span>API 플랜</span></button>
+  <button class="sidebar-item" onclick="showPlayers()"><span class="dot" style="background:#6b7280"></span><span>선수 검색</span></button>
+  <div class="sidebar-bottom">
+    <div id="remainingInfo" style="font-size:11px;color:var(--text3)">잔여 요청 확인 중...</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <div><div class="topbar-title" id="topbarTitle">NBA</div><div class="topbar-sub" id="topbarSub">National Basketball Association</div></div>
+    <div class="topbar-spacer"></div>
+    <div id="tabRow" class="tab-row">
+      <button class="tab active" onclick="switchTab('games',this)">경기 배당</button>
+      <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>
+      <button class="tab" onclick="switchTab('quarter',this)">쿼터 배당</button>
+    </div>
+    <button class="refresh-btn" onclick="loadCurrent()"><span id="refreshIcon">↻</span> 새로고침</button>
+  </div>
+  <div class="content" id="content">
+    <div class="loading"><div class="spinner"></div>데이터 불러오는 중...</div>
+  </div>
+</div>
+</div>
+
+<script>
+const API = window.location.origin + '/api';
+let currentLeague = 'basketball_nba';
+let currentTab = 'games';
+let injuryCache = {};
+let openDetails = {};
+
+const LEAGUE_INFO = {
+  basketball_nba:{label:'NBA',full:'National Basketball Association',cat:'basketball'},
+  basketball_kbl:{label:'KBL',full:'Korean Basketball League',cat:'basketball'},
+  baseball_mlb:{label:'MLB',full:'Major League Baseball',cat:'baseball'},
+  baseball_kbo:{label:'KBO',full:'Korean Baseball Organization',cat:'baseball'},
+  baseball_npb:{label:'NPB',full:'Nippon Professional Baseball',cat:'baseball'},
+  soccer_korea_kleague1:{label:'K리그1',full:'Korea K League 1',cat:'soccer'},
+  soccer_epl:{label:'EPL',full:'English Premier League',cat:'soccer'},
+  soccer_spain_la_liga:{label:'La Liga',full:'Spanish La Liga',cat:'soccer'},
+  soccer_germany_bundesliga:{label:'Bundesliga',full:'German Bundesliga',cat:'soccer'},
+  soccer_italy_serie_a:{label:'Serie A',full:'Italian Serie A',cat:'soccer'},
+  soccer_uefa_champs_league:{label:'UCL',full:'UEFA Champions League',cat:'soccer'},
+};
+
+function removeVig(prices){
+  const imp=prices.map(p=>1/p);
+  const total=imp.reduce((a,b)=>a+b,0);
+  return imp.map(i=>+(i/total*100).toFixed(1));
+}
+
+function formatTime(iso){
+  if(!iso)return'';
+  const d=new Date(iso),now=new Date();
+  const diff=d-now;
+  if(diff<0)return'진행 중';
+  if(diff<3600000)return`${Math.floor(diff/60000)}분 후`;
+  if(diff<86400000)return`오늘 ${d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}`;
+  const tm=new Date(now);tm.setDate(tm.getDate()+1);
+  if(d.toDateString()===tm.toDateString())return`내일 ${d.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}`;
+  return d.toLocaleDateString('ko-KR',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+function shortName(n){if(!n)return'';const p=n.split(' ');return p.length>2?p.slice(-2).join(' '):n;}
+function setContent(h){document.getElementById('content').innerHTML=h;}
+
+const NBA_ABBR={"Atlanta Hawks":"ATL","Boston Celtics":"BOS","Brooklyn Nets":"BKN","Charlotte Hornets":"CHA","Chicago Bulls":"CHI","Cleveland Cavaliers":"CLE","Dallas Mavericks":"DAL","Denver Nuggets":"DEN","Detroit Pistons":"DET","Golden State Warriors":"GSW","Houston Rockets":"HOU","Indiana Pacers":"IND","LA Clippers":"LAC","Los Angeles Lakers":"LAL","Memphis Grizzlies":"MEM","Miami Heat":"MIA","Milwaukee Bucks":"MIL","Minnesota Timberwolves":"MIN","New Orleans Pelicans":"NOP","New York Knicks":"NYK","Oklahoma City Thunder":"OKC","Orlando Magic":"ORL","Philadelphia 76ers":"PHI","Phoenix Suns":"PHX","Portland Trail Blazers":"POR","Sacramento Kings":"SAC","San Antonio Spurs":"SAS","Toronto Raptors":"TOR","Utah Jazz":"UTA","Washington Wizards":"WAS"};
+function abbr(name){return NBA_ABBR[name]||(name||'').split(' ').pop().slice(0,3).toUpperCase();}
+
+function buildInjuryMap(data){
+  const map={};
+  (data?.injuries||[]).forEach(t=>{
+    const team=t?.team?.displayName||'';
+    const ab=abbr(team);
+    const players=(t?.injuries||[]).map(inj=>{
+      const s=(inj?.status||'').toLowerCase();
+      let status='q';
+      if(s.includes('out'))status='out';
+      else if(s.includes('day-to-day')||s.includes('dtd'))status='dtd';
+      return{name:inj?.athlete?.displayName||'Unknown',pos:inj?.athlete?.position?.abbreviation||'',status,detail:inj?.details?.fantasyStatus?.description||inj?.status||''};
+    });
+    if(players.length)map[ab]=players;
+  });
+  return map;
+}
+
+// ── Sidebar / League ────────────────────────────────────────────────────────
+function selectLeague(key,btn){
+  currentLeague=key;currentTab='games';
+  document.querySelectorAll('.sidebar-item').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const info=LEAGUE_INFO[key];
+  document.getElementById('topbarTitle').textContent=info.label;
+  document.getElementById('topbarSub').textContent=info.full;
+  const isBball=info.cat==='basketball';
+  document.getElementById('tabRow').innerHTML=`
+    <button class="tab active" onclick="switchTab('games',this)">경기 배당</button>
+    <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>
+    ${isBball?'<button class="tab" onclick="switchTab(\'quarter\',this)">쿼터 배당</button>':''}`;
+  loadCurrent();
+}
+
+function switchTab(tab,btn){
+  currentTab=tab;
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  loadCurrent();
+}
+
+async function loadCurrent(){
+  if(currentLeague==='__kbl__')return;
+  const icon=document.getElementById('refreshIcon');
+  icon.style.animation='spin .7s linear infinite';
+  try{
+    if(currentTab==='games')await loadGames();
+    else if(currentTab==='injuries')await loadInjuries();
+    else if(currentTab==='quarter')await loadQuarter();
+  }finally{icon.style.animation='';}
+}
+
+// ── Games ─────────────────────────────────────────────────────────────────
+async function loadGames(){
+  setContent('<div class="loading"><div class="spinner"></div>배당 데이터 불러오는 중...</div>');
+  try{
+    const res=await fetch(`${API}/odds/${currentLeague}?markets=h2h,totals,spreads`);
+    if(!res.ok)throw new Error(await res.text());
+    const data=await res.json();
+    if(data.remaining)document.getElementById('remainingInfo').textContent=`잔여 ${data.remaining}회`;
+
+    let injuries=injuryCache[currentLeague]||null;
+    if(!injuries){
+      try{const ir=await fetch(`${API}/espn/injuries/${currentLeague}`);
+        injuries=ir.ok?await ir.json():{injuries:[]};
+        injuryCache[currentLeague]=injuries;
+      }catch(e){injuries={injuries:[]};}
+    }
+    const injMap=buildInjuryMap(injuries);
+    const games=data.games||[];
+    const withOdds=games.filter(g=>g.bookmakers?.length>0);
+    const isSoccer=LEAGUE_INFO[currentLeague].cat==='soccer';
+
+    if(!withOdds.length){
+      setContent(`<div class="metric-grid">
+        <div class="metric-card"><div class="metric-label">전체 경기</div><div class="metric-val">${games.length}</div></div>
+        <div class="metric-card"><div class="metric-label">배당 있음</div><div class="metric-val" style="color:var(--amber)">0</div></div>
+      </div><div class="empty"><div class="empty-icon">📋</div>배당 데이터 없음<br><span style="font-size:12px;color:var(--text3)">시즌 오프이거나 해당 지역 배당이 없습니다</span></div>`);
+      return;
+    }
+
+    const outCnt=Object.values(injMap).flat().filter(p=>p.status==='out').length;
+    const qCnt=Object.values(injMap).flat().filter(p=>p.status!=='out').length;
+    const alertGames=withOdds.filter(g=>{
+      const ha=abbr(g.home_team),aa=abbr(g.away_team);
+      return (injMap[ha]||[]).some(p=>p.status==='out')||(injMap[aa]||[]).some(p=>p.status==='out');
+    });
+
+    let html=`<div class="metric-grid">
+      <div class="metric-card"><div class="metric-label">배당 경기</div><div class="metric-val" style="color:var(--blue)">${withOdds.length}</div><div class="metric-sub">경기</div></div>
+      <div class="metric-card"><div class="metric-label">OUT 선수</div><div class="metric-val" style="color:var(--red)">${outCnt}</div><div class="metric-sub">명 결장</div></div>
+      <div class="metric-card"><div class="metric-label">Q / DTD</div><div class="metric-val" style="color:var(--amber)">${qCnt}</div><div class="metric-sub">명 불투명</div></div>
+      <div class="metric-card"><div class="metric-label">주목 경기</div><div class="metric-val" style="color:var(--amber)">${alertGames.length}</div><div class="metric-sub">결장자 있음</div></div>
+    </div>
+    <div class="section-title"><span style="width:6px;height:6px;border-radius:50%;background:var(--blue);display:inline-block"></span>경기 목록 <span style="font-size:10px;color:var(--text3);font-weight:400">카드 클릭 → 상세 배당</span></div>
+    <div class="game-grid">`;
+    withOdds.forEach(g=>{html+=renderGameCard(g,injMap,isSoccer);});
+    html+='</div>';
+    setContent(html);
+  }catch(e){
+    setContent(`<div class="empty"><div class="empty-icon">⚠️</div>오류: ${e.message}</div>`);
+  }
+}
+
+function renderGameCard(g,injMap,isSoccer){
+  const bm=g.bookmakers?.[0];
+  const h2hMkt=bm?.markets?.find(m=>m.key==='h2h');
+  if(!h2hMkt?.outcomes?.length)return'';
+
+  const outs=h2hMkt.outcomes;
+  const hp=outs.find(o=>o.name===g.home_team)?.price;
+  const ap=outs.find(o=>o.name===g.away_team)?.price;
+  const dp=outs.find(o=>o.name==='Draw')?.price;
+
+  let homePct=50,awayPct=50,drawPct=null;
+  if(hp&&ap){
+    const prices=dp?[hp,ap,dp]:[hp,ap];
+    const probs=removeVig(prices);
+    homePct=probs[0];awayPct=probs[1];
+    if(dp)drawPct=probs[2];
+  }
+  const homeFav=homePct>awayPct&&homePct>(drawPct||0);
+  const awayFav=awayPct>homePct&&awayPct>(drawPct||0);
+  const isLive=new Date(g.commence_time)<=new Date();
+
+  // Totals
+  const totalsMkt=bm?.markets?.find(m=>m.key==='totals');
+  const over=totalsMkt?.outcomes?.find(o=>o.name==='Over');
+  const under=totalsMkt?.outcomes?.find(o=>o.name==='Under');
+  const totalLine=over?.point||null;
+  let overPct=null,underPct=null;
+  if(over&&under){const[op,up]=removeVig([over.price,under.price]);overPct=op;underPct=up;}
+
+  // Spreads
+  const spreadMkt=bm?.markets?.find(m=>m.key==='spreads');
+  const homeSpread=spreadMkt?.outcomes?.find(o=>o.name===g.home_team);
+
+  const ha=abbr(g.home_team),aa=abbr(g.away_team);
+  const homeInj=injMap[ha]||[];
+  const awayInj=injMap[aa]||[];
+  const homeOuts=homeInj.filter(p=>p.status==='out').length;
+  const awayOuts=awayInj.filter(p=>p.status==='out').length;
+  const homeQ=homeInj.filter(p=>p.status!=='out').length;
+  const awayQ=awayInj.filter(p=>p.status!=='out').length;
+  const hasAlert=homeOuts>0||awayOuts>0;
+  const gid=g.id;
+  const isNBA=currentLeague==='basketball_nba';
+
+  const injBadge=(o,q)=>{
+    let b='';
+    if(o)b+=`<span class="badge badge-out" style="margin-right:3px">OUT ${o}</span>`;
+    if(q)b+=`<span class="badge badge-q">Q ${q}</span>`;
+    return b||'<span style="font-size:11px;color:var(--text3)">이상없음</span>';
+  };
+
+  return `<div class="game-card" id="card-${gid}" onclick="toggleDetail('${gid}','${g.home_team.replace(/'/g,"\\'")}','${g.away_team.replace(/'/g,"\\'")}')">
+    <div class="game-meta">
+      <span class="game-time">${formatTime(g.commence_time)}</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        ${isLive?'<span class="badge badge-live">LIVE</span>':''}
+        ${hasAlert?'<span class="badge badge-alert">주목</span>':''}
+        ${homeFav?`<span class="badge badge-fav">${shortName(g.home_team)} 유리</span>`:awayFav?`<span class="badge badge-fav">${shortName(g.away_team)} 유리</span>`:''}
+        <span style="font-size:10px;color:var(--text3)">${bm?.title||''}</span>
+      </div>
+    </div>
+    <div class="game-teams">
+      <div>
+        <div class="team-name">${shortName(g.home_team)}</div>
+        <div class="team-prob" style="color:${homeFav?'var(--blue)':'var(--text2)'}">${homePct}%</div>
+        <div class="team-odds">${hp?`배당 ${hp.toFixed(2)}`:''}</div>
+        <div style="margin-top:6px">${injBadge(homeOuts,homeQ)}</div>
+      </div>
+      <div class="vs-text">
+        ${isSoccer&&drawPct?`<div>무</div><div style="font-size:15px;font-weight:600;color:var(--text2)">${drawPct}%</div><div style="font-size:10px">${dp?dp.toFixed(2):''}</div>`:'<div>vs</div>'}
+      </div>
+      <div class="team-away">
+        <div class="team-name">${shortName(g.away_team)}</div>
+        <div class="team-prob" style="color:${awayFav?'var(--blue)':'var(--text2)'}">${awayPct}%</div>
+        <div class="team-odds">${ap?`배당 ${ap.toFixed(2)}`:''}</div>
+        <div style="margin-top:6px;text-align:right">${injBadge(awayOuts,awayQ)}</div>
+      </div>
+    </div>
+    <div class="prob-bar">
+      <div class="prob-home" style="width:${homePct}%"></div>
+      ${isSoccer&&drawPct?`<div class="prob-draw" style="width:${drawPct}%"></div>`:''}
+      <div class="prob-away"></div>
+    </div>
+    <div class="bet-row">
+      ${totalLine!==null?`
+        <div class="bet-chip">
+          <span class="lbl">O/U</span>
+          <span class="val">${totalLine}</span>
+        </div>
+        ${overPct!==null?`
+        <div class="bet-chip over"><span class="lbl">OVER</span><span class="val">${overPct}% · ${over.price.toFixed(2)}</span></div>
+        <div class="bet-chip under"><span class="lbl">UNDER</span><span class="val">${underPct}% · ${under.price.toFixed(2)}</span></div>`:''}
+      `:''}
+      ${homeSpread?`
+        <div class="bet-chip">
+          <span class="lbl">스프레드</span>
+          <span class="val">${homeSpread.point>0?'+':''}${homeSpread.point} (${homeSpread.price.toFixed(2)})</span>
+        </div>`:''}
+    </div>
+    <div class="detail-panel" id="detail-${gid}">
+      <div class="loading" style="padding:1rem"><div class="spinner"></div>상세 배당 불러오는 중...</div>
+    </div>
+  </div>`;
+}
+
+async function toggleDetail(gid,homeTeam,awayTeam){
+  const card=document.getElementById(`card-${gid}`);
+  const panel=document.getElementById(`detail-${gid}`);
+  if(!panel)return;
+  const isOpen=panel.classList.contains('open');
+  if(isOpen){
+    panel.classList.remove('open');
+    card.classList.remove('open');
+    return;
+  }
+  panel.classList.add('open');
+  card.classList.add('open');
+  if(panel.dataset.loaded)return;
+  panel.dataset.loaded='1';
+  if(currentLeague==='basketball_nba'){
+    await loadNBADetail(gid,homeTeam,awayTeam,panel);
+  } else {
+    renderBasicDetail(gid,homeTeam,awayTeam,panel);
+  }
+}
+
+async function loadNBADetail(gid,homeTeam,awayTeam,panel){
+  try{
+    const res=await fetch(`${API}/nba/game/${gid}`);
+    if(!res.ok){
+      const err=await res.json().catch(()=>({}));
+      panel.innerHTML=`<div style="font-size:12px;color:var(--text3);padding:8px">${err.detail||'상세 데이터 없음 — Pro 플랜 필요할 수 있음'}</div>`;
+      return;
+    }
+    const data=await res.json();
+    if(data.remaining)document.getElementById('remainingInfo').textContent=`잔여 ${data.remaining}회`;
+
+    let html='';
+    const hKeys=['h1','h2'];
+    const hasHalf=hKeys.some(h=>data.quarters[`h2h_${h}`]?.length>0);
+
+    // 전/후반 배당
+    if(hasHalf){
+      html+=`<div style="margin-bottom:14px">
+        <div class="section-title" style="margin-bottom:8px">⏱ 전/후반 승패</div>
+        <div class="half-grid">`;
+      hKeys.forEach(h=>{
+        const outs=data.quarters[`h2h_${h}`]||[];
+        if(!outs.length){html+=`<div class="half-card"><div class="half-label">${h==='h1'?'1H 전반':'2H 후반'}</div><div style="color:var(--text3);font-size:11px">데이터 없음</div></div>`;return;}
+        const prices=outs.map(o=>o.price);
+        const probs=removeVig(prices);
+        html+=`<div class="half-card"><div class="half-label">${h==='h1'?'1H 전반':'2H 후반'}</div>
+          ${outs.map((o,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+            <span style="font-size:11px;color:var(--text2)">${(o.name||'').split(' ').pop()}</span>
+            <div style="text-align:right"><span style="font-size:14px;font-weight:600;color:${probs[i]>52?'var(--blue)':'var(--text)'}">${probs[i]}%</span>
+            <span style="font-size:10px;color:var(--text3);margin-left:4px">${o.price?.toFixed(2)}</span></div>
+          </div>`).join('')}
+        </div>`;
+      });
+      html+=`</div>`;
+
+      // 전/후반 U/O
+      const hasTotalHalf=hKeys.some(h=>data.quarters[`totals_${h}`]?.length>0);
+      if(hasTotalHalf){
+        html+=`<div style="margin-top:10px"><div class="section-title" style="margin-bottom:8px">📊 전/후반 언오버</div><div class="half-grid">`;
+        hKeys.forEach(h=>{
+          const outs=data.quarters[`totals_${h}`]||[];
+          const ov=outs.find(o=>o.name==='Over');
+          const un=outs.find(o=>o.name==='Under');
+          if(!ov){html+=`<div class="half-card"><div class="half-label">${h==='h1'?'전반':'후반'} O/U</div><div style="color:var(--text3);font-size:11px">-</div></div>`;return;}
+          const line=ov.point||0;
+          const[op,up]=removeVig([ov.price,un?.price||2]);
+          html+=`<div class="half-card">
+            <div class="half-label">${h==='h1'?'전반':'후반'} O/U ${line}</div>
+            <div style="display:flex;justify-content:space-between;margin-top:4px">
+              <span style="color:var(--green);font-size:13px;font-weight:600">O ${op}%</span>
+              <span style="color:var(--red);font-size:13px;font-weight:600">U ${up}%</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:2px">
+              <span style="font-size:10px;color:var(--text3)">${ov.price?.toFixed(2)}</span>
+              <span style="font-size:10px;color:var(--text3)">${un?.price?.toFixed(2)||'-'}</span>
+            </div>
+          </div>`;
+        });
+        html+=`</div></div>`;
+      }
+      html+=`</div>`;
+    }
+
+    // 부상자 섹션
+    const injMap=injuryCache[currentLeague]?buildInjuryMap(injuryCache[currentLeague]):{};
+    const ha=abbr(homeTeam),aa=abbr(awayTeam);
+    const homeInj=injMap[ha]||[];
+    const awayInj=injMap[aa]||[];
+    html+=`<div style="margin-bottom:14px">
+      <div class="section-title">🏥 부상/결장</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><div style="font-size:11px;color:var(--text2);margin-bottom:6px">홈 · ${ha}</div>
+          ${homeInj.length?homeInj.slice(0,5).map(p=>`<div class="inj-row"><span style="font-size:11px;color:var(--text3);width:22px">${p.pos}</span><span style="flex:1;font-size:12px">${p.name}</span><span class="badge badge-${p.status}">${p.status.toUpperCase()}</span></div>`).join(''):'<div style="font-size:12px;color:var(--text3)">부상 없음</div>'}
+        </div>
+        <div><div style="font-size:11px;color:var(--text2);margin-bottom:6px">원정 · ${aa}</div>
+          ${awayInj.length?awayInj.slice(0,5).map(p=>`<div class="inj-row"><span style="font-size:11px;color:var(--text3);width:22px">${p.pos}</span><span style="flex:1;font-size:12px">${p.name}</span><span class="badge badge-${p.status}">${p.status.toUpperCase()}</span></div>`).join(''):'<div style="font-size:12px;color:var(--text3)">부상 없음</div>'}
+        </div>
+      </div>
+    </div>`;
+
+    // 선수 Props
+    if(data.props?.length>0){
+      const mktLabel={player_points:'득점',player_rebounds:'리바운드',player_assists:'어시스트',player_threes:'3점슛'};
+      const byMkt={};
+      data.props.forEach(p=>{
+        const mk=p.market||'player_points';
+        if(!byMkt[mk])byMkt[mk]=[];
+        byMkt[mk].push(p);
+      });
+
+      const mktKeys=Object.keys(byMkt);
+      const tabId=`props-tabs-${gid}`;
+      const contentId=`props-content-${gid}`;
+
+      html+=`<div><div class="section-title">🎯 선수 U/O Props</div>
+        <div class="props-tabs" id="${tabId}">
+          ${mktKeys.map((mk,i)=>`<button class="props-tab${i===0?' active':''}" onclick="switchPropsTab('${gid}','${mk}',this)">${mktLabel[mk]||mk}</button>`).join('')}
+        </div>
+        <div id="${contentId}">
+          ${renderPropsTable(byMkt[mktKeys[0]]||[])}
+        </div>
+      </div>`;
+
+      // 데이터 저장
+      html+=`<script>window._propsData_${gid}=${JSON.stringify(byMkt)}<\/script>`;
+    } else {
+      html+=`<div style="font-size:12px;color:var(--text3);padding:8px 0;text-align:center">선수 Props 데이터 없음 — 경기 당일부터 생성됩니다</div>`;
+    }
+
+    if(!hasHalf&&!data.props?.length){
+      html=`<div style="font-size:12px;color:var(--text3);padding:8px">상세 배당 없음 — 경기 시작 전날부터 생성됩니다</div>`;
+    }
+
+    panel.innerHTML=html;
+  }catch(e){
+    panel.innerHTML=`<div style="font-size:12px;color:var(--text3);padding:8px">오류: ${e.message}</div>`;
+  }
+}
+
+function renderPropsTable(players){
+  if(!players.length)return'<div style="font-size:12px;color:var(--text3);padding:8px">데이터 없음</div>';
+  return`<table class="props-table">
+    <thead><tr>
+      <th>선수</th><th>라인</th>
+      <th>OVER%</th><th style="font-size:10px;color:var(--text3)">배당</th>
+      <th>UNDER%</th><th style="font-size:10px;color:var(--text3)">배당</th>
+      <th>추천</th><th>신뢰도</th>
+    </tr></thead>
+    <tbody>
+      ${players.slice(0,15).map(p=>{
+        const over=p.over||0,under=p.under||0;
+        let op=50,up=50;
+        if(over&&under){const[a,b]=removeVig([over,under]);op=a;up=b;}
+        const isOver=p.recommendation==='over';
+        const conf=p.confidence||0;
+        const confColor=conf>60?'var(--green)':conf>55?'var(--amber)':'var(--text3)';
+        return`<tr>
+          <td style="font-weight:500">${p.name}</td>
+          <td style="color:var(--text2)">${p.line}</td>
+          <td style="color:var(--green);font-weight:600">${op}%</td>
+          <td style="color:var(--text3)">${over?over.toFixed(2):'-'}</td>
+          <td style="color:var(--red);font-weight:600">${up}%</td>
+          <td style="color:var(--text3)">${under?under.toFixed(2):'-'}</td>
+          <td class="${isOver?'rec-over':'rec-under'}">${isOver?'▲ OVER':'▼ UNDER'}</td>
+          <td style="font-weight:700;color:${confColor}">${conf}%</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
+}
+
+function switchPropsTab(gid,mk,btn){
+  document.querySelectorAll(`#props-tabs-${gid} .props-tab`).forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const data=window[`_propsData_${gid}`];
+  if(data){
+    document.getElementById(`props-content-${gid}`).innerHTML=renderPropsTable(data[mk]||[]);
+  }
+}
+
+function renderBasicDetail(gid,homeTeam,awayTeam,panel){
+  const injMap=injuryCache[currentLeague]?buildInjuryMap(injuryCache[currentLeague]):{};
+  const ha=abbr(homeTeam),aa=abbr(awayTeam);
+  const homeInj=injMap[ha]||[];
+  const awayInj=injMap[aa]||[];
+  panel.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div><div style="font-size:11px;color:var(--text2);margin-bottom:6px">홈 · ${ha} 부상</div>
+      ${homeInj.length?homeInj.slice(0,5).map(p=>`<div class="inj-row"><span style="font-size:11px;color:var(--text3);width:22px">${p.pos}</span><span style="flex:1;font-size:12px">${p.name}</span><span class="badge badge-${p.status}">${p.status.toUpperCase()}</span></div>`).join(''):'<div style="font-size:12px;color:var(--text3)">부상 없음</div>'}
+    </div>
+    <div><div style="font-size:11px;color:var(--text2);margin-bottom:6px">원정 · ${aa} 부상</div>
+      ${awayInj.length?awayInj.slice(0,5).map(p=>`<div class="inj-row"><span style="font-size:11px;color:var(--text3);width:22px">${p.pos}</span><span style="flex:1;font-size:12px">${p.name}</span><span class="badge badge-${p.status}">${p.status.toUpperCase()}</span></div>`).join(''):'<div style="font-size:12px;color:var(--text3)">부상 없음</div>'}
+    </div>
+  </div>`;
+}
+
+// ── Injuries ──────────────────────────────────────────────────────────────
+async function loadInjuries(){
+  setContent('<div class="loading"><div class="spinner"></div>부상 리포트 불러오는 중...</div>');
+  try{
+    const res=await fetch(`${API}/espn/injuries/${currentLeague}`);
+    const data=res.ok?await res.json():{injuries:[]};
+    injuryCache[currentLeague]=data;
+    const injMap=buildInjuryMap(data);
+    const teams=Object.entries(injMap);
+    const allP=teams.flatMap(([,ps])=>ps);
+    if(!teams.length){setContent('<div class="empty"><div class="empty-icon">✅</div>부상 리포트 없음</div>');return;}
+    const outs=allP.filter(p=>p.status==='out').length;
+    const qs=allP.filter(p=>p.status!=='out').length;
+    let html=`<div class="metric-grid">
+      <div class="metric-card"><div class="metric-label">OUT</div><div class="metric-val" style="color:var(--red)">${outs}</div></div>
+      <div class="metric-card"><div class="metric-label">Q/DTD</div><div class="metric-val" style="color:var(--amber)">${qs}</div></div>
+      <div class="metric-card"><div class="metric-label">영향 팀</div><div class="metric-val">${teams.length}</div></div>
+      <div class="metric-card"><div class="metric-label">전체 부상</div><div class="metric-val">${allP.length}</div></div>
+    </div>
+    <input class="search-box" style="margin-bottom:14px" placeholder="팀 검색..." oninput="filterInj(this.value)">
+    <div id="injuryList">`;
+    teams.forEach(([team,players])=>{
+      const o=players.filter(p=>p.status==='out').length;
+      const q=players.filter(p=>p.status!=='out').length;
+      html+=`<div class="card" style="margin-bottom:10px" data-team="${team}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:32px;height:32px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">${team}</div>
+          </div>
+          <div style="display:flex;gap:4px">
+            ${o>0?`<span class="badge badge-out">OUT ${o}</span>`:''}
+            ${q>0?`<span class="badge badge-q">Q/DTD ${q}</span>`:''}
+          </div>
+        </div>
+        ${players.map(p=>`<div class="inj-row">
+          <span style="font-size:11px;color:var(--text3);width:26px">${p.pos}</span>
+          <span style="flex:1;font-size:13px">${p.name}</span>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="badge badge-${p.status}">${p.status.toUpperCase()}</span>
+            <span style="font-size:11px;color:var(--text3);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.detail}</span>
+          </div>
+        </div>`).join('')}
+      </div>`;
+    });
+    html+='</div>';
+    setContent(html);
+  }catch(e){setContent(`<div class="empty"><div class="empty-icon">⚠️</div>${e.message}</div>`);}
+}
+
+function filterInj(q){
+  document.querySelectorAll('#injuryList .card').forEach(el=>{
+    el.style.display=(el.dataset.team||'').toLowerCase().includes(q.toLowerCase())?'':'none';
+  });
+}
+
+// ── Quarter Odds ──────────────────────────────────────────────────────────
+async function loadQuarter(){
+  setContent('<div class="loading"><div class="spinner"></div>쿼터 배당 불러오는 중...</div>');
+  try{
+    const res=await fetch(`${API}/odds/${currentLeague}?markets=h2h_h1,h2h_h2,totals_h1,totals_h2`);
+    if(!res.ok)throw new Error(await res.text());
+    const data=await res.json();
+    const games=(data.games||[]).filter(g=>g.bookmakers?.length>0);
+    if(!games.length){setContent('<div class="empty"><div class="empty-icon">📋</div>쿼터 배당 데이터 없음</div>');return;}
+    let html='<div style="display:flex;flex-direction:column;gap:14px">';
+    games.forEach(g=>{
+      const bm=g.bookmakers?.[0];
+      if(!bm)return;
+      html+=`<div class="card"><div style="font-size:13px;font-weight:600;margin-bottom:12px">${shortName(g.home_team)} vs ${shortName(g.away_team)} <span style="font-size:11px;color:var(--text2);font-weight:400">${formatTime(g.commence_time)}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">`;
+      ['h1','h2'].forEach(h=>{
+        const mk=bm.markets?.find(m=>m.key===`h2h_${h}`);
+        if(mk){
+          const hp2=mk.outcomes?.find(o=>o.name===g.home_team)?.price;
+          const ap2=mk.outcomes?.find(o=>o.name===g.away_team)?.price;
+          let pr=['—','—'];
+          if(hp2&&ap2){const[a,b]=removeVig([hp2,ap2]);pr=[a+'%',b+'%'];}
+          html+=`<div style="background:var(--bg3);border-radius:var(--radius-sm);padding:10px;text-align:center">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:6px">${h==='h1'?'전반':'후반'} 승패</div>
+            <div style="display:flex;justify-content:space-around">
+              <span style="font-size:14px;font-weight:600;color:var(--blue)">${pr[0]}</span>
+              <span style="font-size:11px;color:var(--text3)">vs</span>
+              <span style="font-size:14px;font-weight:600;color:var(--red)">${pr[1]}</span>
+            </div>
+          </div>`;
+        }
+        const tmk=bm.markets?.find(m=>m.key===`totals_${h}`);
+        if(tmk){
+          const ov2=tmk.outcomes?.find(o=>o.name==='Over');
+          const un2=tmk.outcomes?.find(o=>o.name==='Under');
+          if(ov2){
+            const line=ov2.point;
+            const[op,up]=removeVig([ov2.price,un2?.price||2]);
+            html+=`<div style="background:var(--bg3);border-radius:var(--radius-sm);padding:10px;text-align:center">
+              <div style="font-size:10px;color:var(--text3);margin-bottom:6px">${h==='h1'?'전반':'후반'} O/U ${line}</div>
+              <div style="display:flex;justify-content:space-around">
+                <span style="font-size:13px;font-weight:600;color:var(--green)">O ${op}%</span>
+                <span style="font-size:13px;font-weight:600;color:var(--red)">U ${up}%</span>
+              </div>
+            </div>`;
+          }
+        }
+      });
+      html+=`</div></div>`;
+    });
+    html+='</div>';
+    setContent(html);
+  }catch(e){setContent(`<div class="empty"><div class="empty-icon">⚠️</div>${e.message}</div>`);}
+}
+
+// ── KBL ───────────────────────────────────────────────────────────────────
+function selectKBL(btn){
+  currentLeague='__kbl__';
+  document.querySelectorAll('.sidebar-item').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('topbarTitle').textContent='KBL';
+  document.getElementById('topbarSub').textContent='한국프로농구';
+  document.getElementById('tabRow').innerHTML=`
+    <button class="tab active" onclick="switchKBLTab('schedule',this)">경기 결과</button>
+    <button class="tab" onclick="switchKBLTab('standings',this)">팀 순위</button>
+    <button class="tab" onclick="switchKBLTab('leaders',this)">선수 기록</button>`;
+  loadKBLSchedule();
+}
+
+function switchKBLTab(tab,btn){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  if(tab==='schedule')loadKBLSchedule();
+  else if(tab==='standings')loadKBLStandings();
+  else loadKBLLeaders();
+}
+
+async function loadKBLSchedule(){
+  setContent('<div class="loading"><div class="spinner"></div>KBL 경기 불러오는 중...</div>');
+  try{
+    const today=new Date().toISOString().slice(0,10).replace(/-/g,'');
+    const res=await fetch(`${API}/kbl/schedule?date=${today}`);
+    if(!res.ok){const err=await res.json().catch(()=>({}));setContent(`<div class="empty"><div class="empty-icon">⚠️</div>KBL 오류<br><span style="font-size:12px;color:var(--text3)">${err.detail||''}</span></div>`);return;}
+    const data=await res.json();
+    const games=data.games||[];
+    let html=`<div style="font-size:11px;color:var(--text3);margin-bottom:14px">소스: ${data.source||''} · ${today}</div>`;
+    if(!games.length){html+='<div class="empty"><div class="empty-icon">📋</div>오늘 경기 없음</div>';}
+    else{html+='<div style="display:flex;flex-direction:column;gap:10px">';games.forEach(g=>{html+=renderKBLCard(g);});html+='</div>';}
+    setContent(html);
+  }catch(e){setContent(`<div class="empty"><div class="empty-icon">⚠️</div>${e.message}</div>`);}
+}
+
+function renderKBLCard(g){
+  const isFinal=g.status==='final',isLive=g.status==='live';
+  const homeWin=isFinal&&g.home_score>g.away_score,awayWin=isFinal&&g.away_score>g.home_score;
+  return`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:11px;color:var(--text2)">${g.venue||''}</span>
+      <div style="display:flex;gap:4px">
+        ${isLive?'<span class="badge badge-live">LIVE</span>':''}
+        ${isFinal?'<span class="badge" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.2)">종료</span>':'<span class="badge badge-q">예정</span>'}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 80px 1fr;align-items:center;gap:8px">
+      <div><div style="font-size:14px;font-weight:${homeWin?600:400};color:${homeWin?'var(--text)':'var(--text2)'}">${g.home_team||''}</div>
+        <div style="font-size:30px;font-weight:700;margin-top:4px">${g.home_score??'-'}</div></div>
+      <div style="text-align:center;font-size:12px;color:var(--text3)">vs</div>
+      <div style="text-align:right"><div style="font-size:14px;font-weight:${awayWin?600:400};color:${awayWin?'var(--text)':'var(--text2)'}">${g.away_team||''}</div>
+        <div style="font-size:30px;font-weight:700;margin-top:4px">${g.away_score??'-'}</div></div>
+    </div>
+  </div>`;
+}
+
+async function loadKBLStandings(){
+  setContent('<div class="loading"><div class="spinner"></div>KBL 순위...</div>');
+  try{
+    const res=await fetch(`${API}/kbl/standings`);
+    if(!res.ok)throw new Error(await res.text());
+    const data=await res.json();
+    const s=data.standings||[];
+    if(!s.length){setContent('<div class="empty">순위 없음</div>');return;}
+    let html=`<div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="border-bottom:1px solid var(--border)">
+        <th style="padding:10px 14px;text-align:left;color:var(--text2);font-size:11px">순위</th>
+        <th style="padding:10px 14px;text-align:left;color:var(--text2);font-size:11px">팀</th>
+        <th style="padding:10px 14px;text-align:center;color:var(--text2);font-size:11px">승</th>
+        <th style="padding:10px 14px;text-align:center;color:var(--text2);font-size:11px">패</th>
+        <th style="padding:10px 14px;text-align:center;color:var(--text2);font-size:11px">승률</th>
+      </tr></thead><tbody>`;
+    s.forEach(t=>{html+=`<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:10px 14px;color:${t.rank===1?'var(--blue)':'var(--text)'};font-weight:${t.rank<=1?700:400}">${t.rank}</td>
+      <td style="padding:10px 14px;font-weight:500">${t.team}</td>
+      <td style="padding:10px 14px;text-align:center;color:var(--green)">${t.wins}</td>
+      <td style="padding:10px 14px;text-align:center;color:var(--red)">${t.losses}</td>
+      <td style="padding:10px 14px;text-align:center">${typeof t.win_pct==='number'?t.win_pct.toFixed(3):t.win_pct}</td>
+    </tr>`;});
+    html+='</tbody></table></div>';
+    setContent(html);
+  }catch(e){setContent(`<div class="empty">⚠️ ${e.message}</div>`);}
+}
+
+async function loadKBLLeaders(){
+  setContent('<div class="loading"><div class="spinner"></div>KBL 선수 기록...</div>');
+  try{
+    const res=await fetch(`${API}/kbl/leaders`);
+    if(!res.ok)throw new Error(await res.text());
+    const data=await res.json();
+    const renderList=(title,list)=>{
+      if(!list?.length)return`<div class="card"><div class="section-title">${title}</div><div style="color:var(--text3);font-size:13px">없음</div></div>`;
+      return`<div class="card"><div class="section-title">${title}</div>
+        ${list.slice(0,8).map((p,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:13px;font-weight:700;color:${i===0?'var(--blue)':'var(--text3)'};width:20px">${i+1}</span>
+          <span style="flex:1;font-size:13px;font-weight:${i===0?600:400}">${p.name}</span>
+          <span style="font-size:11px;color:var(--text3)">${p.team}</span>
+          <span style="font-size:16px;font-weight:700;color:${i===0?'var(--blue)':'var(--text)'}">${parseFloat(p.value||0).toFixed(1)}</span>
+        </div>`).join('')}
+      </div>`;
+    };
+    setContent(`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      ${renderList('득점 PPG',data.points)}
+      ${renderList('리바운드 RPG',data.rebounds)}
+      ${renderList('어시스트 APG',data.assists)}
+    </div>`);
+  }catch(e){setContent(`<div class="empty">⚠️ ${e.message}</div>`);}
+}
+
+// ── Plan ──────────────────────────────────────────────────────────────────
+async function showPlan(){
+  document.querySelectorAll('.sidebar-item').forEach(b=>b.classList.remove('active'));
+  document.getElementById('topbarTitle').textContent='API 플랜';
+  document.getElementById('topbarSub').textContent='The Odds API';
+  document.getElementById('tabRow').innerHTML='';
+  setContent('<div class="loading"><div class="spinner"></div>플랜 확인 중...</div>');
+  try{
+    const res=await fetch(`${API}/plan`);
+    if(!res.ok)throw new Error(await res.text());
+    const d=await res.json();
+    const remaining=d.headers?.remaining,used=d.headers?.used;
+    const propOk=d.markets?.player_props?.available,qOk=d.markets?.quarter_markets?.available;
+    if(remaining)document.getElementById('remainingInfo').textContent=`잔여 ${remaining}회`;
+    setContent(`<div style="max-width:560px">
+      <div class="card" style="margin-bottom:16px">
+        <div class="section-title">API 사용 현황</div>
+        <div class="plan-row"><span>API Key</span><span style="font-family:monospace;font-size:12px;color:var(--text2)">${d.api_key_prefix}</span></div>
+        <div class="plan-row"><span>잔여 요청</span><span class="${parseInt(remaining||0)>50?'check-ok':'check-warn'}">${remaining||'확인불가'}회</span></div>
+        <div class="plan-row"><span>사용 요청</span><span>${used||'-'}회</span></div>
+        <div class="plan-row"><span>스포츠 종목</span><span>${d.sports_count}개</span></div>
+      </div>
+      <div class="card">
+        <div class="section-title">마켓 접근</div>
+        <div class="plan-row"><span>H2H · Totals · Spreads</span><span class="check-ok">✓ 사용 가능</span></div>
+        <div class="plan-row"><span>Player Props</span><span class="${propOk?'check-ok':'check-no'}">${propOk?'✓ 가능':'✗ Pro 플랜 필요'}</span></div>
+        <div class="plan-row"><span>하프 마켓 (H1/H2)</span><span class="${qOk?'check-ok':'check-no'}">${qOk?'✓ 가능':'✗ Pro 플랜 필요'}</span></div>
+      </div>
+    </div>`);
+  }catch(e){setContent(`<div class="empty">⚠️ ${e.message}</div>`);}
+}
+
+// ── Players ───────────────────────────────────────────────────────────────
+function showPlayers(){
+  document.querySelectorAll('.sidebar-item').forEach(b=>b.classList.remove('active'));
+  document.getElementById('topbarTitle').textContent='선수 스탯 검색';
+  document.getElementById('topbarSub').textContent='NBA · balldontlie';
+  document.getElementById('tabRow').innerHTML='';
+  setContent(`<div style="max-width:700px">
+    <div style="display:flex;gap:8px;margin-bottom:20px">
+      <input id="playerSearch" class="search-box" placeholder="선수 이름 검색 (예: LeBron, Curry)..." onkeydown="if(event.key==='Enter')searchPlayer()">
+      <button onclick="searchPlayer()" style="background:var(--blue);border:none;color:white;padding:7px 16px;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font);font-size:13px;font-weight:500;white-space:nowrap">검색</button>
+    </div>
+    <div id="playerResults"></div>
+  </div>`);
+}
+
+async function searchPlayer(){
+  const q=document.getElementById('playerSearch')?.value?.trim();
+  if(!q)return;
+  document.getElementById('playerResults').innerHTML='<div class="loading"><div class="spinner"></div>검색 중...</div>';
+  try{
+    const res=await fetch(`${API}/players/search?name=${encodeURIComponent(q)}`);
+    const data=await res.json();
+    const players=data.data||[];
+    if(!players.length){document.getElementById('playerResults').innerHTML='<div class="empty">검색 결과 없음</div>';return;}
+    let html='<div style="display:flex;flex-direction:column;gap:8px">';
+    players.forEach(p=>{html+=`<div class="card" style="cursor:pointer" onclick="loadPlayerStats(${p.id},'${p.first_name} ${p.last_name}')">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div><div style="font-size:14px;font-weight:600">${p.first_name} ${p.last_name}</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:2px">${p.position||'-'} · ${p.team?.full_name||'Free Agent'}</div></div>
+        <span style="font-size:11px;color:var(--text3)">클릭하여 스탯 보기 →</span>
+      </div></div>`;});
+    html+='</div>';
+    document.getElementById('playerResults').innerHTML=html;
+  }catch(e){document.getElementById('playerResults').innerHTML=`<div class="empty">오류: ${e.message}</div>`;}
+}
+
+async function loadPlayerStats(id,name){
+  document.getElementById('playerResults').innerHTML=`<div class="loading"><div class="spinner"></div>${name} 스탯 불러오는 중...</div>`;
+  try{
+    const[seasonRes,recentRes]=await Promise.all([fetch(`${API}/players/${id}/stats`),fetch(`${API}/players/${id}/recent?last_n=10`)]);
+    const seasonData=await seasonRes.json();
+    const recentData=await recentRes.json();
+    const avg=seasonData.data?.[0];
+    const recent=(recentData.data||[]).sort((a,b)=>new Date(b.game?.date||0)-new Date(a.game?.date||0));
+    const st=(lbl,val)=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text2)">${lbl}</span><span style="font-weight:600">${val!=null?parseFloat(val).toFixed(1):'—'}</span></div>`;
+    document.getElementById('playerResults').innerHTML=`
+      <button onclick="showPlayers()" style="background:none;border:none;color:var(--blue);cursor:pointer;font-size:12px;margin-bottom:16px;font-family:var(--font)">← 검색으로 돌아가기</button>
+      <div class="section-title">${name} — 2024-25 시즌 평균</div>
+      ${avg?`<div class="card" style="margin-bottom:16px">
+        ${st('득점 (PTS)',avg.pts)}${st('리바운드 (REB)',avg.reb)}${st('어시스트 (AST)',avg.ast)}${st('스틸 (STL)',avg.stl)}${st('블록 (BLK)',avg.blk)}${st('3점슛 (3PM)',avg.fg3m)}${st('출전시간 (MIN)',avg.min)}
+      </div>`:'<div class="empty">시즌 평균 없음</div>'}
+      ${recent.length?`<div class="section-title">최근 ${Math.min(recent.length,10)}경기</div>
+        <div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="padding:8px 10px;text-align:left;color:var(--text3)">날짜</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">PTS</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">REB</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">AST</th>
+            <th style="padding:8px 10px;text-align:center;color:var(--text3)">MIN</th>
+          </tr></thead><tbody>
+          ${recent.slice(0,10).map(g=>`<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+            <td style="padding:8px 10px;color:var(--text2)">${g.game?.date?.slice(0,10)||'-'}</td>
+            <td style="padding:8px 10px;text-align:center;font-weight:600;color:${(g.pts||0)>20?'var(--blue)':'var(--text)'}">${g.pts??'-'}</td>
+            <td style="padding:8px 10px;text-align:center">${g.reb??'-'}</td>
+            <td style="padding:8px 10px;text-align:center">${g.ast??'-'}</td>
+            <td style="padding:8px 10px;text-align:center;color:var(--text3)">${g.min||'-'}</td>
+          </tr>`).join('')}
+          </tbody></table></div>`:''}
+    `;
+  }catch(e){document.getElementById('playerResults').innerHTML=`<div class="empty">오류: ${e.message}</div>`;}
+}
+
+// Init
+loadGames();
+</script>
+</body>
+</html>
