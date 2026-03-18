@@ -1281,6 +1281,42 @@ async function showPicks(btn){
           });
         }
 
+        // 스프레드(핸디캡) 픽
+        if(spreads?.outcomes?.length>=2){
+          const homeSpread=spreads.outcomes.find(o=>o.name===g.home_team);
+          const awaySpread=spreads.outcomes.find(o=>o.name===g.away_team);
+          if(homeSpread&&awaySpread){
+            const[hsp,asp]=removeVig([homeSpread.price,awaySpread.price]);
+            const SPREAD_THRESHOLD=56;
+            const isFavHome=hsp>=asp;
+            const favSpreadPct=isFavHome?hsp:asp;
+            if(favSpreadPct>=SPREAD_THRESHOLD){
+              const favTeam=isFavHome?g.home_team:g.away_team;
+              const favSpreadVal=isFavHome?homeSpread.point:awaySpread.point;
+              const favOdds=isFavHome?homeSpread.price:awaySpread.price;
+              const outs=isFavHome?homeOuts:awayOuts;
+              let conf=favSpreadPct;
+              if(outs>0)conf-=outs*5;
+              if(conf<52)return;
+              const spreadStr=(favSpreadVal>0?'+':'')+favSpreadVal;
+              allPicks.push({
+                type:'ATS',typeLabel:'핸디캡',
+                league:info.label,
+                home:g.home_team,away:g.away_team,
+                time:gameTime,
+                pick:shortName(favTeam)+' '+spreadStr,
+                desc:shortName(favTeam)+' '+spreadStr+' 핸디 커버',
+                subDesc:'('+shortName(g.home_team)+' vs '+shortName(g.away_team)+')',
+                odds:favOdds,
+                rawConf:favSpreadPct,
+                conf:Math.min(Math.round(conf),90),
+                reason:favSpreadPct.toFixed(1)+'% ATS 확률'+(outs>0?' (결장 '+outs+'명 감점)':''),
+                alert:outs>0?'결장자 발생 시 재확인 필요':'',
+              });
+            }
+          }
+        }
+
         // O/U 픽
         if(totals?.outcomes?.length>=2){
           const over=totals.outcomes.find(o=>o.name==='Over');
@@ -1331,22 +1367,23 @@ async function showPicks(btn){
   const normal=top.filter(p=>p.conf<70);
 
   const confColor=(c)=>c>=75?'var(--green)':c>=65?'var(--amber)':'var(--text2)';
-  const typeColor=(t)=>t==='ML'?'rgba(59,130,246,.15)':t==='OU'?'rgba(16,185,129,.12)':'rgba(139,92,246,.12)';
-  const typeBorder=(t)=>t==='ML'?'rgba(59,130,246,.3)':t==='OU'?'rgba(16,185,129,.3)':'rgba(139,92,246,.3)';
-  const typeText=(t)=>t==='ML'?'var(--blue)':t==='OU'?'var(--green)':'var(--purple)';
+  const typeColor=(t)=>t==='ML'?'rgba(59,130,246,.15)':t==='OU'?'rgba(16,185,129,.12)':t==='ATS'?'rgba(245,158,11,.12)':'rgba(139,92,246,.12)';
+  const typeBorder=(t)=>t==='ML'?'rgba(59,130,246,.3)':t==='OU'?'rgba(16,185,129,.3)':t==='ATS'?'rgba(245,158,11,.3)':'rgba(139,92,246,.3)';
+  const typeText=(t)=>t==='ML'?'var(--blue)':t==='OU'?'var(--green)':t==='ATS'?'var(--amber)':'var(--purple)';
 
   const renderPick=(p,i)=>{
     const barW=p.conf;
     const barColor=p.conf>=75?'var(--green)':p.conf>=65?'var(--amber)':'var(--blue)';
     return '<div class="card" style="margin-bottom:10px;border-color:'+(p.conf>=75?'rgba(16,185,129,.2)':'var(--border)')+'">'+
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">'+
         '<span style="font-size:11px;font-weight:700;color:'+typeText(p.type)+';background:'+typeColor(p.type)+';border:1px solid '+typeBorder(p.type)+';padding:2px 8px;border-radius:10px">'+p.typeLabel+'</span>'+
         '<span style="font-size:11px;color:var(--text3)">'+p.league+'</span>'+
         '<span style="font-size:11px;color:var(--text3)">'+formatTime(p.time)+'</span>'+
         (p.conf>=75?'<span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);padding:1px 7px;border-radius:8px">🔥 강픽</span>':'')+
       '</div>'+
-      '<div style="font-size:16px;font-weight:700;margin-bottom:6px">'+p.desc+'</div>'+
-      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'+
+      '<div style="font-size:16px;font-weight:700;margin-bottom:2px">'+p.desc+'</div>'+
+      (p.subDesc?'<div style="font-size:12px;color:var(--text3);margin-bottom:8px">'+p.subDesc+'</div>':'<div style="margin-bottom:8px"></div>')+
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">'+
         '<div style="font-size:13px;color:var(--text2)">배당 <span style="color:var(--text);font-weight:600">'+p.odds.toFixed(2)+'</span></div>'+
         '<div style="font-size:12px;color:var(--text3)">'+p.reason+'</div>'+
       '</div>'+
@@ -1363,8 +1400,9 @@ async function showPicks(btn){
   let html='<div class="metric-grid" style="margin-bottom:20px">'+
     '<div class="metric-card"><div class="metric-label">전체 픽</div><div class="metric-val" style="color:var(--amber)">'+allPicks.length+'</div></div>'+
     '<div class="metric-card"><div class="metric-label">🔥 강픽</div><div class="metric-val" style="color:var(--green)">'+strong.length+'</div></div>'+
-    '<div class="metric-card"><div class="metric-label">머니라인</div><div class="metric-val" style="color:var(--blue)">'+allPicks.filter(p=>p.type==='ML').length+'</div></div>'+
-    '<div class="metric-card"><div class="metric-label">오버/언더</div><div class="metric-val" style="color:var(--green)">'+allPicks.filter(p=>p.type==='OU').length+'</div></div>'+
+    '<div class="metric-card"><div class="metric-label">🔵 머니라인</div><div class="metric-val" style="color:var(--blue)">'+allPicks.filter(p=>p.type==='ML').length+'</div></div>'+
+    '<div class="metric-card"><div class="metric-label">🟡 핸디캡</div><div class="metric-val" style="color:var(--amber)">'+allPicks.filter(p=>p.type==='ATS').length+'</div></div>'+
+    '<div class="metric-card"><div class="metric-label">🟢 오버/언더</div><div class="metric-val" style="color:var(--green)">'+allPicks.filter(p=>p.type==='OU').length+'</div></div>'+
   '</div>';
 
   html+='<div style="font-size:11px;color:var(--text3);margin-bottom:16px;padding:10px 14px;background:var(--bg3);border-radius:var(--radius-sm);border-left:3px solid var(--amber)">'+
