@@ -239,11 +239,9 @@ function selectLeague(key,btn){
   const info=LEAGUE_INFO[key];
   document.getElementById('topbarTitle').textContent=info.label;
   document.getElementById('topbarSub').textContent=info.full;
-  const isBball=info.cat==='basketball';
   document.getElementById('tabRow').innerHTML=`
     <button class="tab active" onclick="switchTab('games',this)">경기 배당</button>
-    <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>
-    ${isBball?'<button class="tab" onclick="switchTab(\'quarter\',this)">쿼터 배당</button>':''}`;
+    <button class="tab" onclick="switchTab('injuries',this)">부상 리포트</button>`;
   loadCurrent();
 }
 
