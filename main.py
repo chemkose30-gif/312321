@@ -156,6 +156,73 @@ async def get_scoreboard(sport_key: str):
         r = await client.get(f"{ESPN_BASE}/{cfg['espn_path']}/scoreboard")
         return r.json() if r.is_success else {"events": []}
 
+@app.get("/api/espn/boxscore/{sport_key}/{event_id}")
+async def get_boxscore(sport_key: str, event_id: str):
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg or not cfg.get("espn_path"):
+        raise HTTPException(404, "지원하지 않는 리그")
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"{ESPN_BASE}/{cfg['espn_path']}/summary",
+            params={"event": event_id}
+        )
+        if not r.is_success:
+            raise HTTPException(r.status_code, "ESPN 박스스코어 없음")
+        data = r.json()
+
+        # boxscore.players 파싱
+        teams = []
+        for team_data in data.get("boxscore", {}).get("players", []):
+            team_info = team_data.get("team", {})
+            stats_list = team_data.get("statistics", [])
+            if not stats_list:
+                continue
+            stat_block = stats_list[0]
+            keys = stat_block.get("keys", [])
+            label_map = {
+                "PTS": "득점", "REB": "리바운드", "AST": "어시스트",
+                "STL": "스틸", "BLK": "블록", "TO": "턴오버",
+                "FGM-FGA": "야투", "3PM-3PA": "3점", "FTM-FTA": "자유투",
+                "MIN": "시간", "+/-": "+/-"
+            }
+            display_keys = ["MIN", "PTS", "REB", "AST", "STL", "BLK", "TO", "FGM-FGA", "3PM-3PA"]
+            key_indices = {k: i for i, k in enumerate(keys)}
+
+            players = []
+            for ath in stat_block.get("athletes", []):
+                athlete = ath.get("athlete", {})
+                stats = ath.get("stats", [])
+                starter = ath.get("starter", False)
+                did_not_play = ath.get("didNotPlay", False)
+                reason = ath.get("reason", "")
+                player = {
+                    "id": athlete.get("id"),
+                    "name": athlete.get("shortName") or athlete.get("displayName", ""),
+                    "pos": athlete.get("position", {}).get("abbreviation", ""),
+                    "starter": starter,
+                    "dnp": did_not_play,
+                    "reason": reason,
+                    "stats": {}
+                }
+                for k in display_keys:
+                    idx = key_indices.get(k)
+                    if idx is not None and idx < len(stats):
+                        player["stats"][k] = stats[idx]
+                    else:
+                        player["stats"][k] = "-"
+                players.append(player)
+
+            teams.append({
+                "team": team_info.get("displayName", ""),
+                "abbr": team_info.get("abbreviation", ""),
+                "color": team_info.get("color", ""),
+                "display_keys": display_keys,
+                "label_map": label_map,
+                "players": players,
+            })
+
+        return {"teams": teams, "event_id": event_id}
+
 @app.get("/api/players/search")
 async def search_players(name: str = Query(..., min_length=2)):
     async with httpx.AsyncClient(timeout=10) as client:

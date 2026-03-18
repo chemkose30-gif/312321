@@ -367,6 +367,14 @@ async function loadLiveScores(){
             </tbody>
           </table>
         </div>`:`<div style="font-size:12px;color:var(--text3);text-align:center;padding:8px 0">쿼터 데이터 없음 (경기 시작 후 업데이트)</div>`}
+
+        <!-- 선수 기록 토글 -->
+        <div style="margin-top:10px">
+          <button onclick="toggleBoxscore('${ev.id}',event)" style="background:none;border:1px solid var(--border);color:var(--text2);padding:5px 14px;border-radius:var(--radius-sm);cursor:pointer;font-size:12px;font-family:var(--font);transition:all .12s" onmouseover="this.style.borderColor='var(--blue)';this.style.color='var(--blue)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text2)'">
+            📊 선수별 기록 보기
+          </button>
+          <div id="boxscore-${ev.id}" style="display:none;margin-top:12px"></div>
+        </div>
       </div>`;
     };
 
@@ -929,6 +937,103 @@ async function loadQuarter(){
     html+='</div>';
     setContent(html);
   }catch(e){setContent(`<div class="empty"><div class="empty-icon">⚠️</div>${e.message}</div>`);}
+}
+
+// ── Boxscore ──────────────────────────────────────────────────────────────
+async function toggleBoxscore(eventId,e){
+  e.stopPropagation();
+  const btn=e.currentTarget;
+  const container=document.getElementById('boxscore-'+eventId);
+  if(!container)return;
+  if(container.style.display!=='none'){
+    container.style.display='none';
+    btn.textContent='📊 선수별 기록 보기';
+    return;
+  }
+  btn.textContent='⏳ 불러오는 중...';
+  container.style.display='block';
+  if(container.dataset.loaded){btn.textContent='📊 선수별 기록 닫기';return;}
+  try{
+    const res=await fetch(API+'/espn/boxscore/'+currentLeague+'/'+eventId);
+    if(!res.ok)throw new Error('박스스코어 없음');
+    const data=await res.json();
+    const teams=data.teams||[];
+    if(!teams.length){container.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px">선수 기록 없음</div>';return;}
+
+    const statLabels={'MIN':'시간','PTS':'득점','REB':'리바','AST':'어시','STL':'스틸','BLK':'블록','TO':'실책','FGM-FGA':'야투','3PM-3PA':'3점','FTM-FTA':'자투'};
+    const dispKeys=['MIN','PTS','REB','AST','STL','BLK','TO','FGM-FGA','3PM-3PA'];
+
+    let html='<div style="display:flex;gap:6px;background:var(--bg3);padding:3px;border-radius:var(--radius-sm);margin-bottom:12px" id="bstabs-'+eventId+'">';
+    teams.forEach((t,i)=>{
+      html+='<button class="props-tab'+(i===0?' active':'')+'" onclick="switchBsTab(\''+eventId+'\','+i+',this)">'+t.abbr+' '+t.team+'</button>';
+    });
+    html+='</div>';
+
+    teams.forEach((t,i)=>{
+      const starters=t.players.filter(p=>p.starter&&!p.dnp);
+      const bench=t.players.filter(p=>!p.starter&&!p.dnp);
+      const dnp=t.players.filter(p=>p.dnp);
+
+      const renderRow=(p,bold)=>{
+        const pts=parseInt(p.stats['PTS'])||0;
+        const reb=parseInt(p.stats['REB'])||0;
+        const ast=parseInt(p.stats['AST'])||0;
+        const isDbl=([pts,reb,ast].filter(v=>v>=10).length>=2);
+        return '<tr style="border-bottom:1px solid rgba(255,255,255,0.03)">'
+          +'<td style="padding:5px 8px;white-space:nowrap">'
+            +'<span style="font-size:10px;color:var(--text3);width:20px;display:inline-block">'+p.pos+'</span>'
+            +'<span style="font-weight:'+(bold?600:400)+';font-size:12px">'+(isDbl?'<span style="color:var(--amber)">★</span> ':'')+p.name+'</span>'
+          +'</td>'
+          +dispKeys.map(k=>{
+            const v=p.stats[k]||'-';
+            const isPts=k==='PTS'&&pts>=20;
+            const isReb=k==='REB'&&reb>=10;
+            const isAst=k==='AST'&&ast>=10;
+            const hi=isPts||isReb||isAst;
+            return '<td style="padding:5px 8px;text-align:center;font-size:12px;color:'+(hi?'var(--blue)':k==='TO'&&parseInt(v)>=3?'var(--red)':'var(--text)')+(hi?';font-weight:700':'')+'">'+v+'</td>';
+          }).join('')
+          +'</tr>';
+      };
+
+      html+='<div id="bsblock-'+eventId+'-'+i+'" style="display:'+(i===0?'block':'none')+'">';
+      html+='<table style="width:100%;border-collapse:collapse;font-size:11px;min-width:500px"><thead>'
+        +'<tr style="border-bottom:1px solid var(--border)">'
+        +'<th style="padding:5px 8px;text-align:left;color:var(--text3);font-size:10px">선수</th>'
+        +dispKeys.map(k=>'<th style="padding:5px 8px;text-align:center;color:var(--text3);font-size:10px">'+( statLabels[k]||k)+'</th>').join('')
+        +'</tr></thead><tbody>';
+
+      if(starters.length){
+        html+='<tr><td colspan="'+(dispKeys.length+1)+'" style="padding:4px 8px;font-size:10px;color:var(--text3);background:rgba(255,255,255,0.02)">선발</td></tr>';
+        starters.forEach(p=>{html+=renderRow(p,true);});
+      }
+      if(bench.length){
+        html+='<tr><td colspan="'+(dispKeys.length+1)+'" style="padding:4px 8px;font-size:10px;color:var(--text3);background:rgba(255,255,255,0.02)">벤치</td></tr>';
+        bench.forEach(p=>{html+=renderRow(p,false);});
+      }
+      if(dnp.length){
+        html+='<tr><td colspan="'+(dispKeys.length+1)+'" style="padding:4px 8px;font-size:10px;color:var(--text3);background:rgba(255,255,255,0.02)">결장</td></tr>';
+        dnp.forEach(p=>{
+          html+='<tr style="border-bottom:1px solid rgba(255,255,255,0.03)"><td colspan="'+(dispKeys.length+1)+'" style="padding:5px 8px;font-size:12px;color:var(--text3)">'+p.name+' <span style="font-size:10px">'+(p.reason||'DNP')+'</span></td></tr>';
+        });
+      }
+      html+='</tbody></table></div>';
+    });
+
+    container.innerHTML=html;
+    container.dataset.loaded='1';
+    btn.textContent='📊 선수별 기록 닫기';
+  }catch(err){
+    container.innerHTML='<div style="color:var(--text3);font-size:12px;padding:8px">오류: '+err.message+'</div>';
+    btn.textContent='📊 선수별 기록 보기';
+  }
+}
+
+function switchBsTab(eventId,idx,btn){
+  document.querySelectorAll('#bstabs-'+eventId+' .props-tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('[id^="bsblock-'+eventId+'-"]').forEach(el=>{el.style.display='none';});
+  const target=document.getElementById('bsblock-'+eventId+'-'+idx);
+  if(target)target.style.display='block';
 }
 
 // ── KBL ───────────────────────────────────────────────────────────────────
