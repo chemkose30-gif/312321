@@ -212,14 +212,19 @@ function abbr(name){return NBA_ABBR[name]||(name||'').split(' ').pop().slice(0,3
 function buildInjuryMap(data){
   const map={};
   (data?.injuries||[]).forEach(t=>{
-    const team=t?.team?.displayName||'';
+    // ESPN API: 팀명은 t.displayName (t.team.displayName 아님)
+    const team=t?.displayName||t?.team?.displayName||'';
     const ab=abbr(team);
     const players=(t?.injuries||[]).map(inj=>{
       const s=(inj?.status||'').toLowerCase();
       let status='q';
-      if(s.includes('out'))status='out';
+      if(s.includes('out')||s.includes('injured reserve')||s.includes('suspension'))status='out';
       else if(s.includes('day-to-day')||s.includes('dtd'))status='dtd';
-      return{name:inj?.athlete?.displayName||'Unknown',pos:inj?.athlete?.position?.abbreviation||'',status,detail:inj?.details?.fantasyStatus?.description||inj?.status||''};
+      else if(s.includes('questionable'))status='q';
+      else if(s.includes('probable'))status='dtd';
+      // shortComment가 더 구체적인 부상 정보 포함
+      const detail=inj?.shortComment||inj?.longComment?.slice(0,80)||inj?.status||'';
+      return{name:inj?.athlete?.displayName||'Unknown',pos:inj?.athlete?.position?.abbreviation||'',status,detail};
     });
     if(players.length)map[ab]=players;
   });
