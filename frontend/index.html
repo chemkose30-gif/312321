@@ -539,6 +539,13 @@ async function loadGames(){
     withOdds.forEach(g=>{html+=renderGameCard(g,injMap,isSoccer,scoreMap);});
     html+='</div>';
     setContent(html);
+    // 상대전적 비동기 로드 (ESPN 지원 리그만)
+    const cfg=SPORT_CONFIGS[currentLeague];
+    if(cfg && cfg.espn_path){
+      withOdds.forEach(g=>{
+        loadH2H(g.id, currentLeague, g.home_team, g.away_team);
+      });
+    }
   }catch(e){
     setContent(`<div class="empty"><div class="empty-icon">⚠️</div>오류: ${e.message}</div>`);
   }
@@ -675,6 +682,7 @@ function renderGameCard(g,injMap,isSoccer,scoreMap={}){
         '<span style="font-size:10px;color:var(--text3)">'+(bm?.title||'')+'</span>'+
       '</div>'+
     '</div>'+
+    '<div id="h2h-'+gid+'" style="font-size:11px;color:var(--text3);margin-bottom:6px;min-height:16px"></div>'+
     '<div class="game-teams">'+
       '<div><div class="team-name">'+shortName(g.home_team)+'</div>'+homeStatHtml+
         '<div style="margin-top:6px">'+injBadge(homeOuts,homeQ)+'</div></div>'+
@@ -688,6 +696,59 @@ function renderGameCard(g,injMap,isSoccer,scoreMap={}){
       '<div class="loading" style="padding:1rem"><div class="spinner"></div>상세 배당 불러오는 중...</div>'+
     '</div>'+
   '</div>';
+}
+
+// ── 상대전적 (H2H) ──────────────────────────────────────────
+const _teamMapCache={};
+const _h2hCache={};
+
+async function loadTeamMap(sport){
+  if(_teamMapCache[sport]) return _teamMapCache[sport];
+  try{
+    const r=await fetch(`${API}/espn/team_map/${sport}`);
+    const d=await r.json();
+    _teamMapCache[sport]=d.teams||{};
+  }catch(e){_teamMapCache[sport]={};}
+  return _teamMapCache[sport];
+}
+
+async function loadH2H(gid, sport, home, away){
+  const cacheKey=`${sport}|${home}|${away}`;
+  if(_h2hCache[cacheKey]!==undefined){
+    renderH2H(gid, _h2hCache[cacheKey]);
+    return;
+  }
+  const tmap=await loadTeamMap(sport);
+  // 팀명 → ESPN ID 매핑 (부분 일치 허용)
+  function findId(name){
+    if(tmap[name]) return tmap[name];
+    const lower=name.toLowerCase();
+    for(const [k,v] of Object.entries(tmap)){
+      if(k.toLowerCase()===lower) return v;
+      // 마지막 단어(팀 닉네임)로 매칭
+      const lastWord=lower.split(' ').pop();
+      if(k.toLowerCase().endsWith(lastWord)) return v;
+    }
+    return null;
+  }
+  const id1=findId(home);
+  const id2=findId(away);
+  if(!id1||!id2){_h2hCache[cacheKey]=null;return;}
+  try{
+    const r=await fetch(`${API}/espn/h2h/${sport}/${id1}/${id2}`);
+    const d=await r.json();
+    _h2hCache[cacheKey]=d;
+    renderH2H(gid, d);
+  }catch(e){_h2hCache[cacheKey]=null;}
+}
+
+function renderH2H(gid, data){
+  const el=document.getElementById('h2h-'+gid);
+  if(!el||!data) return;
+  const {wins,losses,total}=data;
+  if(total===0){el.textContent='시즌 상대전적 없음';return;}
+  const wc=wins>losses?'var(--green)':wins<losses?'var(--red)':'var(--text2)';
+  el.innerHTML='시즌 상대전적: <span style="color:'+wc+';font-weight:600">'+wins+'승 '+losses+'패</span>';
 }
 
 async function toggleDetail(gid,homeTeam,awayTeam){

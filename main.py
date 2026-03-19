@@ -223,6 +223,65 @@ async def get_boxscore(sport_key: str, event_id: str):
 
         return {"teams": teams, "event_id": event_id}
 
+@app.get("/api/espn/team_map/{sport_key}")
+async def get_team_map(sport_key: str):
+    """ESPN 팀명 → ID 매핑 반환"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg or not cfg.get("espn_path"):
+        return {"teams": {}}
+    espn_path = cfg["espn_path"]
+    url = f"{ESPN_BASE}/{espn_path}/teams"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url, params={"limit": 100})
+        if not r.is_success:
+            return {"teams": {}}
+        data = r.json()
+    teams_map = {}
+    for sport in data.get("sports", []):
+        for league in sport.get("leagues", []):
+            for team in league.get("teams", []):
+                t = team.get("team", {})
+                tid = t.get("id", "")
+                name = t.get("displayName", "")
+                short = t.get("shortDisplayName", "")
+                if tid and name:
+                    teams_map[name]  = tid
+                    teams_map[short] = tid
+    return {"teams": teams_map}
+
+@app.get("/api/espn/h2h/{sport_key}/{team1_id}/{team2_id}")
+async def get_h2h(sport_key: str, team1_id: str, team2_id: str):
+    """팀 시즌 스케줄에서 상대전적 계산"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg:
+        raise HTTPException(404, "Unknown sport")
+    espn_path = cfg["espn_path"]
+    url = f"{ESPN_BASE}/{espn_path}/teams/{team1_id}/schedule"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url)
+        if not r.is_success:
+            raise HTTPException(r.status_code, "ESPN schedule fetch failed")
+        data = r.json()
+    wins = losses = 0
+    for event in data.get("events", []):
+        for comp in event.get("competitions", []):
+            competitors = comp.get("competitors", [])
+            opp = next((c for c in competitors if c.get("id") == team2_id), None)
+            if not opp:
+                continue
+            me = next((c for c in competitors if c.get("id") == team1_id), None)
+            if not me:
+                continue
+            # 완료된 경기만
+            status = comp.get("status", {}).get("type", {}).get("completed", False)
+            if not status:
+                continue
+            if me.get("winner"):
+                wins += 1
+            else:
+                losses += 1
+    return {"team1_id": team1_id, "team2_id": team2_id, "wins": wins, "losses": losses, "total": wins + losses}
+
 @app.get("/api/players/search")
 async def search_players(name: str = Query(..., min_length=2)):
     async with httpx.AsyncClient(timeout=10) as client:
