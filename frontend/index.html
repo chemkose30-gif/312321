@@ -540,8 +540,8 @@ async function loadGames(){
     html+='</div>';
     setContent(html);
     // 상대전적 비동기 로드 (ESPN 지원 리그만)
-    const cfg=SPORT_CONFIGS[currentLeague];
-    if(cfg && cfg.espn_path){
+    const ESPN_SUPPORTED=['basketball_nba','baseball_mlb','soccer_epl','soccer_spain_la_liga','soccer_germany_bundesliga','soccer_italy_serie_a','soccer_uefa_champs_league'];
+    if(ESPN_SUPPORTED.includes(currentLeague)){
       withOdds.forEach(g=>{
         loadH2H(g.id, currentLeague, g.home_team, g.away_team);
       });
