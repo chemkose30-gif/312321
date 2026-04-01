@@ -1277,7 +1277,7 @@ async function showSmartPicks(btn){
   document.getElementById('tabRow').innerHTML='';
   setContent('<div class="loading"><div class="spinner"></div>데이터 수집 중... (팀 폼, 부상자, 배당 분석)</div>');
 
-  const leagues=['basketball_nba','baseball_mlb','soccer_epl','soccer_spain_la_liga','soccer_germany_bundesliga','soccer_italy_serie_a'];
+  const leagues=['basketball_nba','baseball_mlb'];
   const allSmartPicks=[];
 
   await Promise.all(leagues.map(async league=>{
