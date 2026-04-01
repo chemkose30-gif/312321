@@ -249,6 +249,250 @@ async def get_team_map(sport_key: str):
                     teams_map[short] = tid
     return {"teams": teams_map}
 
+@app.get("/api/espn/team_form/{sport_key}/{team_id}")
+async def get_team_form(sport_key: str, team_id: str, last_n: int = 10):
+    """팀 최근 N경기 폼 + 홈/원정 승률 + 평균 득점"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg or not cfg.get("espn_path"):
+        return {"form": [], "record": {}}
+    url = f"{ESPN_BASE}/{cfg['espn_path']}/teams/{team_id}/schedule"
+    async with httpx.AsyncClient(timeout=12) as client:
+        r = await client.get(url)
+        if not r.is_success:
+            return {"form": [], "record": {}}
+        data = r.json()
+
+    results = []
+    for event in data.get("events", []):
+        for comp in event.get("competitions", []):
+            if not comp.get("status", {}).get("type", {}).get("completed", False):
+                continue
+            competitors = comp.get("competitors", [])
+            me = next((c for c in competitors if c.get("id") == team_id), None)
+            opp = next((c for c in competitors if c.get("id") != team_id), None)
+            if not me or not opp:
+                continue
+            home_away = me.get("homeAway", "home")
+            my_score = int(me.get("score", 0) or 0)
+            opp_score = int(opp.get("score", 0) or 0)
+            won = me.get("winner", False)
+            results.append({
+                "won": won,
+                "home": home_away == "home",
+                "my_score": my_score,
+                "opp_score": opp_score,
+                "opp_name": opp.get("team", {}).get("shortDisplayName", ""),
+                "date": event.get("date", ""),
+            })
+
+    results = results[-last_n:] if len(results) > last_n else results
+    if not results:
+        return {"form": [], "record": {}}
+
+    home_games = [r for r in results if r["home"]]
+    away_games = [r for r in results if not r["home"]]
+    recent5 = results[-5:] if len(results) >= 5 else results
+
+    return {
+        "form": [{"w": r["won"], "home": r["home"], "pts": r["my_score"], "opp_pts": r["opp_score"], "opp": r["opp_name"]} for r in results],
+        "record": {
+            "total": {"w": sum(1 for r in results if r["won"]), "l": sum(1 for r in results if not r["won"]), "g": len(results)},
+            "home":  {"w": sum(1 for r in home_games if r["won"]),  "l": sum(1 for r in home_games if not r["won"]),  "g": len(home_games)},
+            "away":  {"w": sum(1 for r in away_games if r["won"]), "l": sum(1 for r in away_games if not r["won"]), "g": len(away_games)},
+            "avg_pts": round(sum(r["my_score"] for r in results) / len(results), 1) if results else 0,
+            "recent5_w": sum(1 for r in recent5 if r["won"]),
+        }
+    }
+
+
+@app.get("/api/espn/injury_impact/{sport_key}/{team_id}")
+async def get_injury_impact(sport_key: str, team_id: str):
+    """팀 부상자 리스트 + 선수별 득점 영향도 추정"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg or not cfg.get("espn_path"):
+        return {"players": [], "total_pts_lost": 0}
+
+    async with httpx.AsyncClient(timeout=12) as client:
+        # 부상자 목록
+        inj_r = await client.get(f"{ESPN_BASE}/{cfg['espn_path']}/injuries")
+        # 팀 로스터 (선수별 스탯 포함)
+        roster_r = await client.get(f"{ESPN_BASE}/{cfg['espn_path']}/teams/{team_id}/roster")
+
+    injured_players = []
+    roster_stats = {}
+
+    if roster_r.is_success:
+        roster_data = roster_r.json()
+        for athlete in roster_data.get("athletes", []):
+            for a in (athlete.get("items") or [athlete]):
+                aid = a.get("id", "")
+                name = a.get("fullName", a.get("displayName", ""))
+                stats = a.get("statistics", {})
+                # 시즌 평균 득점 추출
+                pts = 0.0
+                if isinstance(stats, dict):
+                    for cat in stats.get("splits", {}).get("categories", []):
+                        for stat in cat.get("stats", []):
+                            if stat.get("name") in ("avgPoints", "points", "pointsPerGame"):
+                                try: pts = float(stat.get("value", 0)); break
+                                except: pass
+                if aid:
+                    roster_stats[aid] = {"name": name, "avg_pts": pts}
+
+    if inj_r.is_success:
+        inj_data = inj_r.json()
+        for inj in inj_data.get("injuries", []):
+            # ESPN injury API는 리그 전체 부상자를 반환 - 팀 ID로 필터
+            team_info = inj.get("team", {})
+            if team_info.get("id") != team_id:
+                continue
+            athlete = inj.get("athlete", {})
+            aid = athlete.get("id", "")
+            aname = athlete.get("displayName", athlete.get("shortName", ""))
+            status = inj.get("status", "")
+            desc = inj.get("longComment", inj.get("shortComment", ""))
+            stats_info = roster_stats.get(aid, {})
+            avg_pts = stats_info.get("avg_pts", 0)
+            injured_players.append({
+                "id": aid,
+                "name": aname,
+                "status": status.lower(),
+                "desc": desc[:60] if desc else "",
+                "avg_pts": avg_pts,
+                "impact": f"-{avg_pts:.1f}점" if avg_pts > 0 else "영향 미상",
+            })
+
+    injured_players.sort(key=lambda x: x["avg_pts"], reverse=True)
+    out_players = [p for p in injured_players if p["status"] in ("out", "doubtful", "questionable")]
+    total_pts_lost = sum(p["avg_pts"] for p in out_players if p["status"] == "out")
+
+    return {
+        "players": injured_players,
+        "out_count": len([p for p in injured_players if p["status"] == "out"]),
+        "total_pts_lost": round(total_pts_lost, 1),
+    }
+
+
+@app.get("/api/analytics/smart_picks/{sport_key}")
+async def get_smart_picks(sport_key: str):
+    """종합 점수 기반 전문 픽 (폼+홈어드밴티지+부상+배당 밸류)"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg:
+        raise HTTPException(404, "Unknown sport")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        odds_r = await client.get(
+            f"{ODDS_BASE}/sports/{sport_key}/odds/",
+            params={"apiKey": API_KEY, "regions": cfg["region"],
+                    "markets": "h2h,spreads,totals", "oddsFormat": "decimal", "dateFormat": "iso"}
+        )
+        if not odds_r.is_success:
+            raise HTTPException(odds_r.status_code, "Odds fetch failed")
+
+        inj_r = await client.get(f"{ESPN_BASE}/{cfg['espn_path']}/injuries") if cfg.get("espn_path") else None
+        team_map_r = await client.get(f"{ESPN_BASE}/{cfg['espn_path']}/teams", params={"limit": 100}) if cfg.get("espn_path") else None
+
+    games_data = odds_r.json()
+    inj_map = {}  # teamId -> {out_count, pts_lost}
+    team_name_to_id = {}
+
+    # 팀 이름 → ESPN ID 매핑
+    if team_map_r and team_map_r.is_success:
+        tdata = team_map_r.json()
+        for sport_item in tdata.get("sports", []):
+            for league in sport_item.get("leagues", []):
+                for t in league.get("teams", []):
+                    tt = t.get("team", {})
+                    tid = tt.get("id", "")
+                    for key in [tt.get("displayName",""), tt.get("shortDisplayName",""), tt.get("name",""), tt.get("abbreviation","")]:
+                        if key: team_name_to_id[key.lower()] = tid
+
+    # 부상자 맵 구성
+    if inj_r and inj_r.is_success:
+        for inj in inj_r.json().get("injuries", []):
+            tid = inj.get("team", {}).get("id", "")
+            if not tid: continue
+            if tid not in inj_map: inj_map[tid] = {"out": 0, "pts": 0.0}
+            if inj.get("status", "").lower() == "out":
+                inj_map[tid]["out"] += 1
+
+    picks = []
+    now = __import__("datetime").datetime.utcnow()
+
+    for g in games_data:
+        if not g.get("bookmakers"): continue
+        try:
+            game_dt = __import__("datetime").datetime.fromisoformat(g["commence_time"].replace("Z",""))
+        except: continue
+        if game_dt < now: continue
+
+        bm = g["bookmakers"][0]
+        h2h = next((m for m in bm.get("markets",[]) if m["key"]=="h2h"), None)
+        if not h2h: continue
+
+        hp = next((o["price"] for o in h2h["outcomes"] if o["name"]==g["home_team"]), None)
+        ap = next((o["price"] for o in h2h["outcomes"] if o["name"]==g["away_team"]), None)
+        if not hp or not ap: continue
+
+        # 노비그 확률
+        total = 1/hp + 1/ap
+        home_p = (1/hp) / total * 100
+        away_p = (1/ap) / total * 100
+
+        # ESPN 팀 ID 찾기
+        home_id = team_name_to_id.get(g["home_team"].lower(), "")
+        away_id = team_name_to_id.get(g["away_team"].lower(), "")
+        home_inj = inj_map.get(home_id, {"out": 0, "pts": 0.0})
+        away_inj = inj_map.get(away_id, {"out": 0, "pts": 0.0})
+
+        # 종합 점수 계산
+        for is_home in [True, False]:
+            team = g["home_team"] if is_home else g["away_team"]
+            base_p = home_p if is_home else away_p
+            my_inj = home_inj if is_home else away_inj
+            op_inj = away_inj if is_home else home_inj
+
+            # 1. 배당 밸류 점수 (30점)
+            odds_score = min(base_p * 0.30, 30)
+            # 2. 홈 어드밴티지 (20점)
+            home_bonus = 20 if is_home else 0
+            # 3. 부상자 영향 (25점) - 상대 결장 많을수록 유리
+            inj_score = min(op_inj["out"] * 5, 15) - min(my_inj["out"] * 5, 10)
+            inj_score = max(0, min(inj_score + 12, 25))
+            # 4. 폼 점수 (25점) - 기본값 12.5 (폼 데이터 없을 때)
+            form_score = 12.5
+
+            total_score = odds_score + home_bonus + inj_score + form_score
+
+            if total_score < 50: continue
+
+            confidence = "HIGH" if total_score >= 70 else "MEDIUM" if total_score >= 55 else "LOW"
+            reasons = []
+            reasons.append(f"승률 {base_p:.1f}%")
+            if is_home: reasons.append("홈 어드밴티지")
+            if op_inj["out"] > 0: reasons.append(f"상대 결장 {op_inj['out']}명")
+            if my_inj["out"] > 0: reasons.append(f"우리팀 결장 {my_inj['out']}명 ⚠")
+
+            picks.append({
+                "home": g["home_team"],
+                "away": g["away_team"],
+                "time": g["commence_time"],
+                "pick_team": team,
+                "is_home_pick": is_home,
+                "odds": hp if is_home else ap,
+                "win_prob": round(base_p, 1),
+                "score": round(total_score, 1),
+                "confidence": confidence,
+                "reasons": reasons,
+                "my_out": my_inj["out"],
+                "op_out": op_inj["out"],
+            })
+            break  # 한 경기당 1픽
+
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    return {"picks": picks[:20], "sport": cfg["label"]}
+
+
 @app.get("/api/espn/h2h/{sport_key}/{team1_id}/{team2_id}")
 async def get_h2h(sport_key: str, team1_id: str, team2_id: str):
     """팀 시즌 스케줄에서 상대전적 계산"""
