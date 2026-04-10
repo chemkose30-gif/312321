@@ -466,6 +466,10 @@ async def get_smart_picks(sport_key: str):
 
             if total_score < 50: continue
 
+            # 배당 1.6 미만 제외
+            pick_odds = hp if is_home else ap
+            if pick_odds < 1.6: continue
+
             confidence = "HIGH" if total_score >= 70 else "MEDIUM" if total_score >= 55 else "LOW"
             reasons = []
             reasons.append(f"승률 {base_p:.1f}%")
@@ -491,6 +495,141 @@ async def get_smart_picks(sport_key: str):
 
     picks.sort(key=lambda x: x["score"], reverse=True)
     return {"picks": picks[:20], "sport": cfg["label"]}
+
+
+@app.get("/api/motivation/{sport_key}")
+async def get_motivation(sport_key: str, home_team: str = Query(...), away_team: str = Query(...)):
+    """팀 동기부여 지수 계산 (0~100점)"""
+    cfg = SPORT_CONFIGS.get(sport_key)
+    if not cfg:
+        raise HTTPException(404, "Unknown sport")
+
+    espn_sport = cfg["espn_path"]  # e.g. basketball/nba
+    ESPN_API = "https://site.api.espn.com/apis/v2/sports"
+
+    async def get_team_streak_and_standing(team_name: str):
+        """ESPN에서 팀 연승/연패, 스탠딩 위치 조회"""
+        # 팀 목록으로 ID 찾기
+        async with httpx.AsyncClient(timeout=10) as client:
+            teams_r = await client.get(f"{ESPN_BASE}/{espn_sport}/teams", params={"limit": 100})
+            if not teams_r.is_success:
+                return None
+
+            tdata = teams_r.json()
+            team_id = None
+            team_display = team_name
+            for sport_item in tdata.get("sports", []):
+                for league in sport_item.get("leagues", []):
+                    for t in league.get("teams", []):
+                        tt = t.get("team", {})
+                        names = [tt.get("displayName",""), tt.get("shortDisplayName",""), tt.get("name","")]
+                        if any(team_name.lower() in n.lower() or n.lower() in team_name.lower() for n in names if n):
+                            team_id = tt.get("id")
+                            team_display = tt.get("displayName", team_name)
+                            break
+
+            if not team_id:
+                return {"streak": 0, "is_win_streak": True, "standing_pct": 0.5, "display": team_name}
+
+            # 스케줄로 연승/연패 계산
+            sched_r = await client.get(f"{ESPN_BASE}/{espn_sport}/teams/{team_id}/schedule")
+            streak = 0
+            is_win_streak = True
+            if sched_r.is_success:
+                events = sched_r.json().get("events", [])
+                results = []
+                for ev in events:
+                    for comp in ev.get("competitions", []):
+                        if not comp.get("status", {}).get("type", {}).get("completed", False):
+                            continue
+                        me = next((c for c in comp.get("competitors", []) if c.get("id") == team_id), None)
+                        if me:
+                            results.append(bool(me.get("winner")))
+                if results:
+                    last = results[-1]
+                    is_win_streak = last
+                    for r in reversed(results):
+                        if r == last:
+                            streak += 1
+                        else:
+                            break
+
+            # 스탠딩 순위
+            stand_r = await client.get(f"{ESPN_API}/{espn_sport}/standings")
+            standing_pct = 0.5
+            if stand_r.is_success:
+                sdata = stand_r.json()
+                all_teams = []
+                for entry in sdata.get("standings", {}).get("entries", []):
+                    all_teams.append(entry.get("team", {}).get("id", ""))
+                if team_id in all_teams:
+                    idx = all_teams.index(team_id)
+                    standing_pct = 1 - (idx / max(len(all_teams) - 1, 1))
+
+            return {
+                "id": team_id,
+                "display": team_display,
+                "streak": streak,
+                "is_win_streak": is_win_streak,
+                "standing_pct": standing_pct,
+            }
+
+    home_data, away_data = await asyncio.gather(
+        get_team_streak_and_standing(home_team),
+        get_team_streak_and_standing(away_team),
+    )
+
+    def calc_score(data, is_home: bool, opponent_data):
+        if not data:
+            return 50, ["데이터 없음"]
+        factors = []
+        score = 0
+
+        # 홈 어드밴티지
+        if is_home:
+            score += 15
+            factors.append("🏠 홈경기 +15")
+
+        # 연승/연패
+        streak = data.get("streak", 0)
+        is_win = data.get("is_win_streak", True)
+        if streak >= 3 and is_win:
+            score += 20
+            factors.append(f"🔥 {streak}연승 중 +20")
+        elif streak >= 3 and not is_win:
+            score += 15
+            factors.append(f"💢 {streak}연패 탈출 필요 +15")
+        elif streak >= 1 and is_win:
+            score += 8
+            factors.append(f"📈 {streak}연승 +8")
+
+        # 스탠딩 기반
+        pct = data.get("standing_pct", 0.5)
+        if pct >= 0.7:
+            score += 25
+            factors.append("🏆 플레이오프/우승권 +25")
+        elif pct <= 0.25:
+            score += 20
+            factors.append("⚠️ 탈락위기 절박함 +20")
+        elif pct >= 0.5:
+            score += 10
+            factors.append("📊 상위권 +10")
+
+        return min(score, 100), factors
+
+    home_score, home_factors = calc_score(home_data, True, away_data)
+    away_score, away_factors = calc_score(away_data, False, home_data)
+
+    edge = home_team if home_score >= away_score else away_team
+    diff = abs(home_score - away_score)
+    edge_reason = f"동기부여 {diff}점 우위" if diff >= 10 else "비슷한 동기부여 수준"
+
+    return {
+        "home": {"name": home_data.get("display", home_team) if home_data else home_team, "score": home_score, "factors": home_factors},
+        "away": {"name": away_data.get("display", away_team) if away_data else away_team, "score": away_score, "factors": away_factors},
+        "edge": edge,
+        "edge_reason": edge_reason,
+    }
 
 
 @app.get("/api/espn/h2h/{sport_key}/{team1_id}/{team2_id}")
