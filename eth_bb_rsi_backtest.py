@@ -1,14 +1,15 @@
 """
-Ethereum Bollinger Bands + RSI Backtester
-- 자금: $10,000  |  거래금액: 자금의 3%
-- 진입: 볼린저밴드 상/하단 터치 + RSI 필터 → 반대매매
-- 청산 A: 반대편 밴드 도달 시
-- 청산 B: 볼린저 중앙선(SMA) 도달 시
-- 손절: 진입가 대비 -8% (트렌딩 시장 보호)
+ETH/USDT  1분봉  볼린저밴드 + RSI  백테스트
+- 자금: $10,000  |  거래금액: 잔고의 3%
+- 진입: BB 하단 터치 + RSI 과매도 → 롱  /  BB 상단 터치 + RSI 과매수 → 숏
+- 청산 A: 반대편 밴드 도달
+- 청산 B: 볼린저 중앙선(20SMA) 도달
+- 손절: 진입가 대비 -1.5%
 """
 
 import pandas as pd
 import numpy as np
+import time
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -17,365 +18,358 @@ warnings.filterwarnings("ignore")
 # ═══════════════════════════════════════════════════════
 INITIAL_CAPITAL = 10_000   # 초기 자금 (USD)
 TRADE_PCT       = 0.03     # 거래금액 = 잔고의 3%
-BB_PERIOD       = 20       # 볼린저밴드 이동평균 기간
+BB_PERIOD       = 20       # 볼린저밴드 기간 (20분)
 BB_STD          = 2.0      # 표준편차 배수
-RSI_PERIOD      = 14       # RSI 기간
-RSI_UPPER       = 65       # RSI 과매수 기준 (숏 진입)
-RSI_LOWER       = 35       # RSI 과매도 기준 (롱 진입)
-STOP_LOSS_PCT   = 0.08     # 손절 기준: 진입가 대비 -8%
-START           = "2021-01-01"
+RSI_PERIOD      = 14       # RSI 기간 (14분)
+RSI_UPPER       = 65       # 과매수 (숏 진입)
+RSI_LOWER       = 35       # 과매도 (롱 진입)
+STOP_LOSS_PCT   = 0.015    # 손절: -1.5% (1분봉 기준)
+START           = "2022-01-01"
 END             = "2024-12-31"
-
-
 # ═══════════════════════════════════════════════════════
-#  ETH 역사 데이터 생성 (실제 주요 가격 기반)
-# ═══════════════════════════════════════════════════════
-def generate_eth_data() -> pd.DataFrame:
-    """
-    실제 ETH/USD 역사적 고점·저점을 앵커로 삼아
-    GBM + 평균회귀 일봉 데이터 생성
-    """
-    # 실제 ETH 주요 이벤트 가격 (날짜, 종가)
-    anchors = [
-        ("2021-01-01",  730),
-        ("2021-02-20", 1950),
-        ("2021-05-12", 4080),
-        ("2021-06-22", 1730),
-        ("2021-07-21", 1790),
-        ("2021-08-29", 3290),
-        ("2021-09-07", 3900),
-        ("2021-09-21", 2700),
-        ("2021-11-10", 4860),
-        ("2021-12-04", 3880),
-        ("2021-12-31", 3680),
-        ("2022-01-22", 2200),
-        ("2022-03-28", 3290),
-        ("2022-05-01", 2680),
-        ("2022-05-12", 1900),
-        ("2022-06-13",  900),
-        ("2022-08-13", 1960),
-        ("2022-09-15", 1500),
-        ("2022-09-30", 1310),
-        ("2022-11-09", 1100),
-        ("2022-12-31", 1200),
-        ("2023-01-14", 1540),
-        ("2023-02-16", 1680),
-        ("2023-04-14", 2100),
-        ("2023-05-25", 1820),
-        ("2023-06-10", 1660),
-        ("2023-07-14", 1890),
-        ("2023-08-17", 1570),
-        ("2023-09-11", 1600),
-        ("2023-10-23", 1790),
-        ("2023-12-05", 2200),
-        ("2023-12-31", 2280),
-        ("2024-01-12", 2580),
-        ("2024-02-29", 3400),
-        ("2024-03-12", 4090),
-        ("2024-04-01", 3500),
-        ("2024-04-15", 2900),
-        ("2024-05-23", 3780),
-        ("2024-06-24", 3380),
-        ("2024-07-05", 2870),
-        ("2024-08-05", 2100),
-        ("2024-09-13", 2340),
-        ("2024-10-01", 2600),
-        ("2024-11-12", 3380),
-        ("2024-12-05", 3900),
-        ("2024-12-16", 4000),
-        ("2024-12-31", 3300),
-    ]
 
-    anchor_dates  = pd.to_datetime([a[0] for a in anchors])
-    anchor_prices = [a[1] for a in anchors]
 
-    all_dates = pd.date_range(START, END, freq="D")
-    # 앵커 사이 선형 보간
-    base = (pd.Series(anchor_prices, index=anchor_dates)
-            .reindex(all_dates)
-            .interpolate(method="time"))
+# ───────────────────────────────────────────────────────
+#  실제 ETH 주요 가격 앵커 (2022~2024)
+# ───────────────────────────────────────────────────────
+ANCHORS = [
+    ("2022-01-01", 3700), ("2022-01-22", 2200), ("2022-03-28", 3290),
+    ("2022-05-01", 2680), ("2022-05-12", 1900), ("2022-06-13",  900),
+    ("2022-08-13", 1960), ("2022-09-15", 1500), ("2022-09-30", 1310),
+    ("2022-11-09", 1100), ("2022-12-31", 1200),
+    ("2023-01-14", 1540), ("2023-02-16", 1680), ("2023-04-14", 2100),
+    ("2023-05-25", 1820), ("2023-06-10", 1660), ("2023-07-14", 1890),
+    ("2023-08-17", 1570), ("2023-09-11", 1600), ("2023-10-23", 1790),
+    ("2023-12-05", 2200), ("2023-12-31", 2280),
+    ("2024-01-12", 2580), ("2024-02-29", 3400), ("2024-03-12", 4090),
+    ("2024-04-15", 2900), ("2024-05-23", 3780), ("2024-07-05", 2870),
+    ("2024-08-05", 2100), ("2024-09-13", 2340), ("2024-10-01", 2600),
+    ("2024-11-12", 3380), ("2024-12-16", 4000), ("2024-12-31", 3300),
+]
 
-    # 현실적 일간 노이즈 (ETH 일간 변동성 ≈ 4%)
+
+# ───────────────────────────────────────────────────────
+#  1분봉 데이터 생성
+# ───────────────────────────────────────────────────────
+def generate_1min_data() -> pd.DataFrame:
+    daily_dates  = pd.date_range(START, END, freq="D")
+    anchor_dates = pd.to_datetime([a[0] for a in ANCHORS])
+    anchor_px    = [a[1] for a in ANCHORS]
+
+    # 일별 목표 종가 (앵커 선형 보간)
+    daily_target = (pd.Series(anchor_px, index=anchor_dates)
+                    .reindex(daily_dates)
+                    .interpolate(method="time")
+                    .values)
+
     np.random.seed(2024)
-    n = len(all_dates)
-    daily_noise = np.random.normal(0, 0.04, n)
-    # 노이즈를 누적하지 않고 하루 단위 곱으로 적용 → 발산 방지
-    close = base.values.copy().astype(float)
-    for i in range(1, n):
-        shock  = daily_noise[i]
-        # 앵커 방향으로 약한 평균회귀 (±5% 당김)
-        mr     = (base.values[i] - close[i-1]) / close[i-1] * 0.10
-        close[i] = close[i-1] * (1 + shock * 0.5 + mr)
-        close[i] = max(close[i], 100)  # 음수 방지
+    SIGMA_1MIN = 0.0013      # ETH 1분봉 평균 변동성 ≈ 0.13%
+    MR_STRENGTH = 0.08       # 일 목표 방향으로 평균회귀 강도
 
-    df            = pd.DataFrame(index=all_dates)
-    df.index.name = "Date"
-    df["Close"]   = close
-    rng           = close * np.abs(np.random.normal(0.025, 0.012, n))
-    df["High"]    = df["Close"] + rng * 0.55
-    df["Low"]     = df["Close"] - rng * 0.55
-    df["Open"]    = df["Close"].shift(1).fillna(df["Close"].iloc[0])
-    df["Volume"]  = np.random.randint(4_000_000, 18_000_000, n).astype(float)
+    n_days  = len(daily_dates)
+    all_cls = np.empty(n_days * 1440, dtype=np.float64)
+    all_hi  = np.empty(n_days * 1440, dtype=np.float64)
+    all_lo  = np.empty(n_days * 1440, dtype=np.float64)
+
+    prev_close = daily_target[0]
+
+    for d in range(n_days):
+        target  = daily_target[d]
+        noise   = np.random.normal(0, SIGMA_1MIN, 1440)
+        # 일 목표가로 당기는 평균회귀 drift
+        log_mr  = np.log(target / prev_close) / 1440 * MR_STRENGTH
+        log_ret = log_mr + noise
+        prices  = prev_close * np.exp(np.cumsum(log_ret))
+
+        rng     = prices * np.abs(np.random.normal(0.0008, 0.0004, 1440))
+        idx     = d * 1440
+        all_cls[idx:idx+1440] = prices
+        all_hi [idx:idx+1440] = prices + rng * 0.55
+        all_lo [idx:idx+1440] = prices - rng * 0.55
+        prev_close = prices[-1]
+
+    all_times = pd.date_range(START, periods=n_days * 1440, freq="1min")
+
+    df = pd.DataFrame({
+        "Open"  : np.concatenate([[all_cls[0]], all_cls[:-1]]),
+        "High"  : all_hi,
+        "Low"   : all_lo,
+        "Close" : all_cls,
+    }, index=all_times)
     return df
 
 
-# ═══════════════════════════════════════════════════════
-#  지표 계산
-# ═══════════════════════════════════════════════════════
-def calc_bb(close, period, std_mult):
-    sma   = close.rolling(period).mean()
-    sigma = close.rolling(period).std()
-    return sma + std_mult * sigma, sma, sma - std_mult * sigma
+# ───────────────────────────────────────────────────────
+#  지표 계산 (pandas rolling, C 레벨 속도)
+# ───────────────────────────────────────────────────────
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    c = df["Close"]
+    sma   = c.rolling(BB_PERIOD).mean()
+    sigma = c.rolling(BB_PERIOD).std()
+    df["bb_upper"] = sma + BB_STD * sigma
+    df["bb_mid"]   = sma
+    df["bb_lower"] = sma - BB_STD * sigma
 
-
-def calc_rsi(close, period):
-    delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(period).mean()
-    loss  = (-delta.clip(upper=0)).rolling(period).mean()
+    delta = c.diff()
+    gain  = delta.clip(lower=0).rolling(RSI_PERIOD).mean()
+    loss  = (-delta.clip(upper=0)).rolling(RSI_PERIOD).mean()
     rs    = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    df["rsi"] = 100 - (100 / (1 + rs))
+    return df
 
 
-# ═══════════════════════════════════════════════════════
-#  백테스트 엔진
-# ═══════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────
+#  백테스트 엔진 (numpy 배열 직접 접근으로 속도 최적화)
+# ───────────────────────────────────────────────────────
 def run_backtest(df: pd.DataFrame, exit_mode: str) -> dict:
-    """
-    exit_mode: 'opposite_band' (반대편 밴드) | 'middle_band' (중앙선)
-    """
-    capital      = float(INITIAL_CAPITAL)
-    position     = None
-    trades       = []
-    equity_curve = []
+    df2 = df.dropna(subset=["bb_upper", "rsi"])
 
-    for i in range(BB_PERIOD + RSI_PERIOD, len(df)):
-        row   = df.iloc[i]
-        price = float(row["Close"])
-        upper = float(row["bb_upper"])
-        mid   = float(row["bb_mid"])
-        lower = float(row["bb_lower"])
-        rsi   = float(row["rsi"])
+    cls  = df2["Close"].to_numpy()
+    up   = df2["bb_upper"].to_numpy()
+    mid  = df2["bb_mid"].to_numpy()
+    low  = df2["bb_lower"].to_numpy()
+    rsi  = df2["rsi"].to_numpy()
+    dts  = df2.index.to_numpy()
 
-        # 현재 미실현 손익 포함 자산
-        if position:
-            ep = position["entry"]
-            sz = position["size_usd"]
-            unr = (price - ep) / ep * sz if position["side"] == "long" \
-                  else (ep - price) / ep * sz
-            equity_curve.append({"date": row.name, "equity": capital + unr})
+    capital   = float(INITIAL_CAPITAL)
+    pos       = None          # None | (side:+1/-1, entry_px, size_usd, entry_dt)
+    trades    = []
+
+    # equity 샘플: 매 1440봉(≈1일)마다 기록 (메모리 절약)
+    equity_dates  = []
+    equity_values = []
+
+    n = len(cls)
+    for i in range(n):
+        price = cls[i]
+
+        # 일별 equity 스냅샷 (i % 1440 == 0)
+        if i % 1440 == 0:
+            if pos is not None:
+                s, ep, sz, _ = pos
+                unr = (price - ep) / ep * s * sz
+                equity_values.append(capital + unr)
+            else:
+                equity_values.append(capital)
+            equity_dates.append(dts[i])
+
+        if pos is None:
+            # 진입
+            if price <= low[i] and rsi[i] < RSI_LOWER:
+                sz  = capital * TRADE_PCT
+                pos = (1, price, sz, dts[i])
+            elif price >= up[i] and rsi[i] > RSI_UPPER:
+                sz  = capital * TRADE_PCT
+                pos = (-1, price, sz, dts[i])
         else:
-            equity_curve.append({"date": row.name, "equity": capital})
+            s, ep, sz, edt = pos
+            cur_ret = (price - ep) / ep * s
 
-        if position is None:
-            # ── 진입 신호 ────────────────────────────────
-            if price <= lower and rsi < RSI_LOWER:
-                sz = capital * TRADE_PCT
-                position = {"side": "long",  "entry": price, "size_usd": sz,
-                            "entry_date": row.name}
+            stop_hit = cur_ret <= -STOP_LOSS_PCT
 
-            elif price >= upper and rsi > RSI_UPPER:
-                sz = capital * TRADE_PCT
-                position = {"side": "short", "entry": price, "size_usd": sz,
-                            "entry_date": row.name}
-
-        else:
-            ep   = position["entry"]
-            sz   = position["size_usd"]
-            side = position["side"]
-
-            # 현재 수익률 계산
-            cur_ret = (price - ep) / ep if side == "long" else (ep - price) / ep
-
-            # 손절 체크 (-8%)
-            stop_hit  = cur_ret <= -STOP_LOSS_PCT
-
-            # 청산 목표 체크
-            target_hit = False
             if exit_mode == "opposite_band":
-                target_hit = (side == "long"  and price >= upper) or \
-                             (side == "short" and price <= lower)
-            else:  # middle_band
-                target_hit = (side == "long"  and price >= mid) or \
-                             (side == "short" and price <= mid)
+                tgt_hit = (s == 1  and price >= up[i]) or \
+                          (s == -1 and price <= low[i])
+            else:
+                tgt_hit = (s == 1  and price >= mid[i]) or \
+                          (s == -1 and price <= mid[i])
 
-            if stop_hit or target_hit:
-                pnl = cur_ret * sz
+            if stop_hit or tgt_hit:
+                pnl     = cur_ret * sz
                 capital += pnl
                 trades.append({
-                    "entry_date" : position["entry_date"],
-                    "exit_date"  : row.name,
-                    "side"       : side,
+                    "entry_date" : edt,
+                    "exit_date"  : dts[i],
+                    "side"       : "long" if s == 1 else "short",
                     "entry_price": ep,
                     "exit_price" : price,
                     "size_usd"   : sz,
                     "pnl_usd"   : pnl,
                     "pnl_pct"   : cur_ret * 100,
                     "exit_type" : "손절" if stop_hit else "목표",
+                    "hold_min"  : int((dts[i] - edt) / np.timedelta64(1, "m")),
                 })
-                position = None
+                pos = None
 
-    # 마지막 미결 포지션 강제 청산
-    if position:
-        price   = float(df["Close"].iloc[-1])
-        ep, sz  = position["entry"], position["size_usd"]
-        cur_ret = (price - ep) / ep if position["side"] == "long" else (ep - price) / ep
+    # 미결제 강제 청산
+    if pos is not None:
+        s, ep, sz, edt = pos
+        price   = cls[-1]
+        cur_ret = (price - ep) / ep * s
         pnl     = cur_ret * sz
         capital += pnl
         trades.append({
-            "entry_date" : position["entry_date"],
-            "exit_date"  : df.index[-1],
-            "side"       : position["side"],
+            "entry_date" : edt,
+            "exit_date"  : dts[-1],
+            "side"       : "long" if s == 1 else "short",
             "entry_price": ep,
             "exit_price" : price,
             "size_usd"   : sz,
             "pnl_usd"   : pnl,
             "pnl_pct"   : cur_ret * 100,
             "exit_type" : "강제청산",
+            "hold_min"  : int((dts[-1] - edt) / np.timedelta64(1, "m")),
         })
 
-    eq_df = pd.DataFrame(equity_curve).set_index("date")
+    eq = pd.Series(equity_values, index=pd.DatetimeIndex(equity_dates), name="equity")
     return {
         "final_capital"    : capital,
         "total_return_pct" : (capital - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100,
         "trades"           : pd.DataFrame(trades),
-        "equity"           : eq_df,
+        "equity"           : eq,
     }
 
 
-# ═══════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────
 #  결과 출력
-# ═══════════════════════════════════════════════════════
-def max_drawdown(equity: pd.Series) -> float:
-    roll_max  = equity.cummax()
-    dd        = (equity - roll_max) / roll_max
-    return dd.min() * 100
+# ───────────────────────────────────────────────────────
+def max_drawdown(eq: pd.Series) -> float:
+    return ((eq - eq.cummax()) / eq.cummax()).min() * 100
 
 
-def sharpe(equity: pd.Series, rf=0.0) -> float:
-    ret = equity.pct_change().dropna()
-    if ret.std() == 0:
-        return 0.0
-    return (ret.mean() - rf / 252) / ret.std() * np.sqrt(252)
+def sharpe(eq: pd.Series) -> float:
+    r = eq.pct_change().dropna()
+    return (r.mean() / r.std() * np.sqrt(252)) if r.std() else 0.0
 
 
-def print_result(label: str, result: dict):
-    trades = result["trades"]
-    eq     = result["equity"]["equity"]
-
-    total = len(trades)
-    bar = "═" * 58
+def print_result(label: str, res: dict):
+    t   = res["trades"]
+    eq  = res["equity"]
+    bar = "═" * 60
 
     print(f"\n{bar}")
     print(f"  【{label}】")
     print(f"{bar}")
 
-    if total == 0:
-        print("  → 거래 신호 없음")
-        return
+    if t.empty:
+        print("  거래 신호 없음"); return
 
-    wins   = trades[trades["pnl_usd"] > 0]
-    losses = trades[trades["pnl_usd"] <= 0]
-    stops  = trades[trades["exit_type"] == "손절"]
-    wr     = len(wins) / total * 100
-    pf     = wins["pnl_usd"].sum() / abs(losses["pnl_usd"].sum()) \
-             if len(losses) and losses["pnl_usd"].sum() != 0 else float("inf")
+    total   = len(t)
+    wins    = t[t["pnl_usd"] > 0]
+    losses  = t[t["pnl_usd"] <= 0]
+    stops   = t[t["exit_type"] == "손절"]
+    wr      = len(wins) / total * 100
+    pf      = (wins["pnl_usd"].sum() / abs(losses["pnl_usd"].sum())
+               if len(losses) and losses["pnl_usd"].sum() != 0 else float("inf"))
+    avg_hold= t["hold_min"].mean()
+    longs   = t[t["side"] == "long"]
+    shorts  = t[t["side"] == "short"]
 
-    avg_hold = (trades["exit_date"] - trades["entry_date"]).dt.days.mean()
-
-    print(f"  기간           : {START}  →  {END}")
+    print(f"  기간           : {START}  →  {END}  (1분봉)")
     print(f"  초기 자금      : $ {INITIAL_CAPITAL:>10,.2f}")
-    print(f"  최종 자금      : $ {result['final_capital']:>10,.2f}")
-    print(f"  총 수익률      :  {result['total_return_pct']:>+8.2f} %")
-    print(f"  최대 낙폭(MDD) :  {max_drawdown(eq):>8.2f} %")
-    print(f"  샤프 비율      :  {sharpe(eq):>8.2f}")
-    print(f"{'─'*58}")
-    print(f"  총 거래 수     : {total:>5} 건")
-    print(f"  롱 거래        : {len(trades[trades['side']=='long']):>5} 건")
-    print(f"  숏 거래        : {len(trades[trades['side']=='short']):>5} 건")
-    print(f"  손절 청산      : {len(stops):>5} 건")
-    print(f"  승률           : {wr:>7.1f} %")
-    print(f"  손익비(PF)     : {pf:>8.2f}")
-    print(f"  평균 보유 기간 : {avg_hold:>7.1f} 일")
-    print(f"  평균 수익(승)  : $ {wins['pnl_usd'].mean():>+8.2f}" if len(wins) else "  평균 수익(승)  : 없음")
-    print(f"  평균 손실(패)  : $ {losses['pnl_usd'].mean():>+8.2f}" if len(losses) else "  평균 손실(패)  : 없음")
-    print(f"  최대 단일 수익 : $ {trades['pnl_usd'].max():>+8.2f}")
-    print(f"  최대 단일 손실 : $ {trades['pnl_usd'].min():>+8.2f}")
-    print(f"{'─'*58}")
-    print(f"  최근 거래 내역 (최대 8건):")
-    tail = trades.tail(8)
-    for _, t in tail.iterrows():
-        icon  = "✅" if t["pnl_usd"] > 0 else "❌"
-        side  = "롱" if t["side"] == "long" else "숏"
-        hold  = (t["exit_date"] - t["entry_date"]).days
-        print(f"    {icon} {t['entry_date'].strftime('%Y-%m-%d')} {side:2}"
-              f"  진입${t['entry_price']:>6.0f}→청산${t['exit_price']:>6.0f}"
-              f"  ({hold:>3}일) | PnL: ${t['pnl_usd']:>+7.2f}  [{t['exit_type']}]")
+    print(f"  최종 자금      : $ {res['final_capital']:>10,.2f}")
+    print(f"  총 수익률      :  {res['total_return_pct']:>+9.2f} %")
+    print(f"  최대 낙폭(MDD) :  {max_drawdown(eq):>9.2f} %")
+    print(f"  샤프 비율      :  {sharpe(eq):>9.2f}")
+    print(f"{'─'*60}")
+    print(f"  총 거래 수     : {total:>6} 건")
+    print(f"  롱 거래        : {len(longs):>6} 건   (승 {len(longs[longs['pnl_usd']>0])}건)")
+    print(f"  숏 거래        : {len(shorts):>6} 건   (승 {len(shorts[shorts['pnl_usd']>0])}건)")
+    print(f"  손절 청산      : {len(stops):>6} 건   ({len(stops)/total*100:.1f}%)")
+    print(f"  목표 청산      : {total-len(stops):>6} 건   ({(total-len(stops))/total*100:.1f}%)")
+    print(f"  승률           :  {wr:>8.1f} %")
+    print(f"  손익비(PF)     :  {pf:>8.2f}")
+    print(f"  평균 보유시간  :  {avg_hold:>7.1f} 분  ({avg_hold/60:.1f}시간)")
+    if len(wins):
+        print(f"  평균 수익(승)  : $ {wins['pnl_usd'].mean():>+8.2f}")
+    if len(losses):
+        print(f"  평균 손실(패)  : $ {losses['pnl_usd'].mean():>+8.2f}")
+    print(f"  최대 단일 수익 : $ {t['pnl_usd'].max():>+8.2f}")
+    print(f"  최대 단일 손실 : $ {t['pnl_usd'].min():>+8.2f}")
+    print(f"{'─'*60}")
+    print(f"  최근 거래 10건:")
+    for _, r in t.tail(10).iterrows():
+        icon = "✅" if r["pnl_usd"] > 0 else "❌"
+        side = "롱" if r["side"] == "long" else "숏"
+        edt  = pd.Timestamp(r["entry_date"]).strftime("%m-%d %H:%M")
+        print(f"    {icon} {edt} {side}"
+              f"  진입${r['entry_price']:>6.0f}→${r['exit_price']:>6.0f}"
+              f"  {r['hold_min']:>4}분"
+              f"  PnL: ${r['pnl_usd']:>+7.2f} [{r['exit_type']}]")
 
 
 # ═══════════════════════════════════════════════════════
 #  메인
 # ═══════════════════════════════════════════════════════
-print("=" * 58)
-print("   ETH/USDT  볼린저밴드 + RSI  자동매매 백테스트")
-print("=" * 58)
-print(f"\n  📥 ETH 역사 데이터 생성 중 (실제 주요 가격 앵커 기반)...")
+print("=" * 60)
+print("   ETH/USDT  1분봉  볼린저밴드 + RSI  백테스트")
+print("=" * 60)
 
-df = generate_eth_data()
+t0 = time.time()
+print(f"\n  📥 1분봉 데이터 생성 중  ({START} ~ {END})...")
+df = generate_1min_data()
+print(f"  ✅ {len(df):,}개 캔들 생성  ({time.time()-t0:.1f}초)")
 
-# 지표 계산
-df["bb_upper"], df["bb_mid"], df["bb_lower"] = calc_bb(df["Close"], BB_PERIOD, BB_STD)
-df["rsi"] = calc_rsi(df["Close"], RSI_PERIOD)
-df.dropna(inplace=True)
+t1 = time.time()
+print(f"\n  📐 지표 계산 중  (BB{BB_PERIOD}, RSI{RSI_PERIOD})...")
+df = add_indicators(df)
+print(f"  ✅ 완료  ({time.time()-t1:.1f}초)")
 
-print(f"  ✅ {df.index[0].strftime('%Y-%m-%d')} ~ {df.index[-1].strftime('%Y-%m-%d')}  ({len(df)}일)")
-print(f"  ETH 가격 범위: ${df['Close'].min():.0f}  ~  ${df['Close'].max():.0f}")
-print(f"\n{'─'*58}")
+print(f"\n  ETH 가격 범위: ${df['Close'].min():.0f}  ~  ${df['Close'].max():.0f}")
+print(f"\n{'─'*60}")
 print(f"  ⚙  전략 파라미터")
-print(f"{'─'*58}")
-print(f"  볼린저밴드 : {BB_PERIOD}일 SMA ± {BB_STD}σ")
-print(f"  RSI        : {RSI_PERIOD}일,  과매도 < {RSI_LOWER}  /  과매수 > {RSI_UPPER}")
-print(f"  진입 조건  : 하단 터치(RSI<{RSI_LOWER}) → 롱  |  상단 터치(RSI>{RSI_UPPER}) → 숏")
-print(f"  손절 기준  : 진입가 대비 -{STOP_LOSS_PCT*100:.0f}%")
-print(f"  거래 금액  : 잔고의 {TRADE_PCT*100:.0f}%  (초기 ${INITIAL_CAPITAL*TRADE_PCT:.0f})")
+print(f"{'─'*60}")
+print(f"  볼린저밴드  : {BB_PERIOD}분 SMA ± {BB_STD}σ")
+print(f"  RSI         : {RSI_PERIOD}분,  과매도 < {RSI_LOWER}  /  과매수 > {RSI_UPPER}")
+print(f"  진입        : 하단 터치 + RSI<{RSI_LOWER} → 롱  |  상단 터치 + RSI>{RSI_UPPER} → 숏")
+print(f"  손절        : 진입가 -{STOP_LOSS_PCT*100:.1f}%")
+print(f"  거래 금액   : 잔고의 {TRADE_PCT*100:.0f}%")
 
-# ── 백테스트 실행 ──────────────────────────────────────
-result_a = run_backtest(df.copy(), exit_mode="opposite_band")
-result_b = run_backtest(df.copy(), exit_mode="middle_band")
+t2 = time.time()
+print(f"\n  🔄 백테스트 실행 중...")
+res_a = run_backtest(df, "opposite_band")
+res_b = run_backtest(df, "middle_band")
+print(f"  ✅ 완료  ({time.time()-t2:.1f}초)")
 
-print_result("전략 A  —  반대편 밴드 도달 시 청산", result_a)
-print_result("전략 B  —  볼린저 중앙선 도달 시 청산", result_b)
+print_result("전략 A  —  반대편 밴드 도달 시 청산", res_a)
+print_result("전략 B  —  볼린저 중앙선 도달 시 청산", res_b)
 
-# ── 연도별 비교 ────────────────────────────────────────
-print(f"\n{'═'*58}")
-print("  📅  연도별 순손익 비교")
-print(f"{'─'*58}")
-print(f"  {'연도':^6}  |  {'전략A (반대밴드)':^18}  |  {'전략B (중앙선)':^18}")
+# 연도별 비교
+print(f"\n{'═'*60}")
+print("  📅  연도별 순손익")
+print(f"{'─'*60}")
+print(f"  {'연도':^6}  |  {'전략A':^18}  |  {'전략B':^18}")
 print(f"  {'─'*6}─┼─{'─'*18}─┼─{'─'*18}")
-for year in [2021, 2022, 2023, 2024]:
-    for mode, res in [("A", result_a), ("B", result_b)]:
-        t   = res["trades"]
+for yr in [2022, 2023, 2024]:
+    for mode, res in [("A", res_a), ("B", res_b)]:
+        t = res["trades"]
         if t.empty:
             val = 0.0
         else:
-            yt  = t[pd.to_datetime(t["entry_date"]).dt.year == year]
-            val = yt["pnl_usd"].sum()
-        if mode == "A":
-            val_a = val
-        else:
-            val_b = val
-    icon_a = "▲" if val_a >= 0 else "▼"
-    icon_b = "▲" if val_b >= 0 else "▼"
-    print(f"  {year}  |  {icon_a} ${val_a:>+10,.2f}          |  {icon_b} ${val_b:>+10,.2f}")
+            val = t[pd.to_datetime(t["entry_date"]).dt.year == yr]["pnl_usd"].sum()
+        if mode == "A": va = val
+        else:           vb = val
+    ia = "▲" if va >= 0 else "▼"
+    ib = "▲" if vb >= 0 else "▼"
+    print(f"  {yr}  |  {ia} ${va:>+10,.2f}          |  {ib} ${vb:>+10,.2f}")
 
-# ── 최종 요약 ─────────────────────────────────────────
-print(f"\n{'═'*58}")
+# 월별 상세 (2023년 예시)
+print(f"\n{'─'*60}")
+print("  📆  2023년 월별 손익 (전략A 기준)")
+print(f"{'─'*60}")
+t = res_a["trades"]
+if not t.empty:
+    t23 = t[pd.to_datetime(t["entry_date"]).dt.year == 2023].copy()
+    t23["month"] = pd.to_datetime(t23["entry_date"]).dt.month
+    for m in range(1, 13):
+        m_t   = t23[t23["month"] == m]
+        m_pnl = m_t["pnl_usd"].sum()
+        m_cnt = len(m_t)
+        bar   = "█" * int(abs(m_pnl) / 5 + 1) if m_cnt else ""
+        sign  = "+" if m_pnl >= 0 else ""
+        color = "▲" if m_pnl >= 0 else "▼"
+        print(f"  {m:>2}월  {color} ${m_pnl:>+7.2f}  ({m_cnt:>3}건)  {bar}")
+
+# 최종 요약
+print(f"\n{'═'*60}")
 print("  📊  최종 요약")
-print(f"{'─'*58}")
-for label, res in [("전략A (반대밴드)", result_a), ("전략B (중앙선)", result_b)]:
+print(f"{'─'*60}")
+for label, res in [("전략A (반대밴드)", res_a), ("전략B (중앙선) ", res_b)]:
     pct  = res["total_return_pct"]
     icon = "▲" if pct >= 0 else "▼"
-    print(f"  {label:16}  :  {icon}  {pct:>+7.2f}%  "
-          f"(${INITIAL_CAPITAL:,.0f} → ${res['final_capital']:,.0f})")
-print(f"{'═'*58}")
-print("\n  ⚠  면책: 시뮬레이션 데이터 기반 결과이며 실제 수익을 보장하지 않습니다.")
-print("  ⚠  실전 적용 전 추가 최적화(수수료, 슬리피지, 레버리지 등) 필요.\n")
+    tc   = len(res["trades"])
+    print(f"  {label}  :  {icon}  {pct:>+7.2f}%"
+          f"  (${INITIAL_CAPITAL:,} → ${res['final_capital']:,.0f})  [{tc}건]")
+print(f"{'═'*60}")
+print(f"\n  총 실행 시간: {time.time()-t0:.1f}초")
+print(f"\n  ⚠  시뮬레이션 기반 결과 / 실제 수수료·슬리피지 미반영\n")
