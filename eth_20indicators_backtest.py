@@ -29,11 +29,14 @@ ANCHORS = [
 # 1. 합성 데이터 생성 (ETH 실제 궤적 기반)
 # ─────────────────────────────────────────────────────────────
 def fetch_data():
-    START, END, BARS = "2021-01-01", "2025-06-30", 6   # 4H = 하루 6봉
+    START, END, BARS = "2023-01-01", "2025-06-30", 96  # 15분봉 = 하루 96봉
     daily = pd.date_range(START, END, freq="D")
     ad = pd.to_datetime([a[0] for a in ANCHORS])
     ap = [a[1] for a in ANCHORS]
-    tgt = pd.Series(ap, index=ad).reindex(daily).interpolate("time").values
+    # 전체 기간에서 먼저 보간 후 원하는 구간만 잘라냄 (앞 구간 NaN 방지)
+    all_days = pd.date_range("2021-01-01", "2025-06-30", freq="D")
+    tgt_full = pd.Series(ap, index=ad).reindex(all_days).interpolate("time").ffill().bfill()
+    tgt = tgt_full.reindex(daily).values
 
     np.random.seed(42)
     n = len(daily) * BARS
@@ -41,15 +44,15 @@ def fetch_data():
     prev = tgt[0]
     for d in range(len(daily)):
         t  = tgt[d]
-        px = prev * np.exp(np.cumsum(np.log(t / prev) / BARS * 0.2 + np.random.normal(0, 0.022, BARS)))
-        rn = px * np.abs(np.random.normal(0.013, 0.006, BARS))
+        px = prev * np.exp(np.cumsum(np.log(t / prev) / BARS * 0.2 + np.random.normal(0, 0.006, BARS)))
+        rn = px * np.abs(np.random.normal(0.003, 0.0015, BARS))
         cls[d*BARS:d*BARS+BARS] = px
         hi [d*BARS:d*BARS+BARS] = px + rn * 0.55
         lo [d*BARS:d*BARS+BARS] = px - rn * 0.55
-        vol[d*BARS:d*BARS+BARS] = np.abs(np.random.normal(150000, 60000, BARS)) * (1 + np.abs(rn / px))
+        vol[d*BARS:d*BARS+BARS] = np.abs(np.random.normal(8000, 3000, BARS)) * (1 + np.abs(rn / px))
         prev = px[-1]
 
-    idx = pd.date_range(START, periods=n, freq="4h")
+    idx = pd.date_range(START, periods=n, freq="15min")
     df  = pd.DataFrame({
         'open':  np.r_[cls[0], cls[:-1]],
         'high':  hi, 'low': lo, 'close': cls, 'volume': vol
@@ -426,7 +429,7 @@ def run_all(df):
 # ─────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     print("=" * 72)
-    print("  ETH/USDT 20 지표 종합 백테스트  (Bybit 4H)")
+    print("  ETH/USDT 20 지표 종합 백테스트  (Bybit 15M)")
     print("=" * 72)
     print("데이터 수집 중...")
     df = fetch_data()
