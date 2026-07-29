@@ -127,8 +127,8 @@ p_lower = plot(bb_lower, "BB 하단", color=color.new(color.white, 30), linewidt
 fill(p_upper, p_lower, color=color.new(color.gray, 90))
 
 // 물타기 레벨 표시
-bgcolor(long_layers  >= max_layers ? color.new(color.orange, 85) :
-        short_layers >= max_layers ? color.new(color.orange, 85) : na)
+bgcolor(long_layers  >= max_layers ? color.new(color.orange, 85)
+      : short_layers >= max_layers ? color.new(color.orange, 85) : na)
 
 bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93)
       : strategy.position_size < 0 ? color.new(color.red,  93) : na)
