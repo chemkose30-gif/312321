@@ -1,0 +1,103 @@
+//@version=5
+strategy(
+     title       = "S4 이중밴드 전략 (ETH/USDT 4H)",
+     shorttitle  = "S4-DoubleBand",
+     overlay     = true,
+     initial_capital     = 10000,
+     default_qty_type    = strategy.percent_of_equity,
+     default_qty_value   = 3,
+     commission_type     = strategy.commission.percent,
+     commission_value    = 0.04,
+     slippage            = 1
+)
+
+// ── 파라미터 ────────────────────────────────────────────
+bb_period   = input.int(20,   "BB 기간",        minval=5)
+bb_std      = input.float(1.0,"BB 표준편차",    minval=0.1, step=0.1)
+rsi_period  = input.int(14,   "RSI 기간",       minval=2)
+rsi_upper   = input.int(60,   "RSI 상단 기준",  minval=50, maxval=90)
+rsi_lower   = input.int(40,   "RSI 하단 기준",  minval=10, maxval=50)
+stop_pct    = input.float(2.5,"손절 (%)",       minval=0.1, step=0.1) / 100
+
+// ── 지표 계산 ────────────────────────────────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_period, bb_std)
+
+rsi = ta.rsi(close, rsi_period)
+
+// ── 진입 조건 ────────────────────────────────────────────
+long_entry  = close <= bb_lower and rsi < rsi_lower
+short_entry = close >= bb_upper and rsi > rsi_upper
+
+// ── 청산 조건 ────────────────────────────────────────────
+long_exit   = close >= bb_upper
+short_exit  = close <= bb_lower
+
+// ── 손절가 계산 ─────────────────────────────────────────
+long_stop   = strategy.position_avg_price * (1 - stop_pct)
+short_stop  = strategy.position_avg_price * (1 + stop_pct)
+
+// ── 전략 실행 ────────────────────────────────────────────
+if long_entry
+    strategy.entry("Long", strategy.long, comment="롱 진입")
+
+if short_entry
+    strategy.entry("Short", strategy.short, comment="숏 진입")
+
+// 목표 청산
+if strategy.position_size > 0 and long_exit
+    strategy.close("Long", comment="롱 목표청산")
+
+if strategy.position_size < 0 and short_exit
+    strategy.close("Short", comment="숏 목표청산")
+
+// 손절
+if strategy.position_size > 0
+    strategy.exit("Long-SL", from_entry="Long", stop=long_stop, comment="손절")
+
+if strategy.position_size < 0
+    strategy.exit("Short-SL", from_entry="Short", stop=short_stop, comment="손절")
+
+// ── 시각화 ──────────────────────────────────────────────
+plot(bb_upper, "BB 상단 (1σ)", color=color.new(color.red,   30), linewidth=2)
+plot(bb_mid,   "BB 중앙",      color=color.new(color.gray,  20), linewidth=1)
+plot(bb_lower, "BB 하단 (1σ)", color=color.new(color.green, 30), linewidth=2)
+
+fill(
+     plot(bb_upper, display=display.none),
+     plot(bb_lower, display=display.none),
+     color=color.new(color.blue, 92),
+     title="BB 밴드 배경"
+)
+
+// 진입 신호 마커
+plotshape(
+     long_entry  and strategy.position_size <= 0,
+     title="롱 진입",
+     location=location.belowbar,
+     style=shape.triangleup,
+     size=size.small,
+     color=color.new(color.lime, 0),
+     text="L"
+)
+plotshape(
+     short_entry and strategy.position_size >= 0,
+     title="숏 진입",
+     location=location.abovebar,
+     style=shape.triangledown,
+     size=size.small,
+     color=color.new(color.red, 0),
+     text="S"
+)
+
+// 포지션 배경색
+bgcolor(
+     strategy.position_size > 0 ? color.new(color.lime, 93) :
+     strategy.position_size < 0 ? color.new(color.red,  93) : na,
+     title="포지션 배경"
+)
+
+// ── RSI 서브플롯 ─────────────────────────────────────────
+rsi_plot = plot(rsi, "RSI", color=color.purple, display=display.pane)
+hline(rsi_upper, "RSI 상단", color=color.red,   linestyle=hline.style_dashed)
+hline(rsi_lower, "RSI 하단", color=color.green, linestyle=hline.style_dashed)
+hline(50,        "RSI 중앙", color=color.gray,  linestyle=hline.style_dotted)
