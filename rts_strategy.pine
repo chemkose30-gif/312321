@@ -754,33 +754,38 @@ if showDashInput and barstate.islast
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Trend",      text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, trendStr,      text_color = trendClr,  text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Age",         text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, str.tostring(trendAge) + " bars", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         string htfStr = not useHtfInput ? "Off" : htfBull ? "Bullish" : htfBear ? "Bearish" : "Flat"
         color  htfClr = not useHtfInput ? TEXT_MUTED : htfBull ? BULL_TEXT : htfBear ? BEAR_TEXT : NEUTRAL_TEXT
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "HTF Bias",    text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, htfStr,         text_color = htfClr,    text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         string rsiStr = na(rsiS) ? "—" : str.tostring(rsiS, "#.0")
         color  rsiClr = rsiS > 55 ? BULL_TEXT : rsiS < 45 ? BEAR_TEXT : NEUTRAL_TEXT
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "RSI",         text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, rsiStr,         text_color = rsiClr,    text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         string lastSigStr = lastSigDir == 0 or na(lastSigBar) ? "—" : (lastSigDir == 1 ? "Long" : "Short") + " · " + str.tostring(nz(lastSigScore), "#") + " (" + str.tostring(bar_index - lastSigBar) + ")"
         color  lastSigClr = lastSigDir == 1 ? BULL_TEXT : lastSigDir == -1 ? BEAR_TEXT : TEXT_MUTED
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Last signal", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, lastSigStr,     text_color = lastSigClr, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
     if showTradeSecInput
         table.cell(dashTable, 0, r, "— Trade —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
@@ -797,39 +802,46 @@ if showDashInput and barstate.islast
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "Entry",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, dirWord + " @ " + fmtPrice(activeEntry), text_color = dirClr,  text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             string slVal  = (beActive ? "BE @ " : "") + fmtPrice(activeSL)
             color  slClr  = beActive ? BE_COLOR : SL_COLOR
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "SL",      text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, slVal,       text_color = slClr,     text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP1",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1), text_color = tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP2",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2), text_color = tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP3",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3), text_color = tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "R:R",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, str.tostring(effTp1m, "#.#") + "R", text_color = rrClr, text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "SL Dist", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, str.tostring(riskPct, "#.##") + "%", text_color = riskClr, text_size = dashFontSize, bgcolor = rb)
-            r += 1; zeb := not zeb
+            r += 1
+        zeb := not zeb
         else
             table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, text_size = dashFontSize, text_halign = text.align_center)
             table.merge_cells(dashTable, 0, r, 1, r)
@@ -857,29 +869,34 @@ if showDashInput and barstate.islast
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Trades",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pTotal) : "—", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Wins",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pW) : "—", text_color = pTotal > 0 ? BULL_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Losses",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pL) : "—", text_color = pTotal > 0 ? BEAR_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         string dashWR = pTotal > 0 ? str.tostring(pWinRate, "#.#") + "%  " + buildGauge(pWinRate, 100, 8) : "—"
         color  wrCol  = pTotal == 0 ? TEXT_MUTED : pWinRate >= 55.0 ? BULL_TEXT : pWinRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Win rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, dashWR,      text_color = wrCol,      text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
         rb := zeb ? TABLE_ROW_ALT : TABLE_BG
         table.cell(dashTable, 0, r, "Form",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
         table.cell(dashTable, 1, r, formStr == "" ? "—" : formStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
-        r += 1; zeb := not zeb
+        r += 1
+        zeb := not zeb
 
     table.cell(dashTable, 0, r, "RTS · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
     table.merge_cells(dashTable, 0, r, 1, r)
