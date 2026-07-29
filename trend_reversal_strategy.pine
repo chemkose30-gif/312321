@@ -1,6 +1,6 @@
 //@version=5
 strategy(
-     title            = "추세전환 전략 v1.0 (CCI+일목+SAR+DMI+Stoch)",
+     title            = "추세전환 전략 v2.0 (CCI+일목+SAR+DMI+Stoch)",
      shorttitle        = "TrendRev",
      overlay           = true,
      initial_capital   = 10000,
@@ -55,10 +55,11 @@ st_os       = input.int(20, "Stoch 과매도", minval=5,  maxval=40, group=GRP_S
 st_ob       = input.int(80, "Stoch 과매수", minval=60, maxval=95, group=GRP_ST)
 
 // 신호 강도
-bull_thresh = input.int(3, "롱 진입 최소 점수 (5개 중)", minval=1, maxval=5, group=GRP_SIG)
-bear_thresh = input.int(3, "숏 진입 최소 점수 (5개 중)", minval=1, maxval=5, group=GRP_SIG)
-exit_thresh = input.int(3, "청산 최소 점수 (반전 신호)", minval=1, maxval=5, group=GRP_SIG)
-use_sar_exit = input.bool(true, "SAR 반전 즉시 청산 (단독)", group=GRP_SIG)
+bull_thresh  = input.int(3, "롱 진입 최소 점수 (5개 중)", minval=2, maxval=5, group=GRP_SIG)
+bear_thresh  = input.int(3, "숏 진입 최소 점수 (5개 중)", minval=2, maxval=5, group=GRP_SIG)
+exit_thresh  = input.int(2, "청산 최소 점수 (반전 신호)", minval=1, maxval=5, group=GRP_SIG)
+use_sar_exit = input.bool(false, "SAR 반전 즉시 청산 (단독)", group=GRP_SIG)
+min_hold_bars = input.int(8, "최소 보유 봉수 (재진입 방지)", minval=1, maxval=50, group=GRP_SIG)
 
 // 청산
 sl_pct      = input.float(3.0, "손절 (%)", minval=0.5, step=0.1, group=GRP_EXIT)
@@ -123,39 +124,52 @@ stoch_cross_up   = ta.crossover(k_line, d_line)  and k_line < 50
 stoch_cross_down = ta.crossunder(k_line, d_line) and k_line > 50
 
 // ═══════════════════════════════════════════════════════════
-//  점수 계산 (각 지표 +1점)
+//  점수 계산 — 이번 봉에서 발생한 전환 신호만 카운트
+//  (현재 상태 X → 크로스/전환 이벤트 O)
 // ═══════════════════════════════════════════════════════════
-// 상승 전환 점수
-bull_cci    = ta.crossover(cci_val, cci_os) or (cci_val > 0 and cci_val[1] <= 0)
-bull_ich    = above_cloud or (ta.crossover(ich_conv_line, ich_base_line) and not below_cloud)
-bull_sar    = sar_flip_up
-bull_dmi    = dmi_cross_up or (dmi_bull and not dmi_bull[1])
-bull_stoch  = stoch_cross_up
 
-bull_score = (bull_cci  ? 1 : 0)
-           + (bull_ich  ? 1 : 0)
-           + (bull_sar  ? 1 : 0)
-           + (bull_dmi  ? 1 : 0)
-           + (bull_stoch? 1 : 0)
+// CCI: 과매도(-100) 탈출 또는 0선 상향돌파
+bull_cci   = ta.crossover(cci_val, cci_os) or ta.crossover(cci_val, 0)
+bear_cci   = ta.crossunder(cci_val, cci_ob) or ta.crossunder(cci_val, 0)
 
-// 하락 전환 점수
-bear_cci    = ta.crossunder(cci_val, cci_ob) or (cci_val < 0 and cci_val[1] >= 0)
-bear_ich    = below_cloud or (ta.crossunder(ich_conv_line, ich_base_line) and not above_cloud)
-bear_sar    = sar_flip_down
-bear_dmi    = dmi_cross_down or (dmi_bear and not dmi_bear[1])
-bear_stoch  = stoch_cross_down
+// 일목: 가격이 구름 상단을 위로 돌파 / 전환선이 기준선 상향돌파
+bull_ich   = ta.crossover(close, cloud_top)
+           or (ta.crossover(ich_conv_line, ich_base_line) and not below_cloud)
+bear_ich   = ta.crossunder(close, cloud_bottom)
+           or (ta.crossunder(ich_conv_line, ich_base_line) and not above_cloud)
 
-bear_score = (bear_cci  ? 1 : 0)
-           + (bear_ich  ? 1 : 0)
-           + (bear_sar  ? 1 : 0)
-           + (bear_dmi  ? 1 : 0)
-           + (bear_stoch? 1 : 0)
+// SAR: 이번 봉에서 방향 전환
+bull_sar   = sar_flip_up
+bear_sar   = sar_flip_down
+
+// DMI: DI+ / DI- 교차 (ADX 강도 확인)
+bull_dmi   = dmi_cross_up   and adx_val >= adx_thresh
+bear_dmi   = dmi_cross_down and adx_val >= adx_thresh
+
+// 스토캐스틱: 과매도/과매수 구간에서의 크로스만 유효
+bull_stoch = stoch_cross_up   and k_line < 50
+bear_stoch = stoch_cross_down and k_line > 50
+
+bull_score = (bull_cci   ? 1 : 0)
+           + (bull_ich   ? 1 : 0)
+           + (bull_sar   ? 1 : 0)
+           + (bull_dmi   ? 1 : 0)
+           + (bull_stoch ? 1 : 0)
+
+bear_score = (bear_cci   ? 1 : 0)
+           + (bear_ich   ? 1 : 0)
+           + (bear_sar   ? 1 : 0)
+           + (bear_dmi   ? 1 : 0)
+           + (bear_stoch ? 1 : 0)
 
 // ═══════════════════════════════════════════════════════════
-//  진입 조건
+//  진입 조건 (최소 보유 봉수 쿨다운 포함)
 // ═══════════════════════════════════════════════════════════
-long_entry  = bull_score >= bull_thresh and strategy.position_size == 0
-short_entry = bear_score >= bear_thresh and strategy.position_size == 0
+var int last_exit_bar = 0
+cooldown_ok = (bar_index - last_exit_bar) >= min_hold_bars
+
+long_entry  = bull_score >= bull_thresh and strategy.position_size == 0 and cooldown_ok
+short_entry = bear_score >= bear_thresh and strategy.position_size == 0 and cooldown_ok
 
 // ═══════════════════════════════════════════════════════════
 //  수량 계산
@@ -184,7 +198,8 @@ if strategy.position_size > 0
     rev_exit_long = bear_score >= exit_thresh or (use_sar_exit and sar_flip_down)
 
     if rev_exit_long
-        strategy.close("Long", comment="전환↓" + str.tostring(bear_score))
+        strategy.close("Long", comment="전환↓")
+        last_exit_bar := bar_index
     else
         if use_trail
             strategy.exit("Long-SL", from_entry="Long",
@@ -202,7 +217,8 @@ if strategy.position_size < 0
     rev_exit_short = bull_score >= exit_thresh or (use_sar_exit and sar_flip_up)
 
     if rev_exit_short
-        strategy.close("Short", comment="전환↑" + str.tostring(bull_score))
+        strategy.close("Short", comment="전환↑")
+        last_exit_bar := bar_index
     else
         if use_trail
             strategy.exit("Short-SL", from_entry="Short",
@@ -212,6 +228,10 @@ if strategy.position_size < 0
         else
             strategy.exit("Short-SL", from_entry="Short",
                  stop=sl_price, comment="SL")
+
+// 손절 청산 시에도 쿨다운 적용
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    last_exit_bar := bar_index
 
 // ═══════════════════════════════════════════════════════════
 //  시각화
