@@ -7,7 +7,7 @@ bb_std        = input.float(2.0, "BB 표준편차",          minval=0.5, step=0.
 kc_period     = input.int(20,    "KC 기간 (켈트너)",     minval=5)
 kc_mult       = input.float(1.5, "KC ATR 배수",          minval=0.5, step=0.1)
 atr_len       = input.int(14,    "ATR 기간",             minval=5)
-min_sq_bars   = input.int(5,     "최소 스퀴즈 지속 (봉)", minval=3, maxval=30)
+min_sq_bars   = input.int(5,     "해제 후 진입 유효 구간 (봉)", minval=1, maxval=20)
 mom_len       = input.int(12,    "모멘텀 기간",           minval=5)
 stop_pct      = input.float(2.5, "손절 (%)",             minval=0.1, step=0.1) / 100
 
@@ -25,25 +25,23 @@ in_squeeze = bb_upper < kc_upper and bb_lower > kc_lower
 var int squeeze_count = 0
 squeeze_count := in_squeeze ? squeeze_count + 1 : 0
 
-// 스퀴즈 해제 + 최소 지속 기간 충족
-squeeze_fire  = in_squeeze[1] and not in_squeeze
-valid_squeeze = squeeze_count[1] >= min_sq_bars  // 해제 직전 지속 봉 수
+// 스퀴즈 해제
+squeeze_fire = in_squeeze[1] and not in_squeeze
 
-// ── TTM 스타일 모멘텀 (방향 판단) ─────────────────────────────
-// 고/저/중앙 평균값과 현재가의 차이를 선형회귀로 평활화
+// 스퀴즈 해제 후 N봉 이내 (진입 유효 구간)
+fire_window = ta.barssince(squeeze_fire) <= min_sq_bars
+
+// ── TTM 스타일 모멘텀 ─────────────────────────────────────────
 highest_h = ta.highest(high, mom_len)
 lowest_l  = ta.lowest(low,  mom_len)
 mid_val   = math.avg(highest_h, lowest_l, ta.sma(close, mom_len))
 delta     = close - mid_val
 momentum  = ta.linreg(delta, mom_len, 0)
 
-// 모멘텀 전환 (위로 꺾임 / 아래로 꺾임)
-mom_up   = momentum > momentum[1]  // 모멘텀 상승 전환
-mom_down = momentum < momentum[1]  // 모멘텀 하락 전환
-
-// ── 진입 조건 ─────────────────────────────────────────────────
-long_entry  = squeeze_fire and valid_squeeze and momentum > 0 and mom_up  and strategy.position_size == 0
-short_entry = squeeze_fire and valid_squeeze and momentum < 0 and mom_down and strategy.position_size == 0
+// ── 진입: 스퀴즈 해제 후 실제 밴드 돌파 시 진입 ─────────────
+// 방향을 모멘텀으로 예측하지 않고, 가격이 직접 돌파를 확인
+long_entry  = fire_window and ta.crossover(close, bb_upper)  and strategy.position_size == 0
+short_entry = fire_window and ta.crossunder(close, bb_lower) and strategy.position_size == 0
 
 // ── 전략 실행 ─────────────────────────────────────────────────
 if long_entry
@@ -79,7 +77,7 @@ plot(kc_upper, "KC 상단", color=color.new(color.orange, 60), linewidth=1, styl
 plot(kc_lower, "KC 하단", color=color.new(color.orange, 60), linewidth=1, style=plot.style_stepline)
 
 // 스퀴즈 강도: 지속 봉 수 표시 (배경색 진해질수록 긴 스퀴즈)
-bgcolor(in_squeeze and squeeze_count >= min_sq_bars ? color.new(color.purple, 85) : in_squeeze ? color.new(color.gray, 90) : na, title="스퀴즈")
+bgcolor(fire_window ? color.new(color.yellow, 88) : in_squeeze ? color.new(color.gray, 90) : na, title="스퀴즈")
 
 plotshape(long_entry,  title="롱 돌파", location=location.belowbar, style=shape.triangleup,   size=size.normal, color=color.lime, text="↑")
 plotshape(short_entry, title="숏 돌파", location=location.abovebar, style=shape.triangledown, size=size.normal, color=color.red,  text="↓")
