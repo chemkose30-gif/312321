@@ -233,10 +233,10 @@ plot(ich_base_line, "기준선", color=color.new(color.orange, 10), linewidth=1)
 // 진입 화살표
 plotshape(long_entry,  title="롱 진입", location=location.belowbar,
           style=shape.triangleup,   size=size.normal, color=color.lime,
-          text="L" + str.tostring(bull_score))
+          text="L")
 plotshape(short_entry, title="숏 진입", location=location.abovebar,
           style=shape.triangledown, size=size.normal, color=color.red,
-          text="S" + str.tostring(bear_score))
+          text="S")
 
 // 포지션 배경
 bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93)
