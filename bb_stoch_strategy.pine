@@ -1,0 +1,195 @@
+//@version=5
+strategy(
+     title            = "BB + Stochastic 전략 v1.0",
+     shorttitle        = "BB-Stoch",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.fixed,
+     default_qty_value = 1,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.04,
+     slippage          = 2,
+     calc_on_every_tick = false
+     )
+
+// ═══════════════════════════════════════════════════════════
+//  그룹 레이블
+// ═══════════════════════════════════════════════════════════
+GRP_BB    = "볼린저밴드 설정"
+GRP_STOCH = "스토캐스틱 설정"
+GRP_FILT  = "필터 설정"
+GRP_EXIT  = "청산 설정"
+GRP_RISK  = "리스크 관리"
+
+// ═══════════════════════════════════════════════════════════
+//  볼린저밴드 파라미터
+// ═══════════════════════════════════════════════════════════
+bb_period  = input.int   (20,   "BB 기간",          minval=5,   maxval=200,  group=GRP_BB)
+bb_std     = input.float (2.0,  "BB 표준편차 배수", minval=0.5, maxval=4.0,  step=0.1, group=GRP_BB)
+bb_src     = input.source(close,"BB 소스",          group=GRP_BB)
+
+// ═══════════════════════════════════════════════════════════
+//  스토캐스틱 파라미터
+// ═══════════════════════════════════════════════════════════
+stoch_len  = input.int(14, "Stoch %K 기간",   minval=1, group=GRP_STOCH)
+stoch_sm_k = input.int(3,  "Stoch %K 스무딩", minval=1, group=GRP_STOCH)
+stoch_sm_d = input.int(3,  "Stoch %D 스무딩", minval=1, group=GRP_STOCH)
+os_level   = input.int(20, "과매도 기준",     minval=5,  maxval=49, group=GRP_STOCH)
+ob_level   = input.int(80, "과매수 기준",     minval=51, maxval=95, group=GRP_STOCH)
+
+// ═══════════════════════════════════════════════════════════
+//  필터 설정
+// ═══════════════════════════════════════════════════════════
+use_ema_filter  = input.bool (true,  "EMA 추세 필터 사용", group=GRP_FILT)
+ema_len         = input.int  (200,   "EMA 기간",           minval=50,  group=GRP_FILT)
+use_vol_filter  = input.bool (true,  "거래량 필터 사용",   group=GRP_FILT)
+vol_ma_len      = input.int  (20,    "거래량 이평 기간",   minval=5,   group=GRP_FILT)
+vol_mult        = input.float(1.0,   "거래량 배수 (현재 거래량 >= N×MA)", minval=0.5, step=0.1, group=GRP_FILT)
+use_bb_width    = input.bool (true,  "BB 폭 필터 (횡보 구간만)", group=GRP_FILT)
+bb_width_max    = input.float(0.10,  "BB 폭 최대값 (bandwith < N×close)", minval=0.01, step=0.005, group=GRP_FILT)
+
+// ═══════════════════════════════════════════════════════════
+//  청산 설정
+// ═══════════════════════════════════════════════════════════
+tp1_pct    = input.float(1.0,  "1차 TP (%)",           minval=0.1, step=0.1, group=GRP_EXIT)
+tp2_pct    = input.float(2.0,  "2차 TP (%)",           minval=0.2, step=0.1, group=GRP_EXIT)
+sl_pct     = input.float(1.5,  "손절 (%)",             minval=0.1, step=0.1, group=GRP_EXIT)
+tp1_qty    = input.int  (50,   "1차 TP 청산 비율 (%)", minval=1,   maxval=99, group=GRP_EXIT)
+use_mid_exit = input.bool(true, "BB 중앙선 익절 (TP1 대신)", group=GRP_EXIT)
+
+// ═══════════════════════════════════════════════════════════
+//  리스크 관리
+// ═══════════════════════════════════════════════════════════
+leverage_input    = input.int  (3,    "레버리지 배수",  minval=1, maxval=125, group=GRP_RISK)
+equity_pct_input  = input.float(10.0, "자본 비율 (%)", minval=0.1, maxval=100.0, step=0.1, group=GRP_RISK)
+
+// ═══════════════════════════════════════════════════════════
+//  지표 계산
+// ═══════════════════════════════════════════════════════════
+// 볼린저밴드
+[bb_mid, bb_upper, bb_lower] = ta.bb(bb_src, bb_period, bb_std)
+bb_width = (bb_upper - bb_lower) / bb_mid   // 정규화된 밴드 폭 (좁을수록 횡보)
+
+// 스토캐스틱
+raw_k      = ta.stoch(close, high, low, stoch_len)
+k_line     = ta.sma(raw_k, stoch_sm_k)
+d_line     = ta.sma(k_line, stoch_sm_d)
+
+// 필터용 지표
+ema200     = ta.ema(close, ema_len)
+vol_ma     = ta.sma(volume, vol_ma_len)
+
+// 포지션 수량 계산 (레버리지 반영)
+qty_val = strategy.equity * (equity_pct_input / 100.0) * leverage_input / close
+
+// ═══════════════════════════════════════════════════════════
+//  필터 조건
+// ═══════════════════════════════════════════════════════════
+ema_long_ok  = not use_ema_filter or close < ema200   // 롱: 가격이 EMA 아래 (횡보/하락 반전 포착)
+ema_short_ok = not use_ema_filter or close > ema200   // 숏: 가격이 EMA 위
+
+vol_ok       = not use_vol_filter  or volume >= vol_ma * vol_mult
+bb_width_ok  = not use_bb_width    or bb_width <= bb_width_max
+
+// ═══════════════════════════════════════════════════════════
+//  진입 조건
+// ═══════════════════════════════════════════════════════════
+// 롱: 하단밴드 터치 + 스토캐스틱 과매도 + %K가 %D 상향 돌파
+long_bb    = close <= bb_lower
+long_stoch = k_line < os_level and ta.crossover(k_line, d_line)
+
+long_entry  = long_bb and long_stoch and ema_long_ok and vol_ok and bb_width_ok
+              and strategy.position_size == 0
+
+// 숏: 상단밴드 터치 + 스토캐스틱 과매수 + %K가 %D 하향 돌파
+short_bb    = close >= bb_upper
+short_stoch = k_line > ob_level and ta.crossunder(k_line, d_line)
+
+short_entry = short_bb and short_stoch and ema_short_ok and vol_ok and bb_width_ok
+              and strategy.position_size == 0
+
+// ═══════════════════════════════════════════════════════════
+//  진입
+// ═══════════════════════════════════════════════════════════
+if long_entry
+    strategy.entry("Long", strategy.long, qty=qty_val, comment="BB↓ Stoch↑")
+
+if short_entry
+    strategy.entry("Short", strategy.short, qty=qty_val, comment="BB↑ Stoch↓")
+
+// ═══════════════════════════════════════════════════════════
+//  청산
+// ═══════════════════════════════════════════════════════════
+long_avg  = strategy.position_avg_price
+short_avg = strategy.position_avg_price
+
+long_sl   = long_avg  * (1 - sl_pct  / 100)
+short_sl  = short_avg * (1 + sl_pct  / 100)
+long_tp1  = long_avg  * (1 + tp1_pct / 100)
+long_tp2  = long_avg  * (1 + tp2_pct / 100)
+short_tp1 = short_avg * (1 - tp1_pct / 100)
+short_tp2 = short_avg * (1 - tp2_pct / 100)
+
+if strategy.position_size > 0
+    if use_mid_exit
+        // BB 중앙선 복귀 시 전량 익절
+        if close >= bb_mid
+            strategy.close("Long", comment="중앙선")
+    else
+        // 분할 익절 + 손절
+        strategy.exit("Long-TP1", from_entry="Long",
+             qty_percent=tp1_qty,
+             limit=long_tp1, stop=long_sl, comment="TP1")
+        strategy.exit("Long-TP2", from_entry="Long",
+             qty_percent=100,
+             limit=long_tp2, stop=long_sl, comment="TP2")
+    // 손절 (중앙선 익절 모드에서도 SL 유지)
+    if use_mid_exit
+        strategy.exit("Long-SL", from_entry="Long", stop=long_sl, comment="SL")
+
+if strategy.position_size < 0
+    if use_mid_exit
+        if close <= bb_mid
+            strategy.close("Short", comment="중앙선")
+    else
+        strategy.exit("Short-TP1", from_entry="Short",
+             qty_percent=tp1_qty,
+             limit=short_tp1, stop=short_sl, comment="TP1")
+        strategy.exit("Short-TP2", from_entry="Short",
+             qty_percent=100,
+             limit=short_tp2, stop=short_sl, comment="TP2")
+    if use_mid_exit
+        strategy.exit("Short-SL", from_entry="Short", stop=short_sl, comment="SL")
+
+// ═══════════════════════════════════════════════════════════
+//  시각화
+// ═══════════════════════════════════════════════════════════
+p_upper = plot(bb_upper, "BB 상단", color=color.new(color.red,   30), linewidth=2)
+p_mid   = plot(bb_mid,   "BB 중앙", color=color.new(color.gray,  30), linewidth=1)
+p_lower = plot(bb_lower, "BB 하단", color=color.new(color.green, 30), linewidth=2)
+fill(p_upper, p_lower, color=color.new(color.blue, 90))
+
+plot(use_ema_filter ? ema200 : na, "EMA200", color=color.new(color.orange, 0), linewidth=1)
+
+plotshape(long_entry,  title="롱 진입", location=location.belowbar,
+          style=shape.triangleup,   size=size.normal, color=color.lime, text="L")
+plotshape(short_entry, title="숏 진입", location=location.abovebar,
+          style=shape.triangledown, size=size.normal, color=color.red,  text="S")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.lime, 92)
+      : strategy.position_size < 0 ? color.new(color.red,  92)
+      : na)
+
+// 정보 테이블
+var table info = table.new(position.top_right, 2, 5, border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "BB+Stoch 설정", bgcolor=color.new(color.navy,80), text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, "", bgcolor=color.new(color.navy,80))
+    table.cell(info, 0, 1, "BB 기간/배수", text_size=size.small)
+    table.cell(info, 1, 1, str.tostring(bb_period) + " / " + str.tostring(bb_std), text_size=size.small)
+    table.cell(info, 0, 2, "Stoch K/D", text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(stoch_len) + "," + str.tostring(stoch_sm_k) + "," + str.tostring(stoch_sm_d), text_size=size.small)
+    table.cell(info, 0, 3, "레버리지/자본%", text_size=size.small)
+    table.cell(info, 1, 3, str.tostring(leverage_input) + "x / " + str.tostring(equity_pct_input) + "%", text_size=size.small)
+    table.cell(info, 0, 4, "SL / TP1 / TP2", text_size=size.small)
+    table.cell(info, 1, 4, str.tostring(sl_pct) + "% / " + str.tostring(tp1_pct) + "% / " + str.tostring(tp2_pct) + "%", text_size=size.small)

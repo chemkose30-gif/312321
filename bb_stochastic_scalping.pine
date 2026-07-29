@@ -1,0 +1,70 @@
+//@version=5
+strategy("BB + Stochastic 스캘핑 (5분봉)", shorttitle="BB-Stoch-Scalp", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=3, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1)
+
+// ── 파라미터 ─────────────────────────────────────────────────
+bb_period  = input.int(9,    "BB 기간 (스캘핑: 9)",   minval=5)
+bb_std     = input.float(2.0, "BB 표준편차",           minval=0.5, step=0.1)
+stoch_k    = input.int(14,   "Stoch %K 기간",          minval=5)
+stoch_d    = input.int(3,    "Stoch %D 스무딩",        minval=1)
+stoch_s    = input.int(3,    "Stoch %K 스무딩",        minval=1)
+ob_level   = input.int(80,   "과매수 기준",             minval=60, maxval=95)
+os_level   = input.int(20,   "과매도 기준",             minval=5,  maxval=40)
+stop_pct   = input.float(1.5, "손절 (%)",              minval=0.1, step=0.1) / 100
+
+// ── 지표 계산 ─────────────────────────────────────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_period, bb_std)
+
+// Stochastic: Raw %K → 스무딩 → %D
+raw_k      = ta.stoch(close, high, low, stoch_k)
+stoch_k_sm = ta.sma(raw_k, stoch_s)      // 스무딩된 %K
+stoch_d_sm = ta.sma(stoch_k_sm, stoch_d) // %D
+
+// ── 진입 조건 ─────────────────────────────────────────────────
+// 롱: 하단밴드 터치 + Stochastic 과매도 + %K가 %D 위로 골든크로스
+long_bb    = close <= bb_lower
+long_stoch = stoch_k_sm < os_level
+long_cross = ta.crossover(stoch_k_sm, stoch_d_sm)  // %K가 %D 상향 돌파
+
+long_entry = long_bb and long_stoch and long_cross and strategy.position_size == 0
+
+// 숏: 상단밴드 터치 + Stochastic 과매수 + %K가 %D 아래로 데드크로스
+short_bb    = close >= bb_upper
+short_stoch = stoch_k_sm > ob_level
+short_cross = ta.crossunder(stoch_k_sm, stoch_d_sm) // %K가 %D 하향 돌파
+
+short_entry = short_bb and short_stoch and short_cross and strategy.position_size == 0
+
+// ── 전략 실행 ─────────────────────────────────────────────────
+if long_entry
+    strategy.entry("Long", strategy.long, comment="과매도↑")
+
+if short_entry
+    strategy.entry("Short", strategy.short, comment="과매수↓")
+
+// 청산: BB 중앙선 복귀 (스캘핑 목표)
+if strategy.position_size > 0 and close >= bb_mid
+    strategy.close("Long", comment="중앙선")
+
+if strategy.position_size < 0 and close <= bb_mid
+    strategy.close("Short", comment="중앙선")
+
+// 손절 (스캘핑: 타이트하게)
+long_stop  = strategy.position_avg_price * (1 - stop_pct)
+short_stop = strategy.position_avg_price * (1 + stop_pct)
+
+if strategy.position_size > 0
+    strategy.exit("Long-SL", from_entry="Long", stop=long_stop, comment="손절")
+
+if strategy.position_size < 0
+    strategy.exit("Short-SL", from_entry="Short", stop=short_stop, comment="손절")
+
+// ── 시각화 ──────────────────────────────────────────────────
+p_upper = plot(bb_upper, "BB 상단", color=color.new(color.red,   30), linewidth=2)
+p_mid   = plot(bb_mid,   "BB 중앙", color=color.new(color.gray,  20), linewidth=1)
+p_lower = plot(bb_lower, "BB 하단", color=color.new(color.green, 30), linewidth=2)
+fill(p_upper, p_lower, color=color.new(color.blue, 92))
+
+plotshape(long_entry,  title="롱 진입", location=location.belowbar, style=shape.triangleup,   size=size.small, color=color.lime, text="L")
+plotshape(short_entry, title="숏 진입", location=location.abovebar, style=shape.triangledown, size=size.small, color=color.red,  text="S")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93) : strategy.position_size < 0 ? color.new(color.red, 93) : na)

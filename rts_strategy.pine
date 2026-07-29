@@ -1,0 +1,985 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// REACTIVE TRAIL SYSTEM [WillyAlgoTrader] — STRATEGY EDITION
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 2.2.1  (Strategy backtest port)
+// ══════════════════════════════════════════════════════════
+
+strategy(
+     title             = "Reactive Trail System [WillyAlgoTrader]",
+     shorttitle        = "RTS-Strategy",
+     overlay           = true,
+     max_labels_count  = 500,
+     max_lines_count   = 500,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 10,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.04,
+     slippage          = 1,
+     pyramiding        = 0)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_RISK   = "🛡️ Risk Management"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v2.2.1-ST"
+
+LINE_FORWARD_BARS = 20
+LINE_UPDATE_BARS  = 5
+LABEL_OFFSET_BARS = 1
+BE_DIM_TRANSP     = 70
+FORM_LEN          = 10
+MS_DAY            = 86400000
+STATS_PRUNE_DAYS  = 31
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+maTypeInput = input.string("ALMA", "Baseline MA Type",
+     options = ["HMA", "ALMA", "KAMA", "T3", "VWMA", "EMA"], group = GRP_MAIN)
+
+maLenInput = input.int(21, "Baseline Length", minval = 5, maxval = 200, group = GRP_MAIN)
+
+sourceInput = input.source(close, "Source", group = GRP_MAIN)
+
+rsiLenInput    = input.int(13, "Momentum (RSI) Length",  minval = 2, maxval = 100, group = GRP_MAIN)
+rsiSmoothInput = input.int(3,  "Momentum Smoothing",     minval = 1, maxval = 50,  group = GRP_MAIN)
+
+volTypeInput = input.string("Hybrid", "Volatility Engine",
+     options = ["ATR", "StDev", "Hybrid"], group = GRP_MAIN)
+
+volLenInput    = input.int(13,  "Volatility Length",  minval = 5,   maxval = 100, group = GRP_MAIN)
+trailMultInput = input.float(2.0,"Trail Multiplier",  minval = 0.5, maxval = 6.0, step = 0.1, group = GRP_MAIN)
+adaptInput     = input.float(1.0,"Momentum Adaptivity",minval = 0.0,maxval = 1.0, step = 0.05,group = GRP_MAIN)
+
+// ── Visual ──────────────────────────────────────
+themeInput         = input.string("Auto",  "Theme",              options = ["Auto","Dark","Light"], group = GRP_VISUAL)
+showTrailInput     = input.bool(true,  "Show Trail Line",        group = GRP_VISUAL)
+showBaseInput      = input.bool(false, "Show Baseline",          group = GRP_VISUAL)
+showFillInput      = input.bool(true,  "Show Trend Fill",        group = GRP_VISUAL)
+showSignalsInput   = input.bool(true,  "Show Buy/Sell Labels",   group = GRP_VISUAL)
+showBarColorInput  = input.bool(false, "Color Candles",          group = GRP_VISUAL)
+showWatermarkInput = input.bool(true,  "Show Watermark",         group = GRP_VISUAL)
+
+signalFontSizeInput = input.string("Small", "Signal Label Size",
+     options = ["Tiny","Small","Normal","Large","Huge"], group = GRP_VISUAL)
+labelFontSizeInput  = input.string("Small", "SL/TP Label Font Size",
+     options = ["Tiny","Small","Normal","Large","Huge"], group = GRP_VISUAL)
+
+// ── Filters ─────────────────────────────────────
+useHtfInput       = input.bool(false, "HTF Bias Filter", group = GRP_FILTER)
+htfTfInput        = input.timeframe("240", "Higher Timeframe", group = GRP_FILTER)
+useVolFilterInput = input.bool(false, "Volume Confirmation Filter", group = GRP_FILTER)
+volFiltMultInput  = input.float(1.2, "Volume Threshold (×SMA20)",
+     minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FILTER)
+
+// ── Risk Management ─────────────────────────────
+riskPresetInput = input.string("Balanced", "Risk Preset",
+     options = ["Conservative","Balanced","Aggressive","Scalping","Custom"], group = GRP_RISK)
+
+slModeInput = input.string("Wick-Anchored", "SL Mode",
+     options = ["Wick-Anchored","ATR"], group = GRP_RISK)
+
+atrLenRiskInput = input.int(14,   "ATR Length (SL)",         minval = 5,   maxval = 50,  group = GRP_RISK)
+slMultInput     = input.float(1.5,"SL Multiplier (×ATR)",    minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK)
+tp1MultInput    = input.float(1.0,"TP1 Multiplier (×Risk)",  minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK)
+tp2MultInput    = input.float(2.0,"TP2 Multiplier (×Risk)",  minval = 1.0, maxval = 10.0,step = 0.1, group = GRP_RISK)
+tp3MultInput    = input.float(3.0,"TP3 Multiplier (×Risk)",  minval = 1.5, maxval = 15.0,step = 0.1, group = GRP_RISK)
+
+beInput             = input.bool(true,  "Break-Even After TP1",         group = GRP_RISK)
+showSlTpInput       = input.bool(true,  "Show SL/TP Lines",             group = GRP_RISK)
+showSlTpLabelsInput = input.bool(true,  "Show SL/TP Labels",            group = GRP_RISK)
+showPctOnLabelsInput= input.bool(true,  "Show % Distance on Labels",    group = GRP_RISK)
+
+entryLineStyleInput = input.string("Dotted","Entry Line Style", options = ["Solid","Dashed","Dotted"], group = GRP_RISK)
+slLineStyleInput    = input.string("Solid", "SL Line Style",    options = ["Solid","Dashed","Dotted"], group = GRP_RISK)
+tpLineStyleInput    = input.string("Dashed","TP Line Style",    options = ["Solid","Dashed","Dotted"], group = GRP_RISK)
+
+leverageInput  = input.int(3,    "레버리지 배수",   minval = 1,   maxval = 125,  group = GRP_RISK)
+equityPctInput = input.float(10.0,"자본 비율 (%)",  minval = 0.1, maxval = 100.0, step = 0.1, group = GRP_RISK)
+
+// ── Dashboard ───────────────────────────────────
+showDashInput      = input.bool(true, "Show Dashboard", group = GRP_DASH)
+dashPosStr         = input.string("Top Right", "Dashboard Position",
+     options = ["Top Left","Top Right","Bottom Left","Bottom Right"], group = GRP_DASH)
+dashFontSizeInput  = input.string("Small", "Dashboard Font Size",
+     options = ["Small","Normal","Large","Huge"], group = GRP_DASH)
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH)
+showTradeSecInput  = input.bool(true, "  ├ Trade section",  group = GRP_DASH)
+showStatsSecInput  = input.bool(true, "  └ Stats section",  group = GRP_DASH)
+statsPeriodInput   = input.string("All-Time", "Win Rate Period",
+     options = ["24 Hours","30 Days","All-Time"], group = GRP_DASH)
+
+// ── Alerts ──────────────────────────────────────
+webhookInput   = input.bool(false, "Webhook JSON Format",       group = GRP_ALERT)
+flipAlertInput = input.bool(false, "Alert on Trend Flips",      group = GRP_ALERT)
+slRevAlertInput= input.bool(true,  "Alert on SL Hit & Reversal",group = GRP_ALERT)
+tpBeAlertInput = input.bool(true,  "Alert on TP / Break-Even",  group = GRP_ALERT)
+
+// ── Colors ──────────────────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "clr", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "clr", group = GRP_COLORS)
+
+// ══════════════════════════════════════
+// INPUT VALIDATION
+// ══════════════════════════════════════
+if riskPresetInput == "Custom" and (tp1MultInput >= tp2MultInput or tp2MultInput >= tp3MultInput)
+    runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+if slMultInput <= 0
+    runtime.error("SL Multiplier must be greater than 0")
+if useHtfInput and htfTfInput != "" and timeframe.in_seconds(htfTfInput) < timeframe.in_seconds(timeframe.period)
+    runtime.error("Higher Timeframe must be >= chart timeframe")
+
+// ══════════════════════════════════════
+// THEME & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+HEADER_TEXT    = #FFFFFF
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+
+BULL_LABEL_TEXT = #004D25
+BEAR_LABEL_TEXT = #FFFFFF
+
+SL_COLOR       = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+TP1_COLOR      = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR      = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR      = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+ENTRY_COLOR    = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)
+TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+TP_HIT_COLOR   = isDark ? color.new(#4DB6AC, 0)  : color.new(#00695C, 0)
+BE_COLOR       = isDark ? color.new(#FFA726, 0)  : color.new(#E65100, 0)
+LABEL_TEXT     = isDark ? #1A1A1A                : #FFFFFF
+
+int FILL_TRANSP = isDark ? 88 : 82
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+kama(float src, int len) =>
+    float fastSC = 2.0 / (2 + 1)
+    float slowSC = 2.0 / (30 + 1)
+    float mom    = math.abs(src - nz(src[len], src))
+    float noise  = math.sum(math.abs(src - nz(src[1], src)), len)
+    float er     = safeDiv(mom, noise, 0.0)
+    float sc     = math.pow(er * (fastSC - slowSC) + slowSC, 2)
+    var float k  = na
+    k := na(k[1]) ? src : k[1] + sc * (src - k[1])
+    k
+
+t3(float src, int len) =>
+    float a  = 0.7
+    float e1 = ta.ema(src, len)
+    float e2 = ta.ema(e1,  len)
+    float e3 = ta.ema(e2,  len)
+    float e4 = ta.ema(e3,  len)
+    float e5 = ta.ema(e4,  len)
+    float e6 = ta.ema(e5,  len)
+    float c1 = -a * a * a
+    float c2 = 3 * a * a + 3 * a * a * a
+    float c3 = -6 * a * a - 3 * a - 3 * a * a * a
+    float c4 = 1 + 3 * a + a * a * a + 3 * a * a
+    c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal :
+     s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small :
+     s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+periodStats(array<int> tms, array<bool> wns, int cutoff) =>
+    int w = 0
+    int l = 0
+    int n = array.size(tms)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(tms, i) >= cutoff
+                if array.get(wns, i)
+                    w += 1
+                else
+                    l += 1
+    [w, l]
+
+entryLineStyle  = lineStyleFromString(entryLineStyleInput)
+slLineStyle     = lineStyleFromString(slLineStyleInput)
+tpLineStyle     = lineStyleFromString(tpLineStyleInput)
+signalSize      = sizeFromString(signalFontSizeInput)
+slTpLabelSize   = sizeFromString(labelFontSizeInput)
+dashFontSize    = sizeFromString(dashFontSizeInput)
+dashFontSizeSub = sizeDownFromString(dashFontSizeInput)
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════
+int  WARMUP_BARS = math.max(math.max(maLenInput * 2, rsiLenInput + rsiSmoothInput), 50)
+bool isWarmedUp  = bar_index >= WARMUP_BARS
+
+bool  hasVolume = nz(volume, 0) > 0
+float volSma    = nz(ta.sma(volume, 20), 0.0)
+
+float maHma  = nz(ta.hma(sourceInput,  maLenInput),         sourceInput)
+float maAlma = nz(ta.alma(sourceInput, maLenInput, 0.85, 6), sourceInput)
+float maVwm  = nz(ta.vwma(sourceInput, maLenInput),          sourceInput)
+float maEma  = nz(ta.ema(sourceInput,  maLenInput),          sourceInput)
+float maKama = nz(kama(sourceInput,    maLenInput),          sourceInput)
+float maT3   = nz(t3(sourceInput,      maLenInput),          sourceInput)
+
+float baseMa = switch maTypeInput
+    "HMA"  => maHma
+    "ALMA" => maAlma
+    "KAMA" => maKama
+    "T3"   => maT3
+    "VWMA" => hasVolume ? maVwm : maEma
+    => maEma
+
+float rsiRaw  = nz(ta.rsi(sourceInput, rsiLenInput), 50.0)
+float rsiS    = nz(ta.ema(rsiRaw, rsiSmoothInput),   50.0)
+float momDist = math.min(math.abs(rsiS - 50.0) / 50.0, 1.0)
+
+float effTrailMult = trailMultInput * (1.0 - adaptInput * momDist * 0.4)
+
+float atrV       = nz(ta.atr(volLenInput),    0.0)
+float stdV       = nz(ta.stdev(close, volLenInput), 0.0)
+float volMeasure = switch volTypeInput
+    "ATR"   => atrV
+    "StDev" => stdV
+    => (atrV + stdV) / 2.0
+
+float trailOffset = volMeasure * effTrailMult
+
+[htfEmaRaw, htfCloseRaw] = request.security(syminfo.tickerid, htfTfInput,
+     [ta.ema(close, 50)[1], close[1]], barmerge.gaps_off, barmerge.lookahead_on)
+float safeHtfEma   = nz(htfEmaRaw,   close)
+float safeHtfClose = nz(htfCloseRaw, close)
+bool  htfBull      = safeHtfClose > safeHtfEma
+bool  htfBear      = safeHtfClose < safeHtfEma
+
+// ══════════════════════════════════════
+// TRAIL ENGINE
+// ══════════════════════════════════════
+float upCandidate = baseMa - trailOffset
+float dnCandidate = baseMa + trailOffset
+
+var int   trendDir      = 0
+var float trail         = na
+var int   trendStartBar = 0
+
+int prevDir = trendDir
+
+if na(trail)
+    trendDir := close >= baseMa ? 1 : -1
+    trail    := trendDir == 1 ? upCandidate : dnCandidate
+else
+    if trendDir == 1
+        trail := math.max(nz(trail[1], upCandidate), upCandidate)
+        if close < trail
+            trendDir := -1
+            trail    := dnCandidate
+    else
+        trail := math.min(nz(trail[1], dnCandidate), dnCandidate)
+        if close > trail
+            trendDir := 1
+            trail    := upCandidate
+
+if trendDir != prevDir
+    trendStartBar := bar_index
+
+int trendAge = bar_index - trendStartBar
+
+bool rawBuy  = trendDir == 1  and prevDir == -1
+bool rawSell = trendDir == -1 and prevDir == 1
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// ══════════════════════════════════════
+bool volOk       = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volFiltMultInput)
+bool longBiasOk  = not useHtfInput or htfBull
+bool shortBiasOk = not useHtfInput or htfBear
+
+bool confirmedBullFlip = rawBuy  and barstate.isconfirmed and isWarmedUp
+bool confirmedBearFlip = rawSell and barstate.isconfirmed and isWarmedUp
+
+bool longEntrySignal  = confirmedBullFlip and longBiasOk  and volOk
+bool shortEntrySignal = confirmedBearFlip and shortBiasOk and volOk
+
+float momScore      = math.min(momDist / 0.6, 1.0) * 40.0
+float volRatio      = safeDiv(volume, volSma, 1.0)
+float volScore      = hasVolume ? math.min(math.max(volRatio - 0.5, 0.0), 2.0) / 2.0 * 30.0 : 15.0
+float htfScoreLong  = htfBull ? 30.0 : 10.0
+float htfScoreShort = htfBear ? 30.0 : 10.0
+float scoreLong     = momScore + volScore + htfScoreLong
+float scoreShort    = momScore + volScore + htfScoreShort
+
+// ══════════════════════════════════════
+// RISK MANAGEMENT
+// ══════════════════════════════════════
+[effSlMult, effTp1m, effTp2m, effTp3m] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.0]
+
+float riskAtr    = nz(ta.atr(atrLenRiskInput), 0.0)
+float slDistance = riskAtr * effSlMult
+
+// ══════════════════════════════════════
+// TRADE ENGINE STATE
+// ══════════════════════════════════════
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+var float activeScore = na
+
+var int    winCount  = 0
+var int    lossCount = 0
+var string formStr   = ""
+
+var array<int>  tradeTimes = array.new<int>()
+var array<bool> tradeWins  = array.new<bool>()
+
+var int    lastSigDir   = 0
+var float  lastSigScore = na
+var int    lastSigBar   = na
+
+bool  beActiveAtBarStart = beActive
+float effectiveSL        = activeSL
+
+bool canCheckHit = activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+
+bool slHitRaw  = canCheckHit and (activeDir == 1 ? low  <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP1   : low  <= activeTP1)
+bool tp2HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP2   : low  <= activeTP2)
+bool tp3HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP3   : low  <= activeTP3)
+
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+bool beJustActivated = false
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    activeSL        := activeEntry
+    beActive        := true
+    beJustActivated := true
+
+var float hitSL    = na
+var float hitEntry = na
+if slHitRaw
+    hitSL    := effectiveSL
+    hitEntry := activeEntry
+
+float exitEntry         = activeEntry
+int   exitDir           = activeDir
+float exitTP1           = activeTP1
+float exitTP2           = activeTP2
+float exitTP3           = activeTP3
+bool  exitBeActive      = beActiveAtBarStart
+bool  displayTp1Reached = tp1Reached
+bool  displayTp2Reached = tp2Reached
+bool  displayTp3Reached = tp3Reached
+
+bool closeBySl  = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool evSlHit    = closeBySl
+bool evTp3Close = false
+
+if (tp3HitRaw or closeBySl) and activeDir != 0
+    evTp3Close := tp3HitRaw
+    bool tradeWin = tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+    activeScore := na
+
+int sigDir = longEntrySignal ? 1 : shortEntrySignal ? -1 : 0
+
+bool reverseToShort = sigDir == -1 and activeDir == 1
+bool reverseToLong  = sigDir ==  1 and activeDir == -1
+
+bool evReversal   = false
+bool revClosedWin = false
+int  revNewDir    = 0
+
+if reverseToShort or reverseToLong
+    evReversal   := true
+    revClosedWin := tp1Reached
+    revNewDir    := reverseToShort ? -1 : 1
+    bool tradeWin = tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+    activeScore := na
+
+bool evLongEntry  = false
+bool evShortEntry = false
+
+if longEntrySignal and activeDir == 0 and slDistance > 0
+    float slAtrLong  = close - slDistance
+    float slWickLong = math.min(low - riskAtr * 0.25, close - riskAtr * 0.5)
+    float slLong     = slModeInput == "ATR" ? slAtrLong : slWickLong
+    float riskLong   = close - slLong
+    if riskLong > 0
+        activeEntry := close
+        activeSL    := slLong
+        activeTP1   := close + riskLong * effTp1m
+        activeTP2   := close + riskLong * effTp2m
+        activeTP3   := close + riskLong * effTp3m
+        activeDir   := 1
+        entryBarIdx := bar_index
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        activeScore := scoreLong
+        lastSigDir   := 1
+        lastSigScore := scoreLong
+        lastSigBar   := bar_index
+        evLongEntry  := true
+
+if shortEntrySignal and activeDir == 0 and slDistance > 0
+    float slAtrShort  = close + slDistance
+    float slWickShort = math.max(high + riskAtr * 0.25, close + riskAtr * 0.5)
+    float slShort     = slModeInput == "ATR" ? slAtrShort : slWickShort
+    float riskShort   = slShort - close
+    if riskShort > 0
+        activeEntry  := close
+        activeSL     := slShort
+        activeTP1    := close - riskShort * effTp1m
+        activeTP2    := close - riskShort * effTp2m
+        activeTP3    := close - riskShort * effTp3m
+        activeDir    := -1
+        entryBarIdx  := bar_index
+        tp1Reached   := false
+        tp2Reached   := false
+        tp3Reached   := false
+        beActive     := false
+        activeScore  := scoreShort
+        lastSigDir   := -1
+        lastSigScore := scoreShort
+        lastSigBar   := bar_index
+        evShortEntry := true
+
+// ══════════════════════════════════════
+// STRATEGY TESTER ORDERS
+// ══════════════════════════════════════
+// 진입 수량: 자본 × 자본비율% × 레버리지 ÷ 현재가
+qty_val = strategy.equity * (equityPctInput / 100.0) * leverageInput / close
+
+// Long entry: 34% → TP1, 50% of remaining → TP2, rest → TP3, full qty → SL
+if evLongEntry
+    strategy.entry("Long",    strategy.long,  qty = qty_val, comment = "RTS ▲")
+    strategy.exit("Long-SL",  "Long", stop        = activeSL,                      comment_loss   = "SL")
+    strategy.exit("Long-TP1", "Long", qty_percent = 34,         limit = activeTP1, comment_profit = "TP1")
+    strategy.exit("Long-TP2", "Long", qty_percent = 50,         limit = activeTP2, comment_profit = "TP2")
+    strategy.exit("Long-TP3", "Long",                           limit = activeTP3, comment_profit = "TP3")
+
+// Short entry: same structure in reverse
+if evShortEntry
+    strategy.entry("Short",    strategy.short, qty = qty_val, comment = "RTS ▼")
+    strategy.exit("Short-SL",  "Short", stop        = activeSL,                      comment_loss   = "SL")
+    strategy.exit("Short-TP1", "Short", qty_percent = 34,         limit = activeTP1, comment_profit = "TP1")
+    strategy.exit("Short-TP2", "Short", qty_percent = 50,         limit = activeTP2, comment_profit = "TP2")
+    strategy.exit("Short-TP3", "Short",                           limit = activeTP3, comment_profit = "TP3")
+
+// Break-even: replace original SL with entry-price stop once TP1 is touched
+// beJustActivated is true for exactly one bar (first TP1 hit), exitDir/exitEntry are pre-closure snapshots
+if beJustActivated
+    if exitDir == 1
+        strategy.exit("Long-SL",  "Long",  stop = exitEntry, comment_loss = "BE")
+    else if exitDir == -1
+        strategy.exit("Short-SL", "Short", stop = exitEntry, comment_loss = "BE")
+
+// ══════════════════════════════════════
+// PLOTS & VISUALS
+// ══════════════════════════════════════
+color trailColor = trendDir == 1 ? bullColorInput : bearColorInput
+
+pTrail = plot(showTrailInput and isWarmedUp ? trail : na, "Trail",
+     color = trailColor, linewidth = 2, style = plot.style_linebr)
+pBase = plot(showBaseInput and isWarmedUp ? baseMa : na, "Baseline",
+     color = color.new(color.gray, 55), linewidth = 1)
+
+fill(pTrail, pBase, color = showFillInput ? color.new(trailColor, FILL_TRANSP) : na, title = "Trend Fill")
+
+barcolor(showBarColorInput and isWarmedUp ? (trendDir == 1 ? bullColorInput : bearColorInput) : na)
+
+// ══════════════════════════════════════
+// LABELS & SHAPES
+// ══════════════════════════════════════
+if showSignalsInput and evLongEntry
+    string buyTip = "Long entry\nScore: " + str.tostring(scoreLong, "#") + "/100\nRSI: " + str.tostring(rsiS, "#.0") + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, low, "▲ BUY",
+         color     = bullColorInput,
+         textcolor = BULL_LABEL_TEXT,
+         style     = label.style_label_up,
+         size      = signalSize,
+         tooltip   = buyTip)
+
+if showSignalsInput and evShortEntry
+    string sellTip = "Short entry\nScore: " + str.tostring(scoreShort, "#") + "/100\nRSI: " + str.tostring(rsiS, "#.0") + "\nSL: " + fmtPrice(activeSL) + " | TP1: " + fmtPrice(activeTP1)
+    label.new(bar_index, high, "▼ SELL",
+         color     = bearColorInput,
+         textcolor = BEAR_LABEL_TEXT,
+         style     = label.style_label_down,
+         size      = signalSize,
+         tooltip   = sellTip)
+
+// ══════════════════════════════════════
+// SL/TP LINES & LABELS
+// ══════════════════════════════════════
+var line slLine    = na
+var line tp1Line   = na
+var line tp2Line   = na
+var line tp3Line   = na
+var line entryLine = na
+
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+var label entryLabel = na
+
+if (evLongEntry or evShortEntry) and showSlTpInput
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(entryLine)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    label.delete(entryLabel)
+
+    int startBar = bar_index
+    entryLine := line.new(startBar, activeEntry, startBar + LINE_FORWARD_BARS, activeEntry, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+    slLine    := line.new(startBar, activeSL,    startBar + LINE_FORWARD_BARS, activeSL,    color = SL_COLOR,    style = slLineStyle,    width = 2)
+    tp1Line   := line.new(startBar, activeTP1,   startBar + LINE_FORWARD_BARS, activeTP1,   color = TP1_COLOR,   style = tpLineStyle,    width = 1)
+    tp2Line   := line.new(startBar, activeTP2,   startBar + LINE_FORWARD_BARS, activeTP2,   color = TP2_COLOR,   style = tpLineStyle,    width = 1)
+    tp3Line   := line.new(startBar, activeTP3,   startBar + LINE_FORWARD_BARS, activeTP3,   color = TP3_COLOR,   style = tpLineStyle,    width = 1)
+
+    if showSlTpLabelsInput
+        int lx = startBar + LINE_FORWARD_BARS + LABEL_OFFSET_BARS
+        entryLabel := label.new(lx, activeEntry, "ENTRY " + fmtPrice(activeEntry),                                          color = ENTRY_COLOR,    textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        slLabel    := label.new(lx, activeSL,    "SL "    + fmtPrice(activeSL)    + formatPctFromEntry(activeSL,   activeEntry), color = SL_COLOR,    textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp1Label   := label.new(lx, activeTP1,   "TP1 "   + fmtPrice(activeTP1)   + formatPctFromEntry(activeTP1,  activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp2Label   := label.new(lx, activeTP2,   "TP2 "   + fmtPrice(activeTP2)   + formatPctFromEntry(activeTP2,  activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp3Label   := label.new(lx, activeTP3,   "TP3 "   + fmtPrice(activeTP3)   + formatPctFromEntry(activeTP3,  activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+
+if showSlTpInput and not na(tp1Line) and displayTp1Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp1Line, TP_HIT_COLOR)
+    line.set_style(tp1Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp1Label)
+        label.set_text(tp1Label,  "TP1 ✓ " + fmtPrice(exitTP1) + formatPctFromEntry(exitTP1, exitEntry))
+        label.set_color(tp1Label, TP_HIT_COLOR)
+
+if showSlTpInput and not na(tp2Line) and displayTp2Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp2Line, TP_HIT_COLOR)
+    line.set_style(tp2Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp2Label)
+        label.set_text(tp2Label,  "TP2 ✓ " + fmtPrice(exitTP2) + formatPctFromEntry(exitTP2, exitEntry))
+        label.set_color(tp2Label, TP_HIT_COLOR)
+
+if showSlTpInput and not na(tp3Line) and displayTp3Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp3Line, TP_HIT_COLOR)
+    line.set_style(tp3Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp3Label)
+        label.set_text(tp3Label,  "TP3 ✓ " + fmtPrice(exitTP3) + formatPctFromEntry(exitTP3, exitEntry))
+        label.set_color(tp3Label, TP_HIT_COLOR)
+
+if showSlTpInput and beActive and activeDir != 0
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showSlTpLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+        if not na(entryLabel)
+            label.set_text(entryLabel,  "ENTRY " + fmtPrice(activeEntry) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+if activeDir != 0 and showSlTpInput and not na(slLine)
+    line.set_x2(slLine,    bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp1Line,   bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp2Line,   bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp3Line,   bar_index + LINE_UPDATE_BARS)
+    line.set_x2(entryLine, bar_index + LINE_UPDATE_BARS)
+    if showSlTpLabelsInput and not na(slLabel)
+        int lx2 = bar_index + LINE_UPDATE_BARS + LABEL_OFFSET_BARS
+        label.set_x(slLabel,    lx2)
+        label.set_x(tp1Label,   lx2)
+        label.set_x(tp2Label,   lx2)
+        label.set_x(tp3Label,   lx2)
+        label.set_x(entryLabel, lx2)
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    int marketRows = showMarketSecInput ? 6 : 0
+    int tradeRows  = showTradeSecInput  ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput  ? 6 : 0
+    int totalRows  = 2 + marketRows + tradeRows + statsRows
+
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int   r   = 0
+    bool  zeb = false
+    color rb  = TABLE_BG
+
+    string trendWord = trendDir == 1 ? "Bullish" : "Bearish"
+    color  headerBg  = trendDir == 1 ? HEADER_BG_BULL : HEADER_BG_BEAR
+    table.cell(dashTable, 0, r, "◆ RTS · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        string trendStr = not isWarmedUp ? "Warming up" : trendWord
+        color  trendClr = not isWarmedUp ? TEXT_MUTED : trendDir == 1 ? BULL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Trend",      text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, trendStr,      text_color = trendClr,  text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Age",         text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, str.tostring(trendAge) + " bars", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string htfStr = not useHtfInput ? "Off" : htfBull ? "Bullish" : htfBear ? "Bearish" : "Flat"
+        color  htfClr = not useHtfInput ? TEXT_MUTED : htfBull ? BULL_TEXT : htfBear ? BEAR_TEXT : NEUTRAL_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "HTF Bias",    text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, htfStr,         text_color = htfClr,    text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string rsiStr = na(rsiS) ? "—" : str.tostring(rsiS, "#.0")
+        color  rsiClr = rsiS > 55 ? BULL_TEXT : rsiS < 45 ? BEAR_TEXT : NEUTRAL_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "RSI",         text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, rsiStr,         text_color = rsiClr,    text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string lastSigStr = lastSigDir == 0 or na(lastSigBar) ? "—" : (lastSigDir == 1 ? "Long" : "Short") + " · " + str.tostring(nz(lastSigScore), "#") + " (" + str.tostring(bar_index - lastSigBar) + ")"
+        color  lastSigClr = lastSigDir == 1 ? BULL_TEXT : lastSigDir == -1 ? BEAR_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Last signal", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, lastSigStr,     text_color = lastSigClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    if showTradeSecInput
+        table.cell(dashTable, 0, r, "— Trade —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        if activeDir != 0
+            float riskPct  = not na(activeEntry) and activeEntry != 0 and not na(activeSL) ? math.abs(activeEntry - activeSL) / activeEntry * 100 : 0.0
+            color riskClr  = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+            color rrClr    = effTp1m >= 1.5 ? BULL_TEXT : effTp1m >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+            string dirWord = activeDir == 1 ? "Long" : "Short"
+            color  dirClr  = activeDir == 1 ? BULL_TEXT : BEAR_TEXT
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Entry",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dirWord + " @ " + fmtPrice(activeEntry), text_color = dirClr,  text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            string slVal  = (beActive ? "BE @ " : "") + fmtPrice(activeSL)
+            color  slClr  = beActive ? BE_COLOR : SL_COLOR
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "SL",      text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, slVal,       text_color = slClr,     text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP1",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1), text_color = tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP2",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2), text_color = tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP3",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3), text_color = tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "R:R",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, str.tostring(effTp1m, "#.#") + "R", text_color = rrClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "SL Dist", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, str.tostring(riskPct, "#.##") + "%", text_color = riskClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+        else
+            table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, text_size = dashFontSize, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+
+    if showStatsSecInput
+        int pW = winCount
+        int pL = lossCount
+        if statsPeriodInput == "24 Hours"
+            [w24, l24] = periodStats(tradeTimes, tradeWins, time - MS_DAY)
+            pW := w24
+            pL := l24
+        else if statsPeriodInput == "30 Days"
+            [w30, l30] = periodStats(tradeTimes, tradeWins, time - MS_DAY * 30)
+            pW := w30
+            pL := l30
+        int    pTotal   = pW + pL
+        float  pWinRate = pTotal > 0 ? pW / float(pTotal) * 100.0 : 0.0
+        string periodTag = statsPeriodInput == "24 Hours" ? "24H" : statsPeriodInput == "30 Days" ? "30D" : "All-Time"
+
+        table.cell(dashTable, 0, r, "— Stats · " + periodTag + " —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Trades",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pTotal) : "—", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Wins",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pW) : "—", text_color = pTotal > 0 ? BULL_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Losses",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, pTotal > 0 ? str.tostring(pL) : "—", text_color = pTotal > 0 ? BEAR_TEXT : TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string dashWR = pTotal > 0 ? str.tostring(pWinRate, "#.#") + "%  " + buildGauge(pWinRate, 100, 8) : "—"
+        color  wrCol  = pTotal == 0 ? TEXT_MUTED : pWinRate >= 55.0 ? BULL_TEXT : pWinRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Win rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, dashWR,      text_color = wrCol,      text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Form",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+        table.cell(dashTable, 1, r, formStr == "" ? "—" : formStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    table.cell(dashTable, 0, r, "RTS · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(
+         position     = position.bottom_center,
+         columns      = 1,
+         rows         = 1,
+         bgcolor      = color.new(color.black, 100),
+         border_color = color.new(color.black, 100),
+         border_width = 0,
+         frame_color  = color.new(color.black, 100),
+         frame_width  = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader",
+         text_color  = WM_COLOR,
+         text_size   = size.normal,
+         text_halign = text.align_center,
+         bgcolor     = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string tick   = syminfo.tickerid
+string tfStr  = timeframe.period
+string aPrice = str.tostring(close, format.mintick)
+
+if beJustActivated and tpBeAlertInput
+    alert("🛡️ BREAK-EVEN | " + tick + " | SL moved to entry: " + fmtPrice(activeSL), alert.freq_once_per_bar_close)
+
+if tp1FirstTouch and tpBeAlertInput
+    alert("🎯 TP1 HIT | " + tick + " | TP1: " + fmtPrice(exitTP1), alert.freq_once_per_bar_close)
+
+if tp2FirstTouch and tpBeAlertInput
+    alert("🎯🎯 TP2 HIT | " + tick + " | TP2: " + fmtPrice(exitTP2), alert.freq_once_per_bar_close)
+
+if evTp3Close and tpBeAlertInput
+    string tp3DirStr = exitDir == 1 ? "Long" : "Short"
+    alert("🏆 TP3 HIT | " + tick + " | " + tp3DirStr + " | Entry: " + fmtPrice(exitEntry) + " | TP3: " + fmtPrice(exitTP3), alert.freq_once_per_bar_close)
+
+if evSlHit and slRevAlertInput
+    string slDirStr  = exitDir == 1 ? "Long" : "Short"
+    string textSlHit = (exitBeActive ? "🛡️ BE STOP-OUT | " : "🛑 SL HIT | ") + tick + " | " + slDirStr + " | Entry: " + str.tostring(nz(hitEntry), format.mintick) + " | SL: " + str.tostring(nz(hitSL), format.mintick)
+    alert(textSlHit, alert.freq_once_per_bar_close)
+
+if evReversal and slRevAlertInput
+    string revDirStr = revNewDir == 1 ? "LONG" : "SHORT"
+    string revResStr = revClosedWin ? "Closed after TP1 (win)" : "Closed before TP1 (loss)"
+    alert("🔄 REVERSAL → " + revDirStr + " | " + tick + " | TF: " + tfStr + " | " + revResStr, alert.freq_once_per_bar_close)
+
+if evLongEntry
+    string eSl  = fmtPrice(activeSL)
+    string eTp1 = fmtPrice(activeTP1)
+    string eTp2 = fmtPrice(activeTP2)
+    string eTp3 = fmtPrice(activeTP3)
+    string eRr  = str.tostring(effTp1m, "#.#")
+    string eSc  = str.tostring(scoreLong, "#")
+    string jsonBuy  = '{"action":"buy","ticker":"'  + tick + '","price":' + aPrice + ',"sl":' + eSl + ',"tp1":' + eTp1 + ',"tp2":' + eTp2 + ',"tp3":' + eTp3 + ',"rr":' + eRr + ',"score":' + eSc + '}'
+    string textBuy  = "🟢 LONG | "  + tick + " | TF: " + tfStr + " | Price: " + aPrice + " | SL: " + eSl + " | TP1: " + eTp1 + " | TP2: " + eTp2 + " | TP3: " + eTp3 + " | R:R: " + eRr + " | Score: " + eSc
+    alert(webhookInput ? jsonBuy : textBuy, alert.freq_once_per_bar_close)
+
+if evShortEntry
+    string eSl  = fmtPrice(activeSL)
+    string eTp1 = fmtPrice(activeTP1)
+    string eTp2 = fmtPrice(activeTP2)
+    string eTp3 = fmtPrice(activeTP3)
+    string eRr  = str.tostring(effTp1m, "#.#")
+    string eSc  = str.tostring(scoreShort, "#")
+    string jsonSell = '{"action":"sell","ticker":"' + tick + '","price":' + aPrice + ',"sl":' + eSl + ',"tp1":' + eTp1 + ',"tp2":' + eTp2 + ',"tp3":' + eTp3 + ',"rr":' + eRr + ',"score":' + eSc + '}'
+    string textSell = "🔴 SHORT | " + tick + " | TF: " + tfStr + " | Price: " + aPrice + " | SL: " + eSl + " | TP1: " + eTp1 + " | TP2: " + eTp2 + " | TP3: " + eTp3 + " | R:R: " + eRr + " | Score: " + eSc
+    alert(webhookInput ? jsonSell : textSell, alert.freq_once_per_bar_close)
+
+if confirmedBullFlip and not evLongEntry and flipAlertInput
+    alert("▲ BULL FLIP | " + tick + " | TF: " + tfStr + " | Price: " + aPrice + " | Entry filtered", alert.freq_once_per_bar_close)
+
+if confirmedBearFlip and not evShortEntry and flipAlertInput
+    alert("▼ BEAR FLIP | " + tick + " | TF: " + tfStr + " | Price: " + aPrice + " | Entry filtered", alert.freq_once_per_bar_close)
