@@ -803,7 +803,7 @@ if showDashInput and barstate.islast
             table.cell(dashTable, 0, r, "Entry",   text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, dirWord + " @ " + fmtPrice(activeEntry), text_color = dirClr,  text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             string slVal  = (beActive ? "BE @ " : "") + fmtPrice(activeSL)
             color  slClr  = beActive ? BE_COLOR : SL_COLOR
@@ -811,37 +811,37 @@ if showDashInput and barstate.islast
             table.cell(dashTable, 0, r, "SL",      text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, slVal,       text_color = slClr,     text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP1",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1), text_color = tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP2",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2), text_color = tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "TP3",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3), text_color = tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "R:R",     text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, str.tostring(effTp1m, "#.#") + "R", text_color = rrClr, text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
 
             rb := zeb ? TABLE_ROW_ALT : TABLE_BG
             table.cell(dashTable, 0, r, "SL Dist", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
             table.cell(dashTable, 1, r, str.tostring(riskPct, "#.##") + "%", text_color = riskClr, text_size = dashFontSize, bgcolor = rb)
             r += 1
-        zeb := not zeb
+            zeb := not zeb
         else
             table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, text_size = dashFontSize, text_halign = text.align_center)
             table.merge_cells(dashTable, 0, r, 1, r)
