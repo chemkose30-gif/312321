@@ -244,8 +244,8 @@ bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93)
       : na)
 
 // DMI 상태 표시 (배경)
-bgcolor(dmi_cross_up   ? color.new(color.aqua, 85) :
-        dmi_cross_down ? color.new(color.fuchsia, 85) : na)
+bgcolor(dmi_cross_up   ? color.new(color.aqua, 85)
+      : dmi_cross_down ? color.new(color.purple,  85) : na)
 
 // 정보 테이블
 var table info = table.new(position.top_right, 2, 7, border_width=1)
