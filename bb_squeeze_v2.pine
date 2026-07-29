@@ -1,0 +1,88 @@
+//@version=5
+strategy("BB 스퀴즈 돌파 v2 (모멘텀 확인)", shorttitle="BB-Squeeze-v2", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=3, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1)
+
+// ── 파라미터 ─────────────────────────────────────────────────
+bb_period     = input.int(20,    "BB 기간",              minval=5)
+bb_std        = input.float(2.0, "BB 표준편차",          minval=0.5, step=0.1)
+kc_period     = input.int(20,    "KC 기간 (켈트너)",     minval=5)
+kc_mult       = input.float(1.5, "KC ATR 배수",          minval=0.5, step=0.1)
+atr_len       = input.int(14,    "ATR 기간",             minval=5)
+min_sq_bars   = input.int(5,     "최소 스퀴즈 지속 (봉)", minval=3, maxval=30)
+mom_len       = input.int(12,    "모멘텀 기간",           minval=5)
+stop_pct      = input.float(2.5, "손절 (%)",             minval=0.1, step=0.1) / 100
+
+// ── 볼린저밴드 + 켈트너채널 ──────────────────────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_period, bb_std)
+kc_mid   = ta.ema(close, kc_period)
+kc_range = ta.atr(atr_len)
+kc_upper = kc_mid + kc_mult * kc_range
+kc_lower = kc_mid - kc_mult * kc_range
+
+// ── 스퀴즈 감지 ───────────────────────────────────────────────
+in_squeeze = bb_upper < kc_upper and bb_lower > kc_lower
+
+// 스퀴즈 지속 봉 수 카운트
+var int squeeze_count = 0
+squeeze_count := in_squeeze ? squeeze_count + 1 : 0
+
+// 스퀴즈 해제 + 최소 지속 기간 충족
+squeeze_fire  = in_squeeze[1] and not in_squeeze
+valid_squeeze = squeeze_count[1] >= min_sq_bars  // 해제 직전 지속 봉 수
+
+// ── TTM 스타일 모멘텀 (방향 판단) ─────────────────────────────
+// 고/저/중앙 평균값과 현재가의 차이를 선형회귀로 평활화
+highest_h = ta.highest(high, mom_len)
+lowest_l  = ta.lowest(low,  mom_len)
+mid_val   = math.avg(highest_h, lowest_l, ta.sma(close, mom_len))
+delta     = close - mid_val
+momentum  = ta.linreg(delta, mom_len, 0)
+
+// 모멘텀 전환 (위로 꺾임 / 아래로 꺾임)
+mom_up   = momentum > momentum[1]  // 모멘텀 상승 전환
+mom_down = momentum < momentum[1]  // 모멘텀 하락 전환
+
+// ── 진입 조건 ─────────────────────────────────────────────────
+long_entry  = squeeze_fire and valid_squeeze and momentum > 0 and mom_up  and strategy.position_size == 0
+short_entry = squeeze_fire and valid_squeeze and momentum < 0 and mom_down and strategy.position_size == 0
+
+// ── 전략 실행 ─────────────────────────────────────────────────
+if long_entry
+    strategy.entry("Long", strategy.long, comment="스퀴즈↑")
+
+if short_entry
+    strategy.entry("Short", strategy.short, comment="스퀴즈↓")
+
+// 청산: 반대 밴드 도달
+if strategy.position_size > 0 and close >= bb_upper
+    strategy.close("Long", comment="목표")
+
+if strategy.position_size < 0 and close <= bb_lower
+    strategy.close("Short", comment="목표")
+
+// 손절
+long_stop  = strategy.position_avg_price * (1 - stop_pct)
+short_stop = strategy.position_avg_price * (1 + stop_pct)
+
+if strategy.position_size > 0
+    strategy.exit("Long-SL", from_entry="Long", stop=long_stop, comment="손절")
+
+if strategy.position_size < 0
+    strategy.exit("Short-SL", from_entry="Short", stop=short_stop, comment="손절")
+
+// ── 시각화 ──────────────────────────────────────────────────
+p_upper = plot(bb_upper, "BB 상단", color=color.new(color.red,   30), linewidth=2)
+p_mid   = plot(bb_mid,   "BB 중앙", color=color.new(color.gray,  20), linewidth=1)
+p_lower = plot(bb_lower, "BB 하단", color=color.new(color.green, 30), linewidth=2)
+fill(p_upper, p_lower, color=color.new(color.blue, 92))
+
+plot(kc_upper, "KC 상단", color=color.new(color.orange, 60), linewidth=1, style=plot.style_stepline)
+plot(kc_lower, "KC 하단", color=color.new(color.orange, 60), linewidth=1, style=plot.style_stepline)
+
+// 스퀴즈 강도: 지속 봉 수 표시 (배경색 진해질수록 긴 스퀴즈)
+bgcolor(in_squeeze and squeeze_count >= min_sq_bars ? color.new(color.purple, 85) :
+        in_squeeze                                  ? color.new(color.gray,   90) : na, title="스퀴즈")
+
+plotshape(long_entry,  title="롱 돌파", location=location.belowbar, style=shape.triangleup,   size=size.normal, color=color.lime, text="↑")
+plotshape(short_entry, title="숏 돌파", location=location.abovebar, style=shape.triangledown, size=size.normal, color=color.red,  text="↓")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93) : strategy.position_size < 0 ? color.new(color.red, 93) : na)
