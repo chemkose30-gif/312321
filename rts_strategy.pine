@@ -104,6 +104,9 @@ entryLineStyleInput = input.string("Dotted","Entry Line Style", options = ["Soli
 slLineStyleInput    = input.string("Solid", "SL Line Style",    options = ["Solid","Dashed","Dotted"], group = GRP_RISK)
 tpLineStyleInput    = input.string("Dashed","TP Line Style",    options = ["Solid","Dashed","Dotted"], group = GRP_RISK)
 
+leverageInput  = input.int(3,    "레버리지 배수",   minval = 1,   maxval = 125,  group = GRP_RISK)
+equityPctInput = input.float(10.0,"자본 비율 (%)",  minval = 0.1, maxval = 100.0, step = 0.1, group = GRP_RISK)
+
 // ── Dashboard ───────────────────────────────────
 showDashInput      = input.bool(true, "Show Dashboard", group = GRP_DASH)
 dashPosStr         = input.string("Top Right", "Dashboard Position",
@@ -573,9 +576,12 @@ if shortEntrySignal and activeDir == 0 and slDistance > 0
 // ══════════════════════════════════════
 // STRATEGY TESTER ORDERS
 // ══════════════════════════════════════
+// 진입 수량: 자본 × 자본비율% × 레버리지 ÷ 현재가
+qty_val = strategy.equity * (equityPctInput / 100.0) * leverageInput / close
+
 // Long entry: 34% → TP1, 50% of remaining → TP2, rest → TP3, full qty → SL
 if evLongEntry
-    strategy.entry("Long",    strategy.long, comment = "RTS ▲")
+    strategy.entry("Long",    strategy.long,  qty = qty_val, comment = "RTS ▲")
     strategy.exit("Long-SL",  "Long", stop        = activeSL,                      comment_loss   = "SL")
     strategy.exit("Long-TP1", "Long", qty_percent = 34,         limit = activeTP1, comment_profit = "TP1")
     strategy.exit("Long-TP2", "Long", qty_percent = 50,         limit = activeTP2, comment_profit = "TP2")
@@ -583,7 +589,7 @@ if evLongEntry
 
 // Short entry: same structure in reverse
 if evShortEntry
-    strategy.entry("Short",    strategy.short, comment = "RTS ▼")
+    strategy.entry("Short",    strategy.short, qty = qty_val, comment = "RTS ▼")
     strategy.exit("Short-SL",  "Short", stop        = activeSL,                      comment_loss   = "SL")
     strategy.exit("Short-TP1", "Short", qty_percent = 34,         limit = activeTP1, comment_profit = "TP1")
     strategy.exit("Short-TP2", "Short", qty_percent = 50,         limit = activeTP2, comment_profit = "TP2")
