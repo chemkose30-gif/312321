@@ -1,0 +1,102 @@
+//@version=5
+strategy("W바닥/M천장 볼린저밴드 전략", shorttitle="W-M-BB", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=3, commission_type=strategy.commission.percent, commission_value=0.04, slippage=1)
+
+// ── 파라미터 ─────────────────────────────────────────────────
+bb_period  = input.int(20,    "BB 기간",        minval=5)
+bb_std     = input.float(2.0, "BB 표준편차",    minval=0.5, step=0.1)
+rsi_period = input.int(14,    "RSI 기간",       minval=2)
+lookback   = input.int(20,    "패턴 탐색 기간 (봉)", minval=5, maxval=50)
+stop_pct   = input.float(2.5, "손절 (%)",       minval=0.1, step=0.1) / 100
+
+// ── 지표 계산 ─────────────────────────────────────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, bb_period, bb_std)
+rsi = ta.rsi(close, rsi_period)
+
+// ═══════════════════════════════════════════════════════════
+// W바닥 감지 (Long 진입)
+//
+//  ① 탐색기간 내 첫 번째 저점: 하단밴드 밖에서 마감
+//  ② 중간 반등: 가격이 한 번 올라옴
+//  ③ 두 번째 저점: 하단밴드 안쪽에서 로컬 저점 형성
+//  ④ RSI 다이버전스: 두 번째 저점의 RSI > 첫 번째 저점의 RSI
+//  ⑤ 현재 봉이 상승 반전 중 → 진입
+// ═══════════════════════════════════════════════════════════
+
+// ① 탐색기간 내 첫 번째 저점 (밴드 밖) 찾기
+float first_low_rsi = na
+bool  had_lower_break = false
+for i = 3 to lookback
+    if close[i] < bb_lower[i]
+        had_lower_break := true
+        first_low_rsi   := rsi[i]
+        break
+
+// ③ [1]봉이 로컬 저점이고 밴드 안에 있음 (두 번째 저점)
+w_local_low    = close[1] < close[2] and close[1] < close
+w_inside_lower = close[1] >= bb_lower[1]
+
+// ④ RSI 다이버전스 (두 번째 저점 RSI가 첫 번째보다 높음)
+w_rsi_div = na(first_low_rsi) ? false : rsi[1] > first_low_rsi
+
+// W바닥 진입 신호
+w_entry = had_lower_break and w_local_low and w_inside_lower and w_rsi_div and strategy.position_size == 0
+
+// ═══════════════════════════════════════════════════════════
+// M천장 감지 (Short 진입)
+//
+//  ① 탐색기간 내 첫 번째 고점: 상단밴드 밖에서 마감
+//  ② 중간 눌림: 가격이 한 번 내려옴
+//  ③ 두 번째 고점: 상단밴드 안쪽에서 로컬 고점 형성
+//  ④ RSI 다이버전스: 두 번째 고점의 RSI < 첫 번째 고점의 RSI
+//  ⑤ 현재 봉이 하락 반전 중 → 진입
+// ═══════════════════════════════════════════════════════════
+
+float first_high_rsi = na
+bool  had_upper_break = false
+for i = 3 to lookback
+    if close[i] > bb_upper[i]
+        had_upper_break := true
+        first_high_rsi  := rsi[i]
+        break
+
+m_local_high   = close[1] > close[2] and close[1] > close
+m_inside_upper = close[1] <= bb_upper[1]
+m_rsi_div      = na(first_high_rsi) ? false : rsi[1] < first_high_rsi
+
+m_entry = had_upper_break and m_local_high and m_inside_upper and m_rsi_div and strategy.position_size == 0
+
+// ── 전략 실행 ─────────────────────────────────────────────────
+if w_entry
+    strategy.entry("Long", strategy.long, comment="W바닥")
+
+if m_entry
+    strategy.entry("Short", strategy.short, comment="M천장")
+
+// 청산: 반대 밴드 도달
+if strategy.position_size > 0 and close >= bb_upper
+    strategy.close("Long", comment="목표")
+
+if strategy.position_size < 0 and close <= bb_lower
+    strategy.close("Short", comment="목표")
+
+// 손절
+long_stop  = strategy.position_avg_price * (1 - stop_pct)
+short_stop = strategy.position_avg_price * (1 + stop_pct)
+
+if strategy.position_size > 0
+    strategy.exit("Long-SL", from_entry="Long", stop=long_stop, comment="손절")
+
+if strategy.position_size < 0
+    strategy.exit("Short-SL", from_entry="Short", stop=short_stop, comment="손절")
+
+// ── 시각화 ──────────────────────────────────────────────────
+p_upper = plot(bb_upper, "BB 상단", color=color.new(color.red,   30), linewidth=2)
+p_mid   = plot(bb_mid,   "BB 중앙", color=color.new(color.gray,  20), linewidth=1)
+p_lower = plot(bb_lower, "BB 하단", color=color.new(color.green, 30), linewidth=2)
+fill(p_upper, p_lower, color=color.new(color.blue, 92))
+
+// W/M 신호 마커 (크게 표시)
+plotshape(w_entry, title="W바닥", location=location.belowbar, style=shape.triangleup,   size=size.normal, color=color.lime, text="W")
+plotshape(m_entry, title="M천장", location=location.abovebar, style=shape.triangledown, size=size.normal, color=color.red,  text="M")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93) : strategy.position_size < 0 ? color.new(color.red, 93) : na)
