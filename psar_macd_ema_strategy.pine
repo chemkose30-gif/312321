@@ -1,0 +1,213 @@
+//@version=5
+strategy(
+     title            = "PSAR + MACD + EMA 전략 v1.0",
+     shorttitle        = "PSAR-MACD-EMA",
+     overlay           = true,
+     initial_capital   = 10000,
+     default_qty_type  = strategy.fixed,
+     default_qty_value = 1,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.04,
+     slippage          = 2,
+     calc_on_every_tick = false
+     )
+
+// ═══════════════════════════════════════════════════════════
+//  그룹 레이블
+// ═══════════════════════════════════════════════════════════
+GRP_SAR  = "파라볼릭 SAR 설정"
+GRP_MACD = "MACD 설정"
+GRP_EMA  = "EMA 필터 설정"
+GRP_EXIT = "청산 설정"
+GRP_RISK = "리스크 관리"
+
+// ═══════════════════════════════════════════════════════════
+//  파라미터
+// ═══════════════════════════════════════════════════════════
+// PSAR
+sar_start = input.float(0.02, "SAR 시작값 (가속도)",
+             minval=0.001, maxval=0.1, step=0.001, group=GRP_SAR)
+sar_inc   = input.float(0.02, "SAR 증가값",
+             minval=0.001, maxval=0.1, step=0.001, group=GRP_SAR)
+sar_max   = input.float(0.2,  "SAR 최대값",
+             minval=0.05,  maxval=0.5, step=0.01,  group=GRP_SAR)
+
+// MACD
+macd_fast = input.int(12, "MACD 빠른 이평", minval=5,  maxval=50,  group=GRP_MACD)
+macd_slow = input.int(26, "MACD 느린 이평", minval=10, maxval=100, group=GRP_MACD)
+macd_sig  = input.int(9,  "MACD 신호선",    minval=3,  maxval=20,  group=GRP_MACD)
+macd_mode = input.string("히스토그램 양/음", "MACD 조건 방식",
+             options=["신호선 돌파", "히스토그램 양/음", "MACD선 0 위/아래"],
+             group=GRP_MACD)
+
+// EMA
+use_ema_filter = input.bool(true,  "EMA 필터 사용 (메인)",  group=GRP_EMA)
+ema_len        = input.int (200,   "EMA 기간 (메인)",       minval=20, group=GRP_EMA)
+use_ema2       = input.bool(false, "보조 EMA 사용",         group=GRP_EMA)
+ema2_len       = input.int (50,    "보조 EMA 기간",         minval=5,  group=GRP_EMA)
+
+// 청산
+sl_pct       = input.float(2.0, "손절 (%)",             minval=0.1, step=0.1, group=GRP_EXIT)
+tp1_pct      = input.float(2.0, "1차 TP (%)",          minval=0.1, step=0.1, group=GRP_EXIT)
+tp2_pct      = input.float(4.0, "2차 TP (%)",          minval=0.2, step=0.1, group=GRP_EXIT)
+tp1_qty      = input.int  (50,  "1차 TP 청산 비율 (%)", minval=1,   maxval=99, group=GRP_EXIT)
+use_sar_exit = input.bool (true, "반대 SAR 시 청산 (동적 추적)",  group=GRP_EXIT)
+
+// 리스크
+leverage_input   = input.int  (3,    "레버리지 배수",  minval=1, maxval=125, group=GRP_RISK)
+equity_pct_input = input.float(10.0, "자본 비율 (%)", minval=0.1, maxval=100.0, step=0.1, group=GRP_RISK)
+
+// ═══════════════════════════════════════════════════════════
+//  지표 계산
+// ═══════════════════════════════════════════════════════════
+sar_val = ta.sar(sar_start, sar_inc, sar_max)
+[macd_line, signal_line, hist] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+ema_main = ta.ema(close, ema_len)
+ema2_val = ta.ema(close, ema2_len)
+
+// 수량 계산
+qty_val = strategy.equity * (equity_pct_input / 100.0) * leverage_input / close
+
+// ═══════════════════════════════════════════════════════════
+//  신호 로직
+// ═══════════════════════════════════════════════════════════
+// SAR 플립 감지
+sar_bull      = sar_val < close
+sar_flip_up   = sar_bull and not sar_bull[1]   // 하방→상방: 롱 신호
+sar_flip_down = not sar_bull and sar_bull[1]   // 상방→하방: 숏 신호
+
+// MACD 조건 (선택 방식에 따라)
+macd_long_ok  = macd_mode == "신호선 돌파"
+              ? ta.crossover(macd_line, signal_line)
+              : macd_mode == "히스토그램 양/음"
+              ? hist > 0
+              : macd_line > 0
+
+macd_short_ok = macd_mode == "신호선 돌파"
+              ? ta.crossunder(macd_line, signal_line)
+              : macd_mode == "히스토그램 양/음"
+              ? hist < 0
+              : macd_line < 0
+
+// EMA 필터
+ema_long_ok   = not use_ema_filter or close > ema_main
+ema_short_ok  = not use_ema_filter or close < ema_main
+ema2_long_ok  = not use_ema2 or close > ema2_val
+ema2_short_ok = not use_ema2 or close < ema2_val
+
+// ═══════════════════════════════════════════════════════════
+//  진입 조건
+// ═══════════════════════════════════════════════════════════
+// 롱: SAR 상방 플립 + MACD 롱 조건 + EMA 위
+long_entry  = sar_flip_up   and macd_long_ok  and ema_long_ok  and ema2_long_ok
+              and strategy.position_size == 0
+
+// 숏: SAR 하방 플립 + MACD 숏 조건 + EMA 아래
+short_entry = sar_flip_down and macd_short_ok and ema_short_ok and ema2_short_ok
+              and strategy.position_size == 0
+
+// ═══════════════════════════════════════════════════════════
+//  진입
+// ═══════════════════════════════════════════════════════════
+if long_entry
+    strategy.entry("Long",  strategy.long,  qty=qty_val, comment="SAR↑MACD↑EMA↑")
+
+if short_entry
+    strategy.entry("Short", strategy.short, qty=qty_val, comment="SAR↓MACD↓EMA↓")
+
+// ═══════════════════════════════════════════════════════════
+//  청산
+// ═══════════════════════════════════════════════════════════
+if strategy.position_size > 0
+    long_sl  = strategy.position_avg_price * (1 - sl_pct  / 100)
+    long_tp1 = strategy.position_avg_price * (1 + tp1_pct / 100)
+    long_tp2 = strategy.position_avg_price * (1 + tp2_pct / 100)
+
+    if use_sar_exit
+        // SAR 추적 청산: SAR 반전 시 즉시 청산 + 고정 SL 백업
+        if sar_flip_down
+            strategy.close("Long", comment="SAR반전")
+        else
+            strategy.exit("Long-SL", from_entry="Long", stop=long_sl, comment="SL")
+    else
+        // 고정 TP/SL 분할 청산
+        strategy.exit("Long-TP1", from_entry="Long",
+             qty_percent=tp1_qty, limit=long_tp1, stop=long_sl, comment="TP1")
+        strategy.exit("Long-TP2", from_entry="Long",
+             qty_percent=100,     limit=long_tp2, stop=long_sl, comment="TP2")
+
+if strategy.position_size < 0
+    short_sl  = strategy.position_avg_price * (1 + sl_pct  / 100)
+    short_tp1 = strategy.position_avg_price * (1 - tp1_pct / 100)
+    short_tp2 = strategy.position_avg_price * (1 - tp2_pct / 100)
+
+    if use_sar_exit
+        if sar_flip_up
+            strategy.close("Short", comment="SAR반전")
+        else
+            strategy.exit("Short-SL", from_entry="Short", stop=short_sl, comment="SL")
+    else
+        strategy.exit("Short-TP1", from_entry="Short",
+             qty_percent=tp1_qty, limit=short_tp1, stop=short_sl, comment="TP1")
+        strategy.exit("Short-TP2", from_entry="Short",
+             qty_percent=100,     limit=short_tp2, stop=short_sl, comment="TP2")
+
+// ═══════════════════════════════════════════════════════════
+//  시각화
+// ═══════════════════════════════════════════════════════════
+plot(sar_val, "PSAR",
+     color     = sar_bull ? color.new(color.lime, 0) : color.new(color.red, 0),
+     style     = plot.style_circles,
+     linewidth = 2)
+
+plot(ema_main, "EMA" + str.tostring(ema_len),
+     color=color.new(color.orange, 0), linewidth=2)
+plot(use_ema2 ? ema2_val : na, "EMA" + str.tostring(ema2_len),
+     color=color.new(color.aqua, 0), linewidth=1)
+
+plotshape(long_entry,  title="롱 진입", location=location.belowbar,
+          style=shape.triangleup,   size=size.normal, color=color.lime, text="L")
+plotshape(short_entry, title="숏 진입", location=location.abovebar,
+          style=shape.triangledown, size=size.normal, color=color.red,  text="S")
+
+// SAR 플립 표시
+plotshape(sar_flip_up   and not long_entry, title="SAR상방",
+          location=location.belowbar, style=shape.circle,
+          size=size.tiny, color=color.new(color.lime, 50))
+plotshape(sar_flip_down and not short_entry, title="SAR하방",
+          location=location.abovebar, style=shape.circle,
+          size=size.tiny, color=color.new(color.red, 50))
+
+bgcolor(strategy.position_size > 0 ? color.new(color.lime, 92)
+      : strategy.position_size < 0 ? color.new(color.red,  92)
+      : na)
+
+// ═══════════════════════════════════════════════════════════
+//  정보 테이블
+// ═══════════════════════════════════════════════════════════
+var table info = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "PSAR+MACD+EMA 설정",
+         bgcolor=color.new(color.navy,80), text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, "",
+         bgcolor=color.new(color.navy,80))
+    table.cell(info, 0, 1, "SAR (시작/증가/최대)", text_size=size.small)
+    table.cell(info, 1, 1,
+         str.tostring(sar_start) + "/" + str.tostring(sar_inc) + "/" + str.tostring(sar_max),
+         text_size=size.small)
+    table.cell(info, 0, 2, "MACD (빠름/느림/신호)", text_size=size.small)
+    table.cell(info, 1, 2,
+         str.tostring(macd_fast) + "/" + str.tostring(macd_slow) + "/" + str.tostring(macd_sig),
+         text_size=size.small)
+    table.cell(info, 0, 3, "EMA / MACD 조건", text_size=size.small)
+    table.cell(info, 1, 3,
+         str.tostring(ema_len) + " / " + macd_mode,
+         text_size=size.small)
+    table.cell(info, 0, 4, "레버리지/자본%", text_size=size.small)
+    table.cell(info, 1, 4,
+         str.tostring(leverage_input) + "x / " + str.tostring(equity_pct_input) + "%",
+         text_size=size.small)
+    table.cell(info, 0, 5, "SL / TP1 / TP2", text_size=size.small)
+    table.cell(info, 1, 5,
+         str.tostring(sl_pct) + "% / " + str.tostring(tp1_pct) + "% / " + str.tostring(tp2_pct) + "%",
+         text_size=size.small)
