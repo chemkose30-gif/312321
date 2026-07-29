@@ -79,8 +79,7 @@ plot(kc_upper, "KC 상단", color=color.new(color.orange, 60), linewidth=1, styl
 plot(kc_lower, "KC 하단", color=color.new(color.orange, 60), linewidth=1, style=plot.style_stepline)
 
 // 스퀴즈 강도: 지속 봉 수 표시 (배경색 진해질수록 긴 스퀴즈)
-bgcolor(in_squeeze and squeeze_count >= min_sq_bars ? color.new(color.purple, 85) :
-        in_squeeze                                  ? color.new(color.gray,   90) : na, title="스퀴즈")
+bgcolor(in_squeeze and squeeze_count >= min_sq_bars ? color.new(color.purple, 85) : in_squeeze ? color.new(color.gray, 90) : na, title="스퀴즈")
 
 plotshape(long_entry,  title="롱 돌파", location=location.belowbar, style=shape.triangleup,   size=size.normal, color=color.lime, text="↑")
 plotshape(short_entry, title="숏 돌파", location=location.abovebar, style=shape.triangledown, size=size.normal, color=color.red,  text="↓")
