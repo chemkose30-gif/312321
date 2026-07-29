@@ -382,7 +382,7 @@ def run_all(df):
     # ── 15. 돈치안 채널 ─────────────────────────────────────────
     for n in [10,20,30,50]:
         dh, dl = donchian(h, l, n)
-        sig = np.where(c >= dh, 1, np.where(c <= dl, -1, 0))
+        sig = np.where(c >= dh.shift(1), 1, np.where(c <= dl.shift(1), -1, 0))
         test(f'15.Donchian({n})', ff(sig, idx))
 
     # ── 16. OBV ─────────────────────────────────────────────────
