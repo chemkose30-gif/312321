@@ -58,14 +58,14 @@ base_qty = strategy.equity * (base_pct / 100.0) / close
 long_init = close <= bb_lower and strategy.position_size == 0
 
 // 물타기: 마지막 진입가 대비 grid_pct% 추가 하락 + 최대 레이어 미만
-long_add  = strategy.position_size > 0 and
-            long_layers < max_layers   and
-            not na(long_last_add)      and
-            close <= long_last_add * (1 - grid_pct / 100)
+long_add  = (strategy.position_size > 0 and
+             long_layers < max_layers   and
+             not na(long_last_add)      and
+             close <= long_last_add * (1 - grid_pct / 100))
 
 // TP: 평균단가 + tp_pct% 도달
-long_tp   = strategy.position_size > 0 and
-            close >= strategy.position_avg_price * (1 + tp_pct / 100)
+long_tp   = (strategy.position_size > 0 and
+             close >= strategy.position_avg_price * (1 + tp_pct / 100))
 
 if long_init
     strategy.entry("Long", strategy.long, qty=base_qty, comment="롱1")
@@ -91,13 +91,13 @@ if long_tp
 // ═══════════════════════════════════════════════════════════
 short_init = close >= bb_upper and strategy.position_size == 0
 
-short_add  = strategy.position_size < 0 and
-             short_layers < max_layers   and
-             not na(short_last_add)      and
-             close >= short_last_add * (1 + grid_pct / 100)
+short_add  = (strategy.position_size < 0 and
+              short_layers < max_layers   and
+              not na(short_last_add)      and
+              close >= short_last_add * (1 + grid_pct / 100))
 
-short_tp   = strategy.position_size < 0 and
-             close <= strategy.position_avg_price * (1 - tp_pct / 100)
+short_tp   = (strategy.position_size < 0 and
+              close <= strategy.position_avg_price * (1 - tp_pct / 100))
 
 if short_init
     strategy.entry("Short", strategy.short, qty=base_qty, comment="숏1")
