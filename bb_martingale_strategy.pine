@@ -126,10 +126,7 @@ p_mid   = plot(bb_mid,   "BB 중앙", color=color.new(color.red,   30), linewidt
 p_lower = plot(bb_lower, "BB 하단", color=color.new(color.white, 30), linewidth=1)
 fill(p_upper, p_lower, color=color.new(color.gray, 90))
 
-// 물타기 레벨 표시
-bgcolor(long_layers  >= max_layers ? color.new(color.orange, 85)
-      : short_layers >= max_layers ? color.new(color.orange, 85) : na)
-
+// 포지션 배경색 (롱=연두, 숏=빨강)
 bgcolor(strategy.position_size > 0 ? color.new(color.lime, 93)
       : strategy.position_size < 0 ? color.new(color.red,  93) : na)
 
