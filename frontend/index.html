@@ -3,7 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>스포츠 분석 대시보드</title>
+<title>Lumina Sports - 실시간 스포츠 분석 & 추천픽 | NBA, MLB, KBO, EPL 배당률</title>
+<meta name="description" content="실시간 스포츠 분석 대시보드 - NBA, MLB, KBO, EPL 등 주요 리그 배당률 분석, 부상 리포트, AI 추천픽 무료 제공. 매일 업데이트되는 정확한 스포츠 데이터.">
+<meta name="keywords" content="스포츠 분석, NBA 배당, MLB 분석, KBO 분석, EPL 배당률, 스포츠 픽, 추천픽, 배당률 분석, 축구분석, 농구분석, 야구분석, 스포츠 예측">
+<meta name="robots" content="index, follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Lumina Sports - 실시간 스포츠 분석 & 추천픽">
+<meta property="og:description" content="NBA, MLB, KBO, EPL 실시간 배당률 분석과 AI 기반 추천픽. 오늘의 승률 높은 픽을 무료로 확인하세요.">
+<meta property="og:image" content="/og-image.png">
+<meta property="og:locale" content="ko_KR">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Lumina Sports - 실시간 스포츠 분석">
+<meta name="twitter:description" content="NBA, MLB, KBO, EPL 실시간 배당률 분석과 AI 기반 추천픽">
+<!-- Google AdSense -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXXX" crossorigin="anonymous"></script>
 <style>
 :root {
   --bg:#0a0c10;--bg2:#111318;--bg3:#181c24;
@@ -115,6 +128,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
 ::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 
 /* ── 모바일 ── */
+/* ── 광고 슬롯 ── */
+.ad-slot{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;text-align:center;min-height:90px;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+.ad-slot ins{display:block;width:100%}
+.ad-top-bar{padding:6px;background:var(--bg2);border-bottom:1px solid var(--border);text-align:center;min-height:96px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ad-in-content{margin:14px 0;text-align:center;min-height:90px}
+.ad-label{font-size:9px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+/* ── 공유 FAB ── */
+.share-fab{position:fixed;bottom:24px;right:20px;width:46px;height:46px;border-radius:50%;background:var(--blue);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:19px;box-shadow:0 3px 14px rgba(59,130,246,.45);z-index:100;transition:all .15s;color:#fff}
+.share-fab:hover{transform:scale(1.1);box-shadow:0 5px 18px rgba(59,130,246,.55)}
+/* ── 공유 모달 ── */
+.share-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
+.share-overlay.open{opacity:1;pointer-events:all}
+.share-sheet{background:var(--bg2);border-radius:16px 16px 0 0;padding:20px 16px 28px;width:100%;max-width:480px;transform:translateY(100%);transition:transform .25s ease;border-top:1px solid var(--border2)}
+.share-overlay.open .share-sheet{transform:translateY(0)}
+.share-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}
+.share-btn{display:flex;flex-direction:column;align-items:center;gap:6px;background:none;border:none;cursor:pointer;color:var(--text);font-size:11px;font-family:var(--font);padding:10px 6px;border-radius:10px;transition:background .15s}
+.share-btn:hover{background:var(--bg3)}
+.share-icon{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700}
+.pick-share{background:none;border:1px solid var(--border);color:var(--text3);padding:3px 9px;border-radius:5px;cursor:pointer;font-size:10px;font-family:var(--font);transition:all .12s;line-height:1.4}
+.pick-share:hover{border-color:var(--blue);color:var(--blue)}
+/* 복사 토스트 */
+.copy-toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);padding:8px 18px;border-radius:20px;font-size:12px;font-weight:600;opacity:0;transition:all .2s;pointer-events:none;z-index:300;white-space:nowrap}
+.copy-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media(max-width:768px){.share-fab{bottom:68px;right:12px}}
+/* ── 광고 슬롯 ── */
 @media(max-width:768px){
   /* 사이드바 → 하단 네비 */
   .app{flex-direction:column}
@@ -217,10 +255,66 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
     </div>
     <button class="refresh-btn" onclick="loadCurrent()"><span id="refreshIcon">↻</span> 새로고침</button>
   </div>
+  <!-- 상단 배너 광고 -->
+  <div class="ad-top-bar" id="adTopBar">
+    <div>
+      <div class="ad-label">광고</div>
+      <ins class="adsbygoogle"
+        style="display:inline-block;width:728px;height:90px;max-width:100%"
+        data-ad-client="ca-pub-XXXXXXXXXXXXXXXXX"
+        data-ad-slot="1234567890"
+        data-ad-format="horizontal"
+        data-full-width-responsive="true"></ins>
+    </div>
+  </div>
   <div class="content" id="content">
     <div class="loading"><div class="spinner"></div>데이터 불러오는 중...</div>
   </div>
 </div>
+</div>
+
+<!-- 공유 FAB -->
+<button class="share-fab" onclick="openShareModal()" title="공유하기">📤</button>
+
+<!-- 링크 복사 토스트 -->
+<div class="copy-toast" id="copyToast">링크 복사됨!</div>
+
+<!-- 공유 모달 -->
+<div class="share-overlay" id="shareOverlay" onclick="if(event.target===this)closeShareModal()">
+  <div class="share-sheet">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div style="font-size:15px;font-weight:700">공유하기</div>
+      <button onclick="closeShareModal()" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:22px;line-height:1;padding:0">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--text2)" id="shareModalDesc">Lumina Sports - 실시간 스포츠 분석 & 추천픽</div>
+    <div class="share-grid">
+      <button class="share-btn" onclick="shareKakao()">
+        <div class="share-icon" style="background:#FEE500;color:#391B1B">💬</div>
+        <span>카카오톡</span>
+      </button>
+      <button class="share-btn" onclick="shareTwitter()">
+        <div class="share-icon" style="background:#000;color:#fff;font-size:18px">𝕏</div>
+        <span>X(트위터)</span>
+      </button>
+      <button class="share-btn" onclick="shareFacebook()">
+        <div class="share-icon" style="background:#1877F2;color:#fff;font-size:18px">f</div>
+        <span>페이스북</span>
+      </button>
+      <button class="share-btn" onclick="copyShareLink()">
+        <div class="share-icon" style="background:var(--bg3);border:1px solid var(--border2)">🔗</div>
+        <span>링크 복사</span>
+      </button>
+    </div>
+    <!-- 모달 내 광고 슬롯 -->
+    <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;text-align:center">
+      <div class="ad-label" style="margin-bottom:6px">광고</div>
+      <ins class="adsbygoogle"
+        style="display:inline-block;width:300px;height:100px;max-width:100%"
+        data-ad-client="ca-pub-XXXXXXXXXXXXXXXXX"
+        data-ad-slot="9876543210"
+        data-ad-format="rectangle"></ins>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -271,7 +365,7 @@ function formatTime(iso){
 }
 
 function shortName(n){if(!n)return'';const p=n.split(' ');return p.length>2?p.slice(-2).join(' '):n;}
-function setContent(h){document.getElementById('content').innerHTML=h;}
+function setContent(h){document.getElementById('content').innerHTML=h;} // overridden below by ad-aware wrapper
 
 const NBA_ABBR={"Atlanta Hawks":"ATL","Boston Celtics":"BOS","Brooklyn Nets":"BKN","Charlotte Hornets":"CHA","Chicago Bulls":"CHI","Cleveland Cavaliers":"CLE","Dallas Mavericks":"DAL","Denver Nuggets":"DEN","Detroit Pistons":"DET","Golden State Warriors":"GSW","Houston Rockets":"HOU","Indiana Pacers":"IND","LA Clippers":"LAC","Los Angeles Lakers":"LAL","Memphis Grizzlies":"MEM","Miami Heat":"MIA","Milwaukee Bucks":"MIL","Minnesota Timberwolves":"MIN","New Orleans Pelicans":"NOP","New York Knicks":"NYK","Oklahoma City Thunder":"OKC","Orlando Magic":"ORL","Philadelphia 76ers":"PHI","Phoenix Suns":"PHX","Portland Trail Blazers":"POR","Sacramento Kings":"SAC","San Antonio Spurs":"SAS","Toronto Raptors":"TOR","Utah Jazz":"UTA","Washington Wizards":"WAS"};
 function abbr(name){return NBA_ABBR[name]||(name||'').split(' ').pop().slice(0,3).toUpperCase();}
@@ -1349,6 +1443,7 @@ async function showSmartPicks(btn){
         </div>
         <span style="font-size:17px;font-weight:700;color:${scoreColor(p.score)}">${Math.round(p.score)}점</span>
         <span style="font-size:11px;color:var(--text2)">배당 ${p.odds.toFixed(2)}</span>
+        <button class="pick-share" onclick="openShareModal('[Lumina Sports 전문 분석픽] ${p.leagueLabel}\\n✅ ${shortName(p.pick_team)} 승리 (${Math.round(p.score)}점 신뢰도)\\n'+location.origin+'/?ref=smartpick')" title="픽 공유">📤 공유</button>
       </div>
     </div>`;
   };
@@ -1367,8 +1462,12 @@ async function showSmartPicks(btn){
 
   if(high.length){
     html+=`<div class="section-title" style="color:#10b981;margin-bottom:12px">🔥 HIGH 신뢰도 픽</div>`;
-    high.forEach(p=>{html+=renderSmartPick(p);});
+    high.forEach((p,i)=>{
+      html+=renderSmartPick(p);
+      if(i===1) html+=buildInContentAd('5555555555');
+    });
   }
+  if(high.length&&mid.length) html+=buildInContentAd('6666666666');
   if(mid.length){
     html+=`<div class="section-title" style="color:#f59e0b;margin-top:20px;margin-bottom:12px">⚡ MEDIUM 신뢰도 픽</div>`;
     mid.forEach(p=>{html+=renderSmartPick(p);});
@@ -1584,6 +1683,7 @@ async function showPicks(btn){
           '<div style="height:100%;width:'+barW+'%;background:'+barColor+';border-radius:3px;transition:width .8s ease"></div>'+
         '</div>'+
         '<span style="font-size:15px;font-weight:700;color:'+confColor(p.conf)+'">'+p.conf+'%</span>'+
+        '<button class="pick-share" onclick="openShareModal(\'[Lumina Sports 추천픽] \'+\''+p.league+' · '+shortName(p.home)+' vs '+shortName(p.away)+'\\n✅ \'+\''+p.desc+'\'+\' (신뢰도 '+p.conf+'%)\\n\'+location.origin+\'/?ref=pick\')" title="픽 공유">📤 공유</button>'+
       '</div>'+
     '</div>';
   };
@@ -1601,11 +1701,19 @@ async function showPicks(btn){
 
   if(strong.length){
     html+='<div class="section-title" style="color:var(--green)">🔥 강픽 (신뢰도 75% 이상)</div>';
-    strong.forEach((p,i)=>{html+=renderPick(p,i);});
+    strong.forEach((p,i)=>{
+      html+=renderPick(p,i);
+      if(i===2) html+=buildInContentAd('2222222222'); // 강픽 3번째 후 광고
+    });
   }
+  // 강픽·일반픽 사이 인-콘텐츠 광고
+  if(strong.length&&normal.length) html+=buildInContentAd('3333333333');
   if(normal.length){
     html+='<div class="section-title" style="margin-top:20px">📌 일반픽</div>';
-    normal.forEach((p,i)=>{html+=renderPick(p,i);});
+    normal.forEach((p,i)=>{
+      html+=renderPick(p,i);
+      if(i===3) html+=buildInContentAd('4444444444'); // 일반픽 4번째 후 광고
+    });
   }
 
   setContent(html);
@@ -1760,6 +1868,106 @@ async function showMotivation(gid, homeTeam, awayTeam, leagueKey){
   }catch(e){
     el.innerHTML = `<div style="font-size:11px;color:var(--text3);padding:8px">동기부여 데이터 없음</div>`;
   }
+}
+
+// ── AdSense 초기화 ────────────────────────────────────────────────────────
+function initAds(){
+  try{
+    document.querySelectorAll('.adsbygoogle').forEach(el=>{
+      if(!el.dataset.adsbygoogleStatus)(adsbygoogle=window.adsbygoogle||[]).push({});
+    });
+  }catch(_){}
+}
+document.addEventListener('DOMContentLoaded', initAds);
+
+// ── 인-콘텐츠 광고 슬롯 생성 ──────────────────────────────────────────────
+function buildInContentAd(slot){
+  return `<div class="ad-in-content">
+    <div class="ad-label">광고</div>
+    <ins class="adsbygoogle"
+      style="display:block;min-height:90px"
+      data-ad-client="ca-pub-XXXXXXXXXXXXXXXXX"
+      data-ad-slot="${slot||'1111111111'}"
+      data-ad-format="fluid"
+      data-ad-layout-key="-fb+5w+4e-db+86"
+      data-full-width-responsive="true"></ins>
+  </div>`;
+}
+
+// setContent 래핑 - 콘텐츠 삽입 시 광고 초기화
+const _setContentBase = (h) => { document.getElementById('content').innerHTML = h; };
+function setContent(h){
+  _setContentBase(h);
+  setTimeout(initAds, 100);
+}
+
+// ── 공유 기능 ──────────────────────────────────────────────────────────────
+let _shareText = 'Lumina Sports - 실시간 스포츠 분석 & 추천픽';
+let _shareUrl = location.href;
+
+function openShareModal(text, url){
+  _shareText = text || 'Lumina Sports - 실시간 스포츠 분석 & 추천픽';
+  _shareUrl = url || location.origin + '/?ref=share';
+  document.getElementById('shareModalDesc').textContent = _shareText;
+
+  // 모바일 네이티브 공유 API 우선
+  if(navigator.share && /Mobi|Android/i.test(navigator.userAgent)){
+    navigator.share({title:'Lumina Sports', text:_shareText, url:_shareUrl}).catch(()=>{});
+    return;
+  }
+  document.getElementById('shareOverlay').classList.add('open');
+}
+
+function closeShareModal(){
+  document.getElementById('shareOverlay').classList.remove('open');
+}
+
+function shareKakao(){
+  // 카카오링크 앱스킴 (설치된 경우) or 웹 공유
+  const encoded = encodeURIComponent(_shareUrl);
+  const text = encodeURIComponent(_shareText);
+  window.open(`https://sharer.kakao.com/talk/friends/picker/link?app_key=KAKAO_APP_KEY&validation_action=default&validation_params={"link":{"web_url":"${_shareUrl}","mobile_web_url":"${_shareUrl}"},"content":{"title":"${_shareText}","image_url":"","link":{"web_url":"${_shareUrl}"}}}`, '_blank', 'width=350,height=600');
+  // Fallback: 카카오 공유 URL
+  window.open(`kakaolink://send?template_id=&template_args=${encoded}`) ;
+  closeShareModal();
+}
+
+function shareTwitter(){
+  const text = encodeURIComponent(_shareText + ' ' + _shareUrl);
+  window.open(`https://twitter.com/intent/tweet?text=${text}&hashtags=스포츠분석,추천픽,NBA`, '_blank', 'width=550,height=420');
+  closeShareModal();
+}
+
+function shareFacebook(){
+  const url = encodeURIComponent(_shareUrl);
+  window.open(`https://www.facebook.com/sharer/sharer.php?u=${url}`, '_blank', 'width=580,height=400');
+  closeShareModal();
+}
+
+function copyShareLink(){
+  const url = _shareUrl;
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(url).then(showCopyToast);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = url; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    showCopyToast();
+  }
+  closeShareModal();
+}
+
+function showCopyToast(){
+  const t = document.getElementById('copyToast');
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+// 픽 공유 텍스트 생성
+function sharePickText(league, homeTeam, awayTeam, pick, prob){
+  const leagueLabel = (LEAGUE_INFO[league]?.label) || league;
+  return `[Lumina Sports 추천픽] ${leagueLabel} · ${homeTeam} vs ${awayTeam}\n✅ 픽: ${pick} (승률 ${prob}%)\n📊 스포츠 분석 대시보드: ${location.origin}/?ref=pick`;
 }
 
 // Init
