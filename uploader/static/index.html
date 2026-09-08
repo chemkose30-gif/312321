@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>원클릭 멀티 업로더</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23e1306c'/><path d='M16 7l7 8h-4v9h-6v-9H9z' fill='white'/></svg>">
+<style>
+:root{
+  --bg:#0a0c10;--bg2:#111318;--bg3:#181c24;--bg4:#1f242e;
+  --border:rgba(255,255,255,.07);--border2:rgba(255,255,255,.14);
+  --text:#e8eaf0;--text2:#8892a4;--text3:#5a6478;
+  --blue:#3b82f6;--green:#10b981;--red:#ef4444;--amber:#f59e0b;--purple:#8b5cf6;
+  --radius:12px;--radius-sm:8px;
+  --font:'Pretendard','Apple SD Gothic Neo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+button{font-family:inherit}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px 80px}
+header{position:sticky;top:0;z-index:20;background:rgba(10,12,16,.86);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.head-inner{max-width:1080px;margin:0 auto;padding:0 20px;height:60px;display:flex;align-items:center;gap:14px}
+.logo{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}
+.logo-mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#ff0033,#e1306c 45%,#1877f2);display:grid;place-items:center;font-size:13px}
+.badge{font-size:11px;padding:3px 8px;border-radius:20px;border:1px solid var(--border2);color:var(--text2)}
+.badge.demo{color:var(--amber);border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08)}
+nav{margin-left:auto;display:flex;gap:4px}
+.tab{padding:7px 14px;border-radius:var(--radius-sm);background:none;border:none;color:var(--text2);font-size:13px;cursor:pointer;transition:.15s}
+.tab:hover{color:var(--text);background:var(--bg3)}
+.tab.active{background:var(--bg3);color:var(--text);font-weight:600}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-top:16px}
+.card h2{font-size:15px;font-weight:650;display:flex;align-items:center;gap:9px;margin-bottom:4px}
+.step{width:22px;height:22px;border-radius:7px;background:var(--bg4);color:var(--text2);display:grid;place-items:center;font-size:12px;font-weight:700}
+.sub{color:var(--text2);font-size:12.5px;margin-bottom:16px;line-height:1.55}
+label.f{display:block;font-size:12px;color:var(--text2);margin:14px 0 6px;font-weight:500}
+input[type=text],textarea,select{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:13.5px;font-family:inherit;outline:none;transition:.15s}
+input[type=text]:focus,textarea:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+textarea{resize:vertical;min-height:96px;line-height:1.6}
+select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%238892a4' d='M6 8L2 4h8z'/></svg>");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.counter{float:right;font-size:11px;color:var(--text3)}
+.counter.over{color:var(--red)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 16px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-weight:550;cursor:pointer;transition:.15s;text-decoration:none}
+.btn:hover{background:var(--bg4);border-color:rgba(255,255,255,.22)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.primary:hover{background:#2f74e0}
+.btn.ghost{background:none}
+.btn.danger{color:var(--red);border-color:rgba(239,68,68,.3)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.lg{padding:13px 22px;font-size:14px;width:100%}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.muted{color:var(--text2)}
+.small{font-size:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.hidden{display:none!important}
+.drop{border:1.5px dashed var(--border2);border-radius:var(--radius);padding:38px 20px;text-align:center;cursor:pointer;transition:.15s;background:var(--bg)}
+.drop:hover,.drop.over{border-color:var(--blue);background:rgba(59,130,246,.05)}
+.drop .ico{font-size:30px;margin-bottom:10px}
+.drop b{display:block;font-size:14px;margin-bottom:5px}
+.media{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.media video{width:210px;max-height:300px;border-radius:var(--radius-sm);background:#000;border:1px solid var(--border)}
+.meta-list{flex:1;min-width:220px}
+.meta-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+.meta-row span:first-child{color:var(--text2);flex-shrink:0}
+.bar{height:6px;border-radius:4px;background:var(--bg4);overflow:hidden;margin-top:10px}
+.bar>i{display:block;height:100%;background:var(--blue);width:0;transition:width .25s ease}
+.tags{display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-sm);min-height:42px;align-items:center}
+.tag{display:inline-flex;align-items:center;gap:5px;background:rgba(139,92,246,.14);color:#c4b5fd;border-radius:20px;padding:4px 10px;font-size:12px}
+.tag button{background:none;border:none;color:inherit;cursor:pointer;font-size:13px;line-height:1;opacity:.7}
+.tag button:hover{opacity:1}
+.tags input{flex:1;min-width:110px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px}
+.plat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:12px}
+.plat{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);overflow:hidden;transition:.15s}
+.plat.on{border-color:var(--pc);box-shadow:0 0 0 1px var(--pc) inset}
+.plat-head{display:flex;align-items:center;gap:10px;padding:13px 14px;cursor:pointer}
+.pico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:14px;font-weight:800;color:#08090c;background:var(--pc);flex-shrink:0}
+.plat-name{font-weight:600;font-size:13.5px}
+.plat-acc{font-size:11.5px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.switch{margin-left:auto;width:38px;height:21px;border-radius:20px;background:var(--bg4);position:relative;transition:.18s;flex-shrink:0}
+.switch::after{content:'';position:absolute;top:3px;left:3px;width:15px;height:15px;border-radius:50%;background:var(--text2);transition:.18s}
+.plat.on .switch{background:var(--pc)}
+.plat.on .switch::after{left:20px;background:#08090c}
+.plat-body{padding:0 14px 14px;border-top:1px solid var(--border);margin-top:2px}
+.plat-body label.f{margin-top:12px}
+.check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);margin-top:9px;cursor:pointer}
+.check input{accent-color:var(--blue);width:15px;height:15px}
+.warn{font-size:11.5px;color:var(--amber);background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.22);border-radius:var(--radius-sm);padding:8px 10px;margin-top:12px;line-height:1.5}
+.err{font-size:12.5px;color:#fca5a5;background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.25);border-radius:var(--radius-sm);padding:10px 12px;margin-top:12px;line-height:1.5}
+.ok{font-size:12.5px;color:#6ee7b7;background:rgba(16,185,129,.09);border:1px solid rgba(16,185,129,.25);border-radius:var(--radius-sm);padding:10px 12px;margin-top:12px}
+.job{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);padding:14px;margin-top:12px}
+.job-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.job-title{font-weight:600;font-size:13.5px}
+.pill{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:600}
+.pill.pending{background:var(--bg4);color:var(--text2)}
+.pill.running{background:rgba(59,130,246,.15);color:#93c5fd}
+.pill.success{background:rgba(16,185,129,.15);color:#6ee7b7}
+.pill.partial{background:rgba(245,158,11,.15);color:#fcd34d}
+.pill.failed{background:rgba(239,68,68,.15);color:#fca5a5}
+.tgt{display:flex;align-items:center;gap:11px;padding:10px 0;border-top:1px solid var(--border)}
+.tgt .pico{width:26px;height:26px;border-radius:8px;font-size:12px}
+.tgt-main{flex:1;min-width:0}
+.tgt-msg{font-size:11.5px;color:var(--text2);margin-top:3px;word-break:break-word}
+.tgt a{font-size:12px;color:#93c5fd;text-decoration:none;flex-shrink:0}
+.tgt a:hover{text-decoration:underline}
+.acc-card{display:flex;align-items:center;gap:13px;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);margin-top:10px;flex-wrap:wrap}
+.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;background:var(--bg4)}
+.empty{text-align:center;color:var(--text3);padding:40px 0;font-size:13px}
+@media(max-width:640px){.head-inner{height:auto;padding:10px 16px;flex-wrap:wrap}nav{width:100%;overflow-x:auto}.media video{width:100%}}
+</style>
+</head>
+<body>
+<header>
+  <div class="head-inner">
+    <div class="logo"><div class="logo-mark">↑</div>원클릭 멀티 업로더</div>
+    <span class="badge" id="modeBadge">로딩 중…</span>
+    <nav>
+      <button class="tab active" data-tab="upload">업로드</button>
+      <button class="tab" data-tab="accounts">계정 연결</button>
+      <button class="tab" data-tab="history">업로드 기록</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="flash"></div>
+
+  <section id="tab-upload">
+    <div class="card">
+      <h2><span class="step">1</span>영상 선택</h2>
+      <p class="sub">MP4 / MOV 파일을 올리면 서버에 한 번만 저장하고, 선택한 모든 플랫폼으로 동시에 전송합니다.</p>
+      <div class="drop" id="drop">
+        <div class="ico">🎬</div>
+        <b>여기로 영상을 끌어다 놓거나 클릭해서 선택</b>
+        <span class="muted small">세로 영상(9:16)이면 쇼츠 · 릴스 · 틱톡에 그대로 최적화됩니다</span>
+      </div>
+      <input type="file" id="fileInput" accept="video/*" class="hidden">
+      <div id="mediaBox" class="media hidden" style="margin-top:16px">
+        <video id="preview" controls playsinline></video>
+        <div class="meta-list">
+          <div class="meta-row"><span>파일명</span><span id="mName"></span></div>
+          <div class="meta-row"><span>크기</span><span id="mSize"></span></div>
+          <div class="meta-row"><span>길이 / 해상도</span><span id="mDim">-</span></div>
+          <div class="meta-row"><span>비율</span><span id="mRatio">-</span></div>
+          <div class="bar"><i id="upBar"></i></div>
+          <div class="small muted" id="upMsg" style="margin-top:7px"></div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn ghost small" id="btnThumb">썸네일 지정 (YouTube)</button>
+            <button class="btn ghost small" id="btnReset">다른 영상 선택</button>
+          </div>
+          <input type="file" id="thumbInput" accept="image/*" class="hidden">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">2</span>제목 · 설명 · 해시태그</h2>
+      <p class="sub">여기에 한 번만 쓰면 각 플랫폼 형식(글자수 제한, 캡션 규칙)에 맞춰 자동 변환됩니다.</p>
+      <label class="f">제목 <span class="counter" id="cTitle">0 / 100</span></label>
+      <input type="text" id="title" placeholder="예) 3분만에 끝내는 김치볶음밥">
+      <label class="f">설명 <span class="counter" id="cDesc">0</span></label>
+      <textarea id="desc" placeholder="영상 설명을 입력하세요. 틱톡·릴스에서는 캡션으로 사용됩니다."></textarea>
+      <label class="f">해시태그 <span class="counter muted">Enter 또는 쉼표로 추가</span></label>
+      <div class="tags" id="tagBox"><input type="text" id="tagInput" placeholder="예) 요리, 자취요리, shorts"></div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">3</span>게시할 플랫폼</h2>
+      <p class="sub">연결된 계정만 켤 수 있습니다. 플랫폼별 공개 범위와 옵션은 각 카드에서 따로 지정하세요.</p>
+      <div class="plat-grid" id="platGrid"></div>
+      <div id="publishErr"></div>
+      <button class="btn primary lg" id="btnPublish" style="margin-top:18px" disabled>선택한 플랫폼에 한 번에 올리기</button>
+    </div>
+
+    <div id="liveJob"></div>
+  </section>
+
+  <section id="tab-accounts" class="hidden">
+    <div class="card">
+      <h2>플랫폼 계정 연결</h2>
+      <p class="sub">각 플랫폼의 공식 OAuth로 로그인해 게시 권한을 받아옵니다. 토큰은 이 서버의 SQLite에 암호화되어 저장되고, 언제든 연결을 끊을 수 있습니다.</p>
+      <div id="accList"></div>
+    </div>
+    <div class="card">
+      <h2>리디렉션 URI 설정</h2>
+      <p class="sub">아래 주소를 각 개발자 콘솔에 그대로 등록한 뒤 <span class="mono">.env</span>에 키를 넣고 서버를 재시작하세요.</p>
+      <div id="redirectList"></div>
+    </div>
+  </section>
+
+  <section id="tab-history" class="hidden">
+    <div class="card">
+      <h2>업로드 기록</h2>
+      <p class="sub">최근 30건의 업로드와 플랫폼별 결과입니다.</p>
+      <div id="histList"><div class="empty">아직 업로드 기록이 없습니다.</div></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
+const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
+               duration:0, vertical:false, publicBase:''};
+
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtSize = b => b >= 1073741824 ? (b/1073741824).toFixed(2)+' GB' : b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB';
+const fmtTime = t => new Date(t*1000).toLocaleString('ko-KR', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+
+function flash(kind, msg){
+  $('#flash').innerHTML = `<div class="${kind}" style="margin-top:16px">${esc(msg)}</div>`;
+  window.scrollTo({top:0, behavior:'smooth'});
+  if(kind === 'ok') setTimeout(() => { $('#flash').innerHTML = ''; }, 6000);
+}
+
+/* ── 탭 ── */
+$$('.tab').forEach(btn => btn.onclick = () => {
+  $$('.tab').forEach(b => b.classList.toggle('active', b === btn));
+  ['upload','accounts','history'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== btn.dataset.tab));
+  if(btn.dataset.tab === 'history') loadHistory();
+});
+
+/* ── 초기 로드 ── */
+async function loadPlatforms(){
+  const res = await fetch('/api/platforms').then(r => r.json());
+  state.platforms = res.platforms;
+  state.publicBase = res.public_base_url;
+  const demoCount = res.platforms.filter(p => p.demo).length;
+  const badge = $('#modeBadge');
+  if(demoCount === res.platforms.length){ badge.className = 'badge demo'; badge.textContent = '데모 모드 · API 키 미설정'; }
+  else if(demoCount > 0){ badge.className = 'badge demo'; badge.textContent = `일부 데모 (${res.platforms.length-demoCount}/${res.platforms.length} 실제 연동)`; }
+  else { badge.className = 'badge'; badge.textContent = '실제 연동 모드'; }
+  renderPlatforms();
+  renderAccounts();
+}
+
+/* ── 영상 업로드 ── */
+$('#drop').onclick = () => $('#fileInput').click();
+$('#drop').ondragover = e => { e.preventDefault(); $('#drop').classList.add('over'); };
+$('#drop').ondragleave = () => $('#drop').classList.remove('over');
+$('#drop').ondrop = e => {
+  e.preventDefault(); $('#drop').classList.remove('over');
+  if(e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+};
+$('#fileInput').onchange = e => e.target.files[0] && uploadFile(e.target.files[0]);
+$('#btnReset').onclick = () => {
+  state.media = null; $('#mediaBox').classList.add('hidden'); $('#drop').classList.remove('hidden');
+  $('#fileInput').value = ''; $('#upBar').style.width = '0'; $('#upMsg').textContent = '';
+  refreshPublishButton();
+};
+$('#btnThumb').onclick = () => $('#thumbInput').click();
+$('#thumbInput').onchange = async e => {
+  const file = e.target.files[0];
+  if(!file || !state.media) return;
+  const fd = new FormData(); fd.append('file', file);
+  const res = await fetch(`/api/media/${state.media.id}/thumbnail`, {method:'POST', body:fd});
+  flash(res.ok ? 'ok' : 'err', res.ok ? '썸네일이 등록되었습니다. (YouTube에 적용)' : '썸네일 업로드에 실패했습니다.');
+};
+
+function uploadFile(file){
+  if(!file.type.startsWith('video/')){ flash('err', '영상 파일만 올릴 수 있습니다.'); return; }
+  $('#drop').classList.add('hidden');
+  $('#mediaBox').classList.remove('hidden');
+  $('#mName').textContent = file.name;
+  $('#mSize').textContent = fmtSize(file.size);
+  $('#mDim').textContent = '-'; $('#mRatio').textContent = '-';
+  const video = $('#preview');
+  video.src = URL.createObjectURL(file);
+  video.onloadedmetadata = () => {
+    const w = video.videoWidth, h = video.videoHeight, sec = Math.round(video.duration);
+    $('#mDim').textContent = `${Math.floor(sec/60)}분 ${sec%60}초 · ${w}×${h}`;
+    state.duration = sec; state.vertical = h > w;
+    $('#mRatio').textContent = state.vertical ? '세로 (쇼츠/릴스 최적)' : '가로 (일반 영상)';
+    renderPlatforms();
+  };
+
+  const fd = new FormData(); fd.append('file', file);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/media');
+  xhr.upload.onprogress = e => {
+    if(!e.lengthComputable) return;
+    const pct = Math.round(e.loaded / e.total * 100);
+    $('#upBar').style.width = pct + '%';
+    $('#upMsg').textContent = `서버로 전송 중… ${pct}%`;
+  };
+  xhr.onload = () => {
+    if(xhr.status >= 400){
+      $('#upMsg').textContent = '';
+      let detail = xhr.status;
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch(_){}
+      flash('err', '업로드 실패: ' + detail);
+      return;
+    }
+    state.media = JSON.parse(xhr.responseText);
+    $('#upBar').style.width = '100%';
+    $('#upMsg').innerHTML = '<span style="color:#6ee7b7">✓ 서버 업로드 완료 — 이제 플랫폼을 선택하세요</span>';
+    refreshPublishButton();
+  };
+  xhr.onerror = () => flash('err', '네트워크 오류로 업로드에 실패했습니다.');
+  xhr.send(fd);
+}
+
+/* ── 해시태그 ── */
+$('#tagInput').onkeydown = e => {
+  if(e.key === 'Enter' || e.key === ','){
+    e.preventDefault(); addTag(e.target.value); e.target.value = '';
+  } else if(e.key === 'Backspace' && !e.target.value && state.tags.length){
+    state.tags.pop(); renderTags();
+  }
+};
+$('#tagInput').onblur = e => { addTag(e.target.value); e.target.value = ''; };
+function addTag(raw){
+  raw.split(/[,#\s]+/).map(t => t.trim()).filter(Boolean).forEach(t => {
+    if(!state.tags.includes(t) && state.tags.length < 30) state.tags.push(t);
+  });
+  renderTags();
+}
+function renderTags(){
+  const box = $('#tagBox');
+  box.querySelectorAll('.tag').forEach(el => el.remove());
+  state.tags.forEach((t, i) => {
+    const el = document.createElement('span');
+    el.className = 'tag';
+    el.innerHTML = `#${esc(t)}<button title="삭제">×</button>`;
+    el.querySelector('button').onclick = () => { state.tags.splice(i,1); renderTags(); };
+    box.insertBefore(el, $('#tagInput'));
+  });
+  updateCounters();
+}
+
+/* ── 글자수 ── */
+['#title','#desc'].forEach(sel => $(sel).oninput = updateCounters);
+function captionLength(){
+  const tags = state.tags.map(t => '#'+t).join(' ');
+  return [$('#title').value, $('#desc').value, tags].filter(Boolean).join('\n\n').length;
+}
+function updateCounters(){
+  const t = $('#title').value.length;
+  $('#cTitle').textContent = `${t} / 100`;
+  $('#cTitle').classList.toggle('over', t > 100);
+  const c = captionLength();
+  const capped = state.selected.tiktok || state.selected.instagram;
+  $('#cDesc').textContent = capped ? `캡션 합계 ${c} / 2200자` : `캡션 합계 ${c}자`;
+  $('#cDesc').classList.toggle('over', capped && c > 2200);
+}
+
+/* ── 플랫폼 카드 ── */
+function renderPlatforms(){
+  $('#platGrid').innerHTML = state.platforms.map(p => {
+    const has = p.accounts.length > 0;
+    const on = !!state.selected[p.key];
+    const accId = state.selected[p.key] || (has ? p.accounts[0].id : null);
+    const accName = has ? (p.accounts.find(a => a.id === accId) || p.accounts[0]).name : '계정 미연결';
+    return `
+    <div class="plat ${on?'on':''}" style="--pc:${p.color}" data-key="${p.key}">
+      <div class="plat-head" data-toggle="${p.key}">
+        <div class="pico">${PICO[p.key]}</div>
+        <div style="min-width:0">
+          <div class="plat-name">${esc(p.label)}${p.demo?' <span class="small muted">(데모)</span>':''}</div>
+          <div class="plat-acc">${esc(accName)}</div>
+        </div>
+        <div class="switch"></div>
+      </div>
+      ${on ? `<div class="plat-body">${optionsHtml(p, accId)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  $$('[data-toggle]').forEach(el => el.onclick = () => togglePlatform(el.dataset.toggle));
+  $$('[data-opt]').forEach(el => el.onchange = () => {
+    const [key, field] = el.dataset.opt.split(':');
+    state.options[key] = state.options[key] || {};
+    state.options[key][field] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  $$('[data-acc]').forEach(el => el.onchange = () => { state.selected[el.dataset.acc] = el.value; renderPlatforms(); });
+  refreshPublishButton();
+  updateCounters();
+}
+
+function optionsHtml(p, accountId){
+  const account = p.accounts.find(a => a.id === accountId) || p.accounts[0];
+  const picker = p.accounts.length > 1 ? `
+    <label class="f">계정</label>
+    <select data-acc="${p.key}">${p.accounts.map(a => `<option value="${a.id}" ${a.id===accountId?'selected':''}>${esc(a.name)}</option>`).join('')}</select>` : '';
+  const opt = state.options[p.key] || {};
+  const warn = [];
+  if(p.key === 'youtube' && state.duration > 180 && state.vertical) warn.push('3분이 넘는 세로 영상은 쇼츠가 아닌 일반 영상으로 게시됩니다.');
+  if(p.key === 'tiktok' && state.duration > 600) warn.push('계정 등급에 따라 10분이 넘는 영상은 거부될 수 있습니다.');
+  if(p.key === 'instagram' && state.duration && !state.vertical) warn.push('릴스는 9:16 세로 영상을 권장합니다. 가로 영상은 잘려 보일 수 있습니다.');
+  if(p.key === 'instagram' && !p.demo && /^https?:\/\/(localhost|127\.)/.test(state.publicBase))
+    warn.push('Instagram은 외부에서 접근 가능한 영상 URL이 필요합니다. .env의 PUBLIC_BASE_URL을 공개 주소로 바꾸세요.');
+
+  let body = '';
+  if(p.key === 'youtube'){
+    body = `
+      <label class="f">공개 범위</label>
+      <select data-opt="youtube:privacy">
+        <option value="private" ${(opt.privacy||'private')==='private'?'selected':''}>비공개 (테스트 권장)</option>
+        <option value="unlisted" ${opt.privacy==='unlisted'?'selected':''}>일부 공개</option>
+        <option value="public" ${opt.privacy==='public'?'selected':''}>전체 공개</option>
+      </select>
+      <label class="f">카테고리</label>
+      <select data-opt="youtube:category_id">
+        <option value="22" ${(opt.category_id||'22')==='22'?'selected':''}>인물/블로그</option>
+        <option value="24" ${opt.category_id==='24'?'selected':''}>엔터테인먼트</option>
+        <option value="26" ${opt.category_id==='26'?'selected':''}>노하우/스타일</option>
+        <option value="20" ${opt.category_id==='20'?'selected':''}>게임</option>
+        <option value="10" ${opt.category_id==='10'?'selected':''}>음악</option>
+        <option value="28" ${opt.category_id==='28'?'selected':''}>과학기술</option>
+      </select>
+      <label class="check"><input type="checkbox" data-opt="youtube:made_for_kids" ${opt.made_for_kids?'checked':''}>아동용 콘텐츠</label>`;
+  } else if(p.key === 'tiktok'){
+    const levels = (account && account.meta && account.meta.privacy_options && account.meta.privacy_options.length)
+      ? account.meta.privacy_options : ['SELF_ONLY'];
+    const labels = {PUBLIC_TO_EVERYONE:'전체 공개', MUTUAL_FOLLOW_FRIENDS:'맞팔로우 친구', FOLLOWER_OF_CREATOR:'팔로워 공개', SELF_ONLY:'나만 보기'};
+    body = `
+      <label class="f">공개 범위</label>
+      <select data-opt="tiktok:privacy">${levels.map(l => `<option value="${l}" ${opt.privacy===l?'selected':''}>${labels[l]||l}</option>`).join('')}</select>
+      <label class="check"><input type="checkbox" data-opt="tiktok:disable_comment" ${opt.disable_comment?'checked':''}>댓글 끄기</label>
+      <label class="check"><input type="checkbox" data-opt="tiktok:disable_duet" ${opt.disable_duet?'checked':''}>듀엣 끄기</label>
+      <label class="check"><input type="checkbox" data-opt="tiktok:disable_stitch" ${opt.disable_stitch?'checked':''}>이어찍기 끄기</label>`;
+  } else if(p.key === 'instagram'){
+    body = `<label class="check"><input type="checkbox" data-opt="instagram:share_to_feed" ${opt.share_to_feed!==false?'checked':''}>릴스를 피드에도 공유</label>`;
+  } else {
+    body = `<label class="check"><input type="checkbox" data-opt="facebook:published" ${opt.published!==false?'checked':''}>바로 공개 게시</label>`;
+  }
+  return picker + body + warn.map(w => `<div class="warn">${esc(w)}</div>`).join('');
+}
+
+function togglePlatform(key){
+  const p = state.platforms.find(x => x.key === key);
+  if(!p.accounts.length){
+    flash('err', `${p.label} 계정이 아직 연결되지 않았습니다. '계정 연결' 탭에서 먼저 연결하세요.`);
+    return;
+  }
+  if(state.selected[key]) delete state.selected[key];
+  else state.selected[key] = p.accounts[0].id;
+  renderPlatforms();
+}
+
+function refreshPublishButton(){
+  const count = Object.keys(state.selected).length;
+  const btn = $('#btnPublish');
+  btn.disabled = !state.media || count === 0;
+  btn.textContent = count ? `${count}개 플랫폼에 한 번에 올리기` : '선택한 플랫폼에 한 번에 올리기';
+}
+
+/* ── 게시 ── */
+$('#btnPublish').onclick = async () => {
+  const title = $('#title').value.trim();
+  if(!title){ flash('err', '제목을 입력하세요.'); return; }
+  $('#btnPublish').disabled = true;
+  $('#publishErr').innerHTML = '';
+  const payload = {
+    media_id: state.media.id,
+    title,
+    description: $('#desc').value.trim(),
+    hashtags: state.tags,
+    targets: Object.entries(state.selected).map(([platform, account_id]) => ({platform, account_id})),
+    options: state.options,
+  };
+  const res = await fetch('/api/jobs', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){
+    $('#publishErr').innerHTML = `<div class="err">${esc(data.detail || '업로드 요청에 실패했습니다.')}</div>`;
+    $('#btnPublish').disabled = false;
+    return;
+  }
+  state.jobId = data.job_id;
+  pollJob();
+};
+
+async function pollJob(){
+  clearInterval(state.poll);
+  const tick = async () => {
+    const job = await fetch(`/api/jobs/${state.jobId}`).then(r => r.json());
+    $('#liveJob').innerHTML = `<div class="card"><h2>진행 상황</h2>${jobHtml(job, true)}</div>`;
+    if(['success','partial','failed'].includes(job.status)){
+      clearInterval(state.poll);
+      $('#btnPublish').disabled = false;
+      const done = job.targets.filter(t => t.status === 'success').length;
+      flash(job.status === 'success' ? 'ok' : 'err',
+        `업로드 종료 — 성공 ${done}건 / 전체 ${job.targets.length}건`);
+    }
+  };
+  await tick();
+  $('#liveJob').scrollIntoView({behavior:'smooth', block:'nearest'});
+  state.poll = setInterval(tick, 1500);
+}
+
+const STATUS_KO = {pending:'대기', running:'진행 중', success:'성공', failed:'실패', partial:'일부 성공'};
+
+function jobHtml(job, live){
+  const meta = k => state.platforms.find(p => p.key === k) || {color:'#888', label:k};
+  return `
+  <div class="job">
+    <div class="job-head">
+      <span class="job-title">${esc(job.title || job.video_name)}</span>
+      <span class="pill ${job.status}">${STATUS_KO[job.status] || job.status}</span>
+      <span class="small muted" style="margin-left:auto">${fmtTime(job.created_at)} · ${fmtSize(job.video_size)}</span>
+    </div>
+    ${job.targets.map(t => `
+      <div class="tgt">
+        <div class="pico" style="background:${meta(t.platform).color}">${PICO[t.platform] || '?'}</div>
+        <div class="tgt-main">
+          <div class="row" style="gap:8px">
+            <b style="font-size:12.5px">${esc(meta(t.platform).label)}</b>
+            <span class="pill ${t.status}">${STATUS_KO[t.status] || t.status}</span>
+          </div>
+          <div class="tgt-msg">${esc(t.message || '')}</div>
+          ${t.status === 'running' && live ? `<div class="bar"><i style="width:${t.progress}%"></i></div>` : ''}
+        </div>
+        ${t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">열기 ↗</a>` : ''}
+      </div>`).join('')}
+  </div>`;
+}
+
+/* ── 계정 탭 ── */
+function renderAccounts(){
+  $('#accList').innerHTML = state.platforms.map(p => `
+    <div class="acc-card">
+      <div class="pico" style="background:${p.color}">${PICO[p.key]}</div>
+      <div style="flex:1;min-width:160px">
+        <div style="font-weight:600">${esc(p.label)}</div>
+        <div class="small muted" style="margin-top:3px">
+          ${p.configured ? '개발자 키 설정됨' : '<span style="color:var(--amber)">API 키 미설정 — 연결 시 데모 계정이 생성됩니다</span>'}
+        </div>
+      </div>
+      <a class="btn ${p.accounts.length ? '' : 'primary'}" href="/api/oauth/${p.key}/start">
+        ${p.accounts.length ? '계정 추가 / 재연결' : '연결하기'}
+      </a>
+    </div>
+    ${p.accounts.map(a => `
+      <div class="acc-card" style="margin-left:24px">
+        ${a.avatar ? `<img class="avatar" src="${esc(a.avatar)}" alt="">` : '<div class="avatar"></div>'}
+        <div style="flex:1;min-width:140px">
+          <div style="font-weight:600;font-size:13px">${esc(a.name)}</div>
+          <div class="small muted mono">${esc(a.external_id)}${a.meta && a.meta.page_name ? ' · ' + esc(a.meta.page_name) : ''}</div>
+        </div>
+        <button class="btn danger small" data-del="${a.id}">연결 끊기</button>
+      </div>`).join('')}
+  `).join('');
+
+  $$('[data-del]').forEach(btn => btn.onclick = async () => {
+    if(!confirm('이 계정 연결을 끊을까요?')) return;
+    await fetch('/api/accounts/' + btn.dataset.del, {method:'DELETE'});
+    Object.keys(state.selected).forEach(k => { if(state.selected[k] === btn.dataset.del) delete state.selected[k]; });
+    loadPlatforms();
+  });
+
+  const seen = new Set();
+  $('#redirectList').innerHTML = state.platforms
+    .filter(p => !seen.has(p.provider) && seen.add(p.provider))
+    .map(p => `<div class="meta-row"><span>${p.provider === 'meta' ? 'Meta (Instagram + Facebook 공용)' : esc(p.label)}</span>
+      <span class="mono">${esc(p.redirect_uri)}</span></div>`).join('');
+}
+
+/* ── 기록 탭 ── */
+async function loadHistory(){
+  const {jobs} = await fetch('/api/jobs').then(r => r.json());
+  $('#histList').innerHTML = jobs.length
+    ? jobs.map(j => jobHtml(j, false)).join('')
+    : '<div class="empty">아직 업로드 기록이 없습니다.</div>';
+}
+
+/* ── OAuth 리디렉션 결과 처리 ── */
+(function handleRedirect(){
+  const params = new URLSearchParams(location.search);
+  if(params.get('connected')){
+    flash('ok', params.get('demo')
+      ? '데모 계정이 연결되었습니다. 실제 게시는 API 키 설정 후 가능합니다.'
+      : '계정이 연결되었습니다.');
+    $$('.tab').find(b => b.dataset.tab === 'accounts').click();
+  } else if(params.get('error')){
+    flash('err', '연결 실패: ' + params.get('error'));
+  }
+  if(location.search) history.replaceState({}, '', location.pathname);
+})();
+
+loadPlatforms();
+</script>
+</body>
+</html>
