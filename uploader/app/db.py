@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     platform      TEXT NOT NULL,
     external_id   TEXT NOT NULL,
     name          TEXT NOT NULL,
+    label         TEXT,
     avatar        TEXT,
     access_token  TEXT,
     refresh_token TEXT,
@@ -82,8 +83,16 @@ def connect() -> sqlite3.Connection:
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
         _conn.commit()
     return _conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """이전 버전 DB에 없는 컬럼을 채운다."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
+    if "label" not in columns:
+        conn.execute("ALTER TABLE accounts ADD COLUMN label TEXT")
 
 
 def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -124,6 +133,8 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "platform": row["platform"],
         "external_id": row["external_id"],
         "name": row["name"],
+        "label": row["label"],
+        "display_name": row["label"] or row["name"],
         "avatar": row["avatar"],
         "expires_at": row["expires_at"],
         "meta": json.loads(row["meta"] or "{}"),
@@ -191,6 +202,14 @@ def update_account_tokens(
             "UPDATE accounts SET access_token=?, expires_at=? WHERE id=?",
             (encrypt(access_token), expires_at, account_id),
         )
+
+
+def set_account_label(account_id: str, label: str) -> None:
+    _exec("UPDATE accounts SET label=? WHERE id=?", (label or None, account_id))
+
+
+def count_accounts(platform: str) -> int:
+    return _rows("SELECT COUNT(*) AS n FROM accounts WHERE platform=?", (platform,))[0]["n"]
 
 
 def delete_account(account_id: str) -> None:

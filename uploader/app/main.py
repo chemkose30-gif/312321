@@ -116,6 +116,18 @@ async def oauth_callback(provider: str, request: Request):
     return RedirectResponse(f"/?connected={provider}", status_code=303)
 
 
+class AccountPatch(BaseModel):
+    label: str = ""
+
+
+@app.patch("/api/accounts/{account_id}")
+async def rename_account(account_id: str, payload: AccountPatch) -> dict:
+    if not db.get_account(account_id, with_tokens=False):
+        raise HTTPException(404, "계정을 찾을 수 없습니다.")
+    db.set_account_label(account_id, payload.label.strip()[:60])
+    return {"ok": True}
+
+
 @app.delete("/api/accounts/{account_id}")
 async def disconnect(account_id: str) -> dict:
     if not db.get_account(account_id, with_tokens=False):
@@ -125,7 +137,10 @@ async def disconnect(account_id: str) -> dict:
 
 
 def _create_demo_accounts(platform: str) -> None:
-    """API 키 없이도 화면을 테스트할 수 있도록 가짜 계정을 만든다."""
+    """API 키 없이도 화면을 테스트할 수 있도록 가짜 계정을 만든다.
+
+    누를 때마다 새 계정이 하나씩 추가되므로 다중 계정 운영도 미리 확인할 수 있다.
+    """
     demo_names = {
         "youtube": ("데모 채널", "UCdemo"),
         "tiktok": ("demo_creator", "tt_demo"),
@@ -133,7 +148,10 @@ def _create_demo_accounts(platform: str) -> None:
         "facebook": ("데모 페이지", "fb_demo"),
     }
     name, external = demo_names[platform]
-    db.upsert_account(platform, external, name, access_token="demo", meta={"demo": True})
+    n = db.count_accounts(platform) + 1
+    db.upsert_account(
+        platform, f"{external}_{n}", f"{name} {n}", access_token="demo", meta={"demo": True}
+    )
 
 
 # ── 미디어 업로드 ────────────────────────────────────────────
