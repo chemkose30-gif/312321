@@ -44,13 +44,21 @@
 ## 1. 빠른 시작 (데모 모드)
 
 API 키가 하나도 없어도 화면 전체를 사용해 볼 수 있습니다. 이때 업로드는 실제로 전송되지 않고 시뮬레이션됩니다.
+필요 환경은 **Python 3.10 이상**뿐입니다.
 
 ```bash
 cd uploader
+./run.sh            # 가상환경 생성 + 의존성 설치 + .env 준비까지 자동, 기본 8100 포트
+# ./run.sh 8200     # 다른 포트로 띄우기
+# http://localhost:8100
+```
+
+직접 실행하려면:
+
+```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env          # 그대로 두면 데모 모드
 .venv/bin/python -m uvicorn app.main:app --port 8100
-# http://localhost:8100
 ```
 
 `계정 관리`에서 **데모 계정 만들기**를 누르면 가짜 계정이 하나씩 생성되고(또는 **+ 내 아이디 추가**로 직접 입력), 업로드 탭에서 다중 채널 게시 흐름을 그대로 확인할 수 있습니다.
