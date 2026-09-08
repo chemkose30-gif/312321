@@ -142,6 +142,8 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "name": row["name"],
         "label": row["label"],
         "display_name": row["label"] or row["name"],
+        "linked": bool(row["access_token"]),
+        "manual": bool(json.loads(row["meta"] or "{}").get("manual")),
         "avatar": row["avatar"],
         "expires_at": row["expires_at"],
         "meta": json.loads(row["meta"] or "{}"),

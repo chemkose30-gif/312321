@@ -116,6 +116,35 @@ async def oauth_callback(provider: str, request: Request):
     return RedirectResponse(f"/?connected={provider}", status_code=303)
 
 
+class ManualAccount(BaseModel):
+    platform: str
+    handle: str
+    label: str = ""
+
+
+@app.post("/api/accounts/manual")
+async def add_manual_account(payload: ManualAccount) -> dict:
+    """로그인 없이 내 아이디만 먼저 목록에 등록한다.
+
+    실제 게시는 이후 해당 플랫폼 로그인 연결을 마쳐야 가능하다
+    (자격증명이 없는 데모 모드에서는 시뮬레이션으로 동작).
+    """
+    if payload.platform not in PLATFORMS:
+        raise HTTPException(400, "알 수 없는 플랫폼입니다.")
+    handle = payload.handle.strip().lstrip("@").strip()[:80]
+    if not handle:
+        raise HTTPException(400, "아이디를 입력하세요.")
+    for account in db.list_accounts():
+        if account["platform"] == payload.platform and account["external_id"] == handle:
+            raise HTTPException(400, f"이미 등록된 아이디입니다: {handle}")
+    account_id = db.upsert_account(
+        payload.platform, handle, handle, meta={"manual": True}
+    )
+    if payload.label.strip():
+        db.set_account_label(account_id, payload.label.strip()[:60])
+    return {"id": account_id, "handle": handle}
+
+
 class AccountPatch(BaseModel):
     label: str = ""
 

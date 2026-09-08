@@ -63,6 +63,12 @@ async def _run_target(job: dict, target: dict) -> str:
 
         if demo_platform(platform):
             result = await _demo_publish(platform, job, progress)
+        elif not account.get("access_token"):
+            # 아이디만 직접 등록해 둔 계정 — 아직 로그인 연결이 안 됨.
+            raise PublishError(
+                f"'{account['name']}'은 아이디만 등록된 계정입니다. "
+                "계정 관리에서 로그인 연결을 마친 뒤 다시 시도하세요."
+            )
         else:
             result = await PUBLISHERS[platform](account, job, options, progress)
 

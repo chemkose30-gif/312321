@@ -129,6 +129,13 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .tag button:hover{opacity:1}
 .tags input{flex:1;min-width:110px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px}
 
+.tagbadge{font-size:10.5px;padding:2px 8px;border-radius:20px;border:1px solid var(--border2);color:var(--text2);white-space:nowrap}
+.tagbadge.need{color:var(--amber);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.08)}
+.tagbadge.on{color:#6ee7b7;border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.08)}
+.addbox{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:13px 18px;background:var(--bg3);border-bottom:1px solid var(--border)}
+.addbox input{max-width:230px}
+.addbox .hint{font-size:11.5px;color:var(--text3)}
+
 /* 채널 세트 */
 .setbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:15px;padding-bottom:14px;border-bottom:1px solid var(--border)}
 .setbar .lbl{font-size:12px;color:var(--text2);margin-right:2px}
@@ -198,7 +205,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .plat-panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-top:14px;overflow:hidden}
 .panel-head{display:flex;align-items:center;gap:12px;padding:16px 18px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
 .panel-head .cnt{font-size:12px;color:var(--text2)}
-.panel-head .btn{margin-left:auto}
+.panel-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
 .acc-row{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .acc-row:last-child{border-bottom:none}
 .avatar{width:34px;height:34px;border-radius:50%;object-fit:cover;background:var(--bg4);flex-shrink:0}
@@ -360,7 +367,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
   <div class="wrap">
     <div class="page-head">
       <h1>계정 관리</h1>
-      <p>플랫폼마다 아이디를 원하는 만큼 추가하세요. <b>계정 추가</b>를 누를 때마다 새 계정을 연결할 수 있고, 별칭을 달아 구분할 수 있습니다.</p>
+      <p>플랫폼마다 아이디를 원하는 만큼 추가하세요. <b>내 아이디 추가</b>로 유튜브·인스타 아이디를 직접 적어 목록을 먼저 만들고,
+        <b>로그인 연결</b>을 마치면 그 아이디로 실제 게시가 시작됩니다.</p>
     </div>
     <div id="accPanels"></div>
 
@@ -631,6 +639,7 @@ function renderPlatforms(){
             <span class="nm" style="display:block">${esc(a.display_name)}</span>
             <span class="id" style="display:block">${esc(a.external_id)}</span>
           </span>
+          ${!a.linked && !p.demo ? '<span class="tagbadge need" style="margin-left:auto">연결 필요</span>' : ''}
         </label>`).join('')}</div>` : ''}
       <a class="acc-add" href="#accounts">+ ${esc(p.label)} 계정 ${p.accounts.length ? '추가' : '연결'}</a>
       ${on ? `<div class="plat-body">${optionsHtml(p)}</div>` : ''}
@@ -794,6 +803,13 @@ function jobHtml(job, live){
 }
 
 /* ── 계정 관리 ── */
+const HANDLE_HINT = {
+  youtube: '유튜브 채널명 또는 핸들 (예: @my-channel)',
+  tiktok: '틱톡 아이디 (예: @my_id)',
+  instagram: '인스타그램 아이디 (예: my.id)',
+  facebook: '페이스북 페이지 이름',
+};
+
 function renderAccountPanels(){
   $('#accPanels').innerHTML = state.platforms.map(p => `
     <div class="plat-panel">
@@ -801,10 +817,20 @@ function renderAccountPanels(){
         <div class="pico" style="background:${p.color}">${PICO[p.key]}</div>
         <div>
           <div style="font-weight:650">${esc(p.label)}</div>
-          <div class="cnt">${p.accounts.length ? `${p.accounts.length}개 계정 연결됨` : '연결된 계정 없음'}
+          <div class="cnt">${p.accounts.length ? `${p.accounts.length}개 아이디 등록됨` : '등록된 아이디 없음'}
             · ${p.configured ? '실제 연동' : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
         </div>
-        <a class="btn primary sm" href="/api/oauth/${p.key}/start">+ 계정 추가</a>
+        <div class="panel-actions">
+          <button class="btn primary sm" data-addid="${p.key}">+ 내 아이디 추가</button>
+          <a class="btn sm" href="/api/oauth/${p.key}/start">${p.configured ? '로그인으로 연결' : '데모 계정 만들기'}</a>
+        </div>
+      </div>
+      <div class="addbox hidden" data-addbox="${p.key}">
+        <input type="text" data-handle="${p.key}" placeholder="${esc(HANDLE_HINT[p.key])}">
+        <input type="text" data-newlabel="${p.key}" placeholder="별칭 (선택)" style="max-width:160px">
+        <button class="btn primary sm" data-saveid="${p.key}">등록</button>
+        <button class="btn ghost sm" data-cancelid="${p.key}">취소</button>
+        <span class="hint">아이디만 먼저 등록해 두고, 나중에 로그인 연결로 게시 권한을 붙일 수 있습니다.</span>
       </div>
       ${p.accounts.length ? p.accounts.map(a => `
         <div class="acc-row">
@@ -813,14 +839,29 @@ function renderAccountPanels(){
             <div class="nm">${esc(a.display_name)}</div>
             <div class="id mono">${esc(a.external_id)}${a.meta && a.meta.page_name ? ' · ' + esc(a.meta.page_name) : ''}</div>
           </div>
-          <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (예: 메인 채널)">
-          <button class="btn danger sm" data-del="${a.id}">연결 끊기</button>
+          ${a.linked
+            ? '<span class="tagbadge on">연결됨</span>'
+            : `<a class="tagbadge need" href="/api/oauth/${p.key}/start" title="로그인해서 게시 권한을 붙입니다">로그인 연결 필요</a>`}
+          <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (선택)">
+          <button class="btn danger sm" data-del="${a.id}">삭제</button>
         </div>`).join('')
-      : `<div class="acc-empty">아직 연결된 계정이 없습니다. 오른쪽 위 <b>+ 계정 추가</b>를 눌러 연결하세요.</div>`}
+      : `<div class="acc-empty">아직 등록된 아이디가 없습니다. 오른쪽 위 <b>+ 내 아이디 추가</b>로 시작하세요.</div>`}
     </div>`).join('');
 
+  $$('[data-addid]').forEach(btn => btn.onclick = () => {
+    const box = document.querySelector(`[data-addbox="${btn.dataset.addid}"]`);
+    box.classList.remove('hidden');
+    box.querySelector('[data-handle]').focus();
+  });
+  $$('[data-cancelid]').forEach(btn => btn.onclick = () =>
+    document.querySelector(`[data-addbox="${btn.dataset.cancelid}"]`).classList.add('hidden'));
+  $$('[data-saveid]').forEach(btn => btn.onclick = () => saveHandle(btn.dataset.saveid));
+  $$('[data-handle]').forEach(input => input.onkeydown = e => {
+    if(e.key === 'Enter') saveHandle(input.dataset.handle);
+  });
+
   $$('[data-del]').forEach(btn => btn.onclick = async () => {
-    if(!confirm('이 계정 연결을 끊을까요?')) return;
+    if(!confirm('이 아이디를 목록에서 삭제할까요? 저장된 세트에서도 함께 빠집니다.')) return;
     await fetch('/api/accounts/' + btn.dataset.del, {method:'DELETE'});
     loadPlatforms();
   });
@@ -921,6 +962,21 @@ function renderSets(){
     await fetch('/api/sets/' + b.dataset.delset, {method:'DELETE'});
     loadSets();
   });
+}
+
+async function saveHandle(platform){
+  const handle = document.querySelector(`[data-handle="${platform}"]`).value;
+  const label = document.querySelector(`[data-newlabel="${platform}"]`).value;
+  if(!handle.trim()){ flash('err', '아이디를 입력하세요.'); return; }
+  const res = await fetch('/api/accounts/manual', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({platform, handle, label}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ flash('err', data.detail || '아이디를 등록하지 못했습니다.'); return; }
+  await loadPlatforms();
+  flash('ok', `${platMeta(platform).label} 아이디 '${data.handle}'을 등록했습니다.`
+    + (platMeta(platform).configured ? ' 이제 로그인 연결을 마치면 게시할 수 있습니다.' : ''));
 }
 
 function openSetEditor(setId){
