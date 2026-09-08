@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS media (
     created_at  REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channel_sets (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    accounts   TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS oauth_states (
     state      TEXT PRIMARY KEY,
     provider   TEXT NOT NULL,
@@ -356,3 +363,44 @@ def get_media_by_token(token: str) -> dict | None:
 
 def set_media_thumb(media_id: str, thumb_path: str) -> None:
     _exec("UPDATE media SET thumb_path=? WHERE id=?", (thumb_path, media_id))
+
+
+# ── 채널 세트 ────────────────────────────────────────────────
+def _set_dict(row: sqlite3.Row, valid: set[str]) -> dict:
+    """세트에 담긴 계정 중 이미 삭제된 것은 빼고 돌려준다."""
+    ids = [i for i in json.loads(row["accounts"] or "[]") if i in valid]
+    return {"id": row["id"], "name": row["name"], "account_ids": ids, "created_at": row["created_at"]}
+
+
+def _valid_account_ids() -> set[str]:
+    return {r["id"] for r in _rows("SELECT id FROM accounts")}
+
+
+def list_sets() -> list[dict]:
+    valid = _valid_account_ids()
+    return [_set_dict(r, valid) for r in _rows("SELECT * FROM channel_sets ORDER BY created_at")]
+
+
+def get_set(set_id: str) -> dict | None:
+    rows = _rows("SELECT * FROM channel_sets WHERE id=?", (set_id,))
+    return _set_dict(rows[0], _valid_account_ids()) if rows else None
+
+
+def create_set(name: str, account_ids: list[str]) -> str:
+    set_id = new_id("set")
+    _exec(
+        "INSERT INTO channel_sets (id, name, accounts, created_at) VALUES (?,?,?,?)",
+        (set_id, name, json.dumps(account_ids), time.time()),
+    )
+    return set_id
+
+
+def update_set(set_id: str, *, name: str | None = None, account_ids: list[str] | None = None) -> None:
+    if name is not None:
+        _exec("UPDATE channel_sets SET name=? WHERE id=?", (name, set_id))
+    if account_ids is not None:
+        _exec("UPDATE channel_sets SET accounts=? WHERE id=?", (json.dumps(account_ids), set_id))
+
+
+def delete_set(set_id: str) -> None:
+    _exec("DELETE FROM channel_sets WHERE id=?", (set_id,))

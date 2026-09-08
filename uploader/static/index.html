@@ -129,15 +129,36 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .tag button:hover{opacity:1}
 .tags input{flex:1;min-width:110px;background:none;border:none;outline:none;color:var(--text);font-size:13px;padding:4px}
 
+/* 채널 세트 */
+.setbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:15px;padding-bottom:14px;border-bottom:1px solid var(--border)}
+.setbar .lbl{font-size:12px;color:var(--text2);margin-right:2px}
+.set-chip{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:20px;border:1px solid var(--border2);background:var(--bg);color:var(--text2);font-size:12.5px;cursor:pointer;transition:.15s}
+.set-chip:hover{color:var(--text);border-color:rgba(255,255,255,.28)}
+.set-chip.on{background:rgba(59,130,246,.14);border-color:var(--blue);color:#bfdbfe;font-weight:600}
+.set-chip .dots{display:flex;gap:3px}
+.set-chip .dots i{width:7px;height:7px;border-radius:50%;display:block}
+.set-chip .cnt{font-size:11px;opacity:.75}
+.set-save{border-style:dashed;background:none}
+.set-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.set-row:last-child{border-bottom:none}
+.set-row .nm{font-weight:650;font-size:13.5px;min-width:120px}
+.set-members{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:200px}
+.mem{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text2);background:var(--bg3);border-radius:20px;padding:3px 9px}
+.mem i{width:14px;height:14px;border-radius:4px;display:grid;place-items:center;font-style:normal;font-size:8px;font-weight:800;color:#08090c}
+.set-editor{background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius);padding:16px;margin-top:14px}
+.pick-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
+.pick-col h4{font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:7px}
+.pick-col h4 i{width:16px;height:16px;border-radius:5px;display:grid;place-items:center;font-style:normal;font-size:9px;font-weight:800;color:#08090c}
+
 /* 플랫폼 카드(다중 계정) */
 .plat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(242px,1fr));gap:13px;align-items:start}
 .plat{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg);overflow:hidden;transition:.15s;display:flex;flex-direction:column}
 .plat.on{border-color:var(--pc);box-shadow:0 0 0 1px var(--pc) inset}
-.plat-head{display:flex;align-items:center;gap:10px;padding:13px 14px}
+.plat-head{display:flex;align-items:center;gap:8px;padding:13px 14px}
 .pico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:14px;font-weight:800;color:#08090c;background:var(--pc);flex-shrink:0}
-.plat-name{font-weight:600;font-size:13.5px}
+.plat-name{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .plat-sel{font-size:11.5px;color:var(--text2);margin-top:2px}
-.plat-all{margin-left:auto;font-size:11.5px;color:var(--text2);background:none;border:1px solid var(--border2);border-radius:20px;padding:4px 10px;cursor:pointer}
+.plat-all{margin-left:auto;flex-shrink:0;white-space:nowrap;font-size:11px;color:var(--text2);background:none;border:1px solid var(--border2);border-radius:20px;padding:4px 9px;cursor:pointer}
 .plat-all:hover{color:var(--text);border-color:var(--border2)}
 .acc-pick{padding:0 12px 6px;display:flex;flex-direction:column;gap:2px;max-height:236px;overflow-y:auto}
 .acc-opt{display:flex;align-items:center;gap:9px;padding:8px 8px;border-radius:var(--radius-sm);cursor:pointer;transition:.12s}
@@ -323,7 +344,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 
     <div class="card">
       <h2><span class="step">3</span>올릴 채널 선택</h2>
-      <p class="sub">계정마다 체크해서 고르세요. 같은 플랫폼의 여러 아이디에 동시에 올릴 수 있습니다.</p>
+      <p class="sub">계정마다 체크해서 고르세요. 자주 쓰는 조합은 <b>세트</b>로 저장해 한 번에 선택할 수 있습니다.</p>
+      <div class="setbar" id="setBar"></div>
       <div class="plat-grid" id="platGrid"></div>
       <div id="publishErr"></div>
       <button class="btn primary lg block" id="btnPublish" style="margin-top:18px" disabled>올릴 채널을 선택하세요</button>
@@ -341,6 +363,16 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <p>플랫폼마다 아이디를 원하는 만큼 추가하세요. <b>계정 추가</b>를 누를 때마다 새 계정을 연결할 수 있고, 별칭을 달아 구분할 수 있습니다.</p>
     </div>
     <div id="accPanels"></div>
+
+    <div class="card">
+      <h2>채널 세트</h2>
+      <p class="sub">자주 함께 올리는 계정을 묶어두면 업로드 화면에서 클릭 한 번으로 전부 선택됩니다.
+        (예: <b>브랜드A 전체</b> = 유튜브 메인 + 틱톡 부계정 + 인스타)</p>
+      <div id="setList"></div>
+      <div id="setEditor"></div>
+      <button class="btn primary" id="btnNewSet" style="margin-top:14px">+ 새 세트 만들기</button>
+    </div>
+
     <div class="card">
       <h2>리디렉션 URI 설정</h2>
       <p class="sub">실제 연동을 하려면 아래 주소를 각 개발자 콘솔에 등록하고 <span class="mono">.env</span>에 키를 넣은 뒤 서버를 재시작하세요.</p>
@@ -372,7 +404,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
 const PAGES = ['home','upload','accounts','history'];
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, vertical:false, publicBase:'', jobs:[]};
+               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -381,6 +413,8 @@ const fmtSize = b => b >= 1073741824 ? (b/1073741824).toFixed(2)+' GB' : b >= 10
 const fmtTime = t => new Date(t*1000).toLocaleString('ko-KR', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
 const platMeta = k => state.platforms.find(p => p.key === k) || {color:'#888', label:k, accounts:[]};
 const picked = k => state.selected[k] || [];
+const allAccounts = () => state.platforms.flatMap(p => p.accounts.map(a => ({...a, color:p.color, plabel:p.label})));
+const findAccount = id => allAccounts().find(a => a.id === id);
 const totalPicked = () => Object.values(state.selected).reduce((n, a) => n + a.length, 0);
 
 function flash(kind, msg){
@@ -421,6 +455,16 @@ async function loadPlatforms(){
   else { badge.className = 'badge live'; badge.textContent = `실제 연동 · 계정 ${connected}개`; }
   renderPlatforms();
   renderAccountPanels();
+  renderSetBar();
+  renderSets();
+  renderHome();
+}
+
+async function loadSets(){
+  const {sets} = await fetch('/api/sets').then(r => r.json());
+  state.sets = sets;
+  renderSetBar();
+  renderSets();
   renderHome();
 }
 
@@ -445,6 +489,7 @@ function renderHome(){
   $('#homeStats').innerHTML = [
     ['연결된 계정', accounts + '개'],
     ['연결된 플랫폼', linked + ' / ' + state.platforms.length],
+    ['저장된 세트', state.sets.length + '개'],
     ['누적 게시', posts + '건'],
     ['성공률', rate],
   ].map(([k, v]) => `<div class="stat"><div class="n">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('');
@@ -613,6 +658,7 @@ function renderPlatforms(){
   });
   refreshPublishButton();
   updateCounters();
+  renderSetBar();
 }
 
 function optionsHtml(p){
@@ -797,6 +843,132 @@ function renderAccountPanels(){
       <span class="mono">${esc(p.redirect_uri)}</span></div>`).join('');
 }
 
+/* ── 채널 세트 ── */
+function setApplied(set){
+  return set.account_ids.length > 0 && set.account_ids.every(id => {
+    const a = findAccount(id);
+    return a && picked(a.platform).includes(id);
+  });
+}
+
+function renderSetBar(){
+  const bar = $('#setBar');
+  if(!bar) return;
+  const chips = state.sets.map(set => {
+    const members = set.account_ids.map(findAccount).filter(Boolean);
+    return `<button class="set-chip ${setApplied(set)?'on':''}" data-set="${set.id}" title="${esc(members.map(m => m.display_name).join(', '))}">
+      <span class="dots">${members.slice(0,4).map(m => `<i style="background:${m.color}"></i>`).join('')}</span>
+      ${esc(set.name)}<span class="cnt">${members.length}</span></button>`;
+  }).join('');
+  const n = totalPicked();
+  bar.innerHTML = `<span class="lbl">세트</span>${chips ||
+    '<span class="small muted">저장된 세트가 없습니다.</span>'}
+    <button class="set-chip set-save" id="btnSaveSet" ${n ? '' : 'disabled style="opacity:.45;cursor:not-allowed"'}>
+      + 현재 선택 ${n ? n + '개' : ''} 세트로 저장</button>
+    <a class="set-chip set-save" href="#accounts">세트 관리</a>`;
+
+  $$('[data-set]').forEach(el => el.onclick = () => toggleSet(el.dataset.set));
+  const save = $('#btnSaveSet');
+  if(save && n) save.onclick = saveCurrentAsSet;
+}
+
+function toggleSet(setId){
+  const set = state.sets.find(s => s.id === setId);
+  if(!set) return;
+  const members = set.account_ids.map(findAccount).filter(Boolean);
+  if(!members.length){ flash('err', '이 세트에 남아 있는 계정이 없습니다. 계정 관리에서 세트를 수정하세요.'); return; }
+  const remove = setApplied(set);
+  members.forEach(a => {
+    const list = picked(a.platform).filter(id => id !== a.id);
+    if(!remove) list.push(a.id);
+    if(list.length) state.selected[a.platform] = list; else delete state.selected[a.platform];
+  });
+  renderPlatforms();
+}
+
+async function saveCurrentAsSet(){
+  const ids = Object.values(state.selected).flat();
+  const name = prompt(`선택한 ${ids.length}개 채널을 세트로 저장합니다. 세트 이름을 입력하세요.`, '');
+  if(name === null) return;
+  const res = await fetch('/api/sets', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, account_ids: ids}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ flash('err', data.detail || '세트를 저장하지 못했습니다.'); return; }
+  await loadSets();
+  flash('ok', `'${name}' 세트를 저장했습니다. 다음 업로드부터 한 번에 선택할 수 있습니다.`);
+}
+
+function renderSets(){
+  const list = $('#setList');
+  if(!list) return;
+  list.innerHTML = state.sets.length ? state.sets.map(set => {
+    const members = set.account_ids.map(findAccount).filter(Boolean);
+    return `<div class="set-row">
+      <div class="nm">${esc(set.name)}</div>
+      <div class="set-members">${members.length ? members.map(m =>
+        `<span class="mem"><i style="background:${m.color}">${PICO[m.platform]}</i>${esc(m.display_name)}</span>`).join('')
+        : '<span class="small muted">계정이 모두 삭제된 세트입니다.</span>'}</div>
+      <button class="btn sm" data-editset="${set.id}">수정</button>
+      <button class="btn danger sm" data-delset="${set.id}">삭제</button>
+    </div>`;
+  }).join('') : '<div class="acc-empty">아직 만든 세트가 없습니다. 아래 버튼으로 첫 세트를 만들어 보세요.</div>';
+
+  $$('[data-editset]').forEach(b => b.onclick = () => openSetEditor(b.dataset.editset));
+  $$('[data-delset]').forEach(b => b.onclick = async () => {
+    if(!confirm('이 세트를 삭제할까요? 계정 연결은 그대로 유지됩니다.')) return;
+    await fetch('/api/sets/' + b.dataset.delset, {method:'DELETE'});
+    loadSets();
+  });
+}
+
+function openSetEditor(setId){
+  const set = setId ? state.sets.find(s => s.id === setId) : null;
+  state.editingSet = setId || 'new';
+  const chosen = new Set(set ? set.account_ids : Object.values(state.selected).flat());
+  const columns = state.platforms.filter(p => p.accounts.length).map(p => `
+    <div class="pick-col">
+      <h4><i style="background:${p.color}">${PICO[p.key]}</i>${esc(p.label)}</h4>
+      ${p.accounts.map(a => `
+        <label class="acc-opt">
+          <input type="checkbox" data-setpick value="${a.id}" ${chosen.has(a.id)?'checked':''}>
+          <span class="nm">${esc(a.display_name)}</span>
+        </label>`).join('')}
+    </div>`).join('');
+
+  $('#setEditor').innerHTML = `
+    <div class="set-editor">
+      <label class="f" style="margin-top:0">세트 이름</label>
+      <input type="text" id="setName" placeholder="예) 브랜드A 전체" value="${esc(set ? set.name : '')}" maxlength="40">
+      <label class="f">포함할 채널</label>
+      ${columns || '<div class="small muted">연결된 계정이 없습니다. 먼저 계정을 추가하세요.</div>'}
+      <div class="row" style="margin-top:16px">
+        <button class="btn primary" id="setSave">${set ? '수정 저장' : '세트 만들기'}</button>
+        <button class="btn ghost" id="setCancel">취소</button>
+      </div>
+      <div id="setErr"></div>
+    </div>`;
+
+  $('#setCancel').onclick = closeSetEditor;
+  $('#setSave').onclick = async () => {
+    const account_ids = $$('[data-setpick]').filter(el => el.checked).map(el => el.value);
+    const body = JSON.stringify({name: $('#setName').value, account_ids});
+    const res = await fetch(setId ? '/api/sets/' + setId : '/api/sets', {
+      method: setId ? 'PATCH' : 'POST', headers:{'Content-Type':'application/json'}, body,
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){ $('#setErr').innerHTML = `<div class="err">${esc(data.detail || '저장에 실패했습니다.')}</div>`; return; }
+    closeSetEditor();
+    await loadSets();
+    flash('ok', setId ? '세트를 수정했습니다.' : '세트를 만들었습니다.');
+  };
+  $('#setName').focus();
+}
+
+function closeSetEditor(){ state.editingSet = null; $('#setEditor').innerHTML = ''; }
+$('#btnNewSet').onclick = () => openSetEditor(null);
+
 /* ── 기록 ── */
 async function loadHistory(){
   const jobs = await loadJobs();
@@ -822,6 +994,7 @@ async function loadHistory(){
 (async function init(){
   await loadJobs();
   await loadPlatforms();
+  await loadSets();
   renderTags();
   route();
 })();

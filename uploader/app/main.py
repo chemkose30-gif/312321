@@ -154,6 +154,57 @@ def _create_demo_accounts(platform: str) -> None:
     )
 
 
+# ── 채널 세트 ────────────────────────────────────────────────
+class SetIn(BaseModel):
+    name: str = ""
+    account_ids: list[str] = Field(default_factory=list)
+
+
+def _clean_set(payload: SetIn) -> tuple[str, list[str]]:
+    name = payload.name.strip()[:40]
+    if not name:
+        raise HTTPException(400, "세트 이름을 입력하세요.")
+    ids, seen = [], set()
+    for account_id in payload.account_ids:
+        if account_id in seen:
+            continue
+        if not db.get_account(account_id, with_tokens=False):
+            raise HTTPException(400, "세트에 담을 수 없는 계정이 있습니다. 목록을 새로고침하세요.")
+        seen.add(account_id)
+        ids.append(account_id)
+    if not ids:
+        raise HTTPException(400, "세트에 넣을 계정을 1개 이상 선택하세요.")
+    return name, ids
+
+
+@app.get("/api/sets")
+async def get_sets() -> dict:
+    return {"sets": db.list_sets()}
+
+
+@app.post("/api/sets")
+async def create_set(payload: SetIn) -> dict:
+    name, ids = _clean_set(payload)
+    return {"id": db.create_set(name, ids)}
+
+
+@app.patch("/api/sets/{set_id}")
+async def update_set(set_id: str, payload: SetIn) -> dict:
+    if not db.get_set(set_id):
+        raise HTTPException(404, "세트를 찾을 수 없습니다.")
+    name, ids = _clean_set(payload)
+    db.update_set(set_id, name=name, account_ids=ids)
+    return {"ok": True}
+
+
+@app.delete("/api/sets/{set_id}")
+async def remove_set(set_id: str) -> dict:
+    if not db.get_set(set_id):
+        raise HTTPException(404, "세트를 찾을 수 없습니다.")
+    db.delete_set(set_id)
+    return {"ok": True}
+
+
 # ── 미디어 업로드 ────────────────────────────────────────────
 @app.post("/api/media")
 async def upload_media(file: UploadFile) -> dict:
