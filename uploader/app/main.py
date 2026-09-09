@@ -88,8 +88,16 @@ SECURITY_HEADERS = {
 }
 
 
+# 프록시를 거쳐 들어온 요청임을 알려주는 헤더들.
+# Render·Fly·nginx 같은 리버스 프록시 뒤에서는 소켓 IP가 내부 사설 IP로 보이므로
+# IP만 보면 외부 접속을 '로컬'로 잘못 판단한다. 이 헤더가 있으면 외부로 간주한다.
+PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "cf-connecting-ip", "fly-client-ip")
+
+
 def client_is_local(request: Request) -> bool:
-    """서버와 같은 컴퓨터(또는 같은 사설망)에서 온 요청인지."""
+    """서버가 도는 그 컴퓨터(또는 같은 사설망)에서 직접 온 요청인지."""
+    if any(request.headers.get(header) for header in PROXY_HEADERS):
+        return False
     host = request.client.host if request.client else ""
     try:
         ip = ipaddress.ip_address(host)
