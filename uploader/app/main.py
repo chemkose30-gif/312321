@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 from . import auth, db, jobs
 from .config import (
     APP_PASSWORD,
-    AUTH_ENABLED,
     BASE_DIR,
     MAX_UPLOAD_BYTES,
     PLATFORM_ORDER,
@@ -63,7 +62,7 @@ PUBLIC_PATHS = {"/api/login", "/healthz", "/favicon.ico"}
 async def require_login(request: Request, call_next):
     path = request.url.path
     if (
-        not AUTH_ENABLED
+        not auth.password_configured()
         or path in PUBLIC_PATHS
         or path.startswith(PUBLIC_PREFIXES)
         or auth.valid_token(request.cookies.get(auth.COOKIE))
@@ -78,19 +77,8 @@ class LoginIn(BaseModel):
     password: str = ""
 
 
-@app.post("/api/login")
-async def login(payload: LoginIn, request: Request) -> JSONResponse:
-    if not AUTH_ENABLED:
-        return JSONResponse({"ok": True, "auth": False})
-    ip = request.client.host if request.client else "unknown"
-    if auth.throttled(ip):
-        raise HTTPException(429, "로그인 시도가 너무 많습니다. 5분 뒤에 다시 시도하세요.")
-    if not auth.check_password(payload.password, APP_PASSWORD):
-        auth.record_failure(ip)
-        await asyncio.sleep(1)  # 무차별 대입 지연
-        raise HTTPException(401, "비밀번호가 올바르지 않습니다.")
-    auth.clear_failures(ip)
-    response = JSONResponse({"ok": True})
+def _with_session(payload: dict) -> JSONResponse:
+    response = JSONResponse(payload)
     response.set_cookie(
         auth.COOKIE,
         auth.issue_token(),
@@ -101,6 +89,71 @@ async def login(payload: LoginIn, request: Request) -> JSONResponse:
         path="/",
     )
     return response
+
+
+@app.post("/api/login")
+async def login(payload: LoginIn, request: Request) -> JSONResponse:
+    if not auth.password_configured():
+        return JSONResponse({"ok": True, "auth": False})
+    ip = request.client.host if request.client else "unknown"
+    if auth.throttled(ip):
+        raise HTTPException(429, "로그인 시도가 너무 많습니다. 5분 뒤에 다시 시도하세요.")
+    if not auth.check_password(payload.password):
+        auth.record_failure(ip)
+        await asyncio.sleep(1)  # 무차별 대입 지연
+        raise HTTPException(401, "비밀번호가 올바르지 않습니다.")
+    auth.clear_failures(ip)
+    return _with_session({"ok": True})
+
+
+class PasswordIn(BaseModel):
+    new_password: str = ""
+    current_password: str = ""
+
+
+@app.get("/api/security")
+async def security_state() -> dict:
+    return {
+        "locked": auth.password_configured(),
+        "source": "browser" if auth.stored_hash() else ("env" if auth.password_configured() else None),
+    }
+
+
+@app.post("/api/password")
+async def set_password(payload: PasswordIn, request: Request) -> JSONResponse:
+    """브라우저에서 비밀번호를 정하거나 바꾼다.
+
+    이미 잠겨 있으면 현재 비밀번호를 확인한다(이 경로는 로그인된 세션만 도달한다).
+    """
+    new_password = payload.new_password.strip()
+    if len(new_password) < 6:
+        raise HTTPException(400, "비밀번호는 6자 이상으로 정하세요.")
+    if auth.password_configured() and not auth.check_password(payload.current_password):
+        ip = request.client.host if request.client else "unknown"
+        auth.record_failure(ip)
+        await asyncio.sleep(1)
+        raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다.")
+    auth.set_password(new_password)
+    # 방금 설정한 브라우저는 그대로 쓸 수 있도록 세션을 발급한다.
+    return _with_session({"ok": True})
+
+
+@app.delete("/api/password")
+async def remove_password(payload: PasswordIn) -> dict:
+    """잠금 해제 — 비밀번호는 본문으로 받는다(URL에 남기지 않기 위해)."""
+    if not auth.password_configured():
+        return {"ok": True}
+    if not auth.check_password(payload.current_password):
+        await asyncio.sleep(1)
+        raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다.")
+    if APP_PASSWORD:
+        raise HTTPException(
+            400,
+            ".env의 APP_PASSWORD가 설정돼 있어 브라우저에서는 끌 수 없습니다. "
+            "그 값을 지우고 서버를 재시작하세요.",
+        )
+    auth.clear_password()
+    return {"ok": True}
 
 
 @app.post("/api/logout")
@@ -141,7 +194,7 @@ async def get_platforms() -> dict:
     return {
         "platforms": out,
         "public_base_url": PUBLIC_BASE_URL,
-        "auth_enabled": AUTH_ENABLED,
+        "auth_enabled": auth.password_configured(),
     }
 
 

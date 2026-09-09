@@ -36,6 +36,13 @@ header{position:sticky;top:0;z-index:30;background:rgba(10,12,16,.88);backdrop-f
 .badge{font-size:11.5px;padding:4px 10px;border-radius:20px;border:1px solid var(--border2);color:var(--text2);white-space:nowrap}
 .badge.demo{color:var(--amber);border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08)}
 .badge.live{color:#6ee7b7;border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08)}
+.warnchip{color:var(--amber);border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.1);text-decoration:none}
+.warnchip:hover{background:rgba(245,158,11,.18)}
+.sec-state{display:flex;align-items:center;gap:9px;font-size:13px;padding:12px 14px;border-radius:var(--radius-sm);background:var(--bg);border:1px solid var(--border);margin-bottom:14px}
+.sec-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;align-items:end}
+.sec-form .field label{display:block;font-size:12px;color:var(--text2);margin-bottom:6px}
+input[type=password]{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:13.5px;font-family:inherit;outline:none;transition:.15s}
+input[type=password]:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.12)}
 
 /* 버튼 */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 16px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-size:13px;font-weight:550;cursor:pointer;transition:.15s;white-space:nowrap}
@@ -237,6 +244,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <div class="nav-right">
       <span class="badge" id="modeBadge">로딩 중…</span>
       <a class="btn primary sm" href="#upload">업로드 시작</a>
+      <a class="badge warnchip hidden" id="lockWarn" href="#accounts">🔓 비밀번호 미설정</a>
       <button class="btn sm hidden" id="btnLogout">로그아웃</button>
     </div>
   </div>
@@ -382,6 +390,15 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <button class="btn primary" id="btnNewSet" style="margin-top:14px">+ 새 세트 만들기</button>
     </div>
 
+    <div class="card" id="securityCard">
+      <h2>비밀번호 잠금</h2>
+      <p class="sub">이 주소를 외부에서 접속할 수 있게 열어둘 거라면 반드시 비밀번호를 걸어주세요.
+        잠금을 켜면 모든 화면 앞에 로그인 창이 뜹니다.</p>
+      <div id="secState"></div>
+      <div id="secForm"></div>
+      <div id="secMsg"></div>
+    </div>
+
     <div class="card">
       <h2>리디렉션 URI 설정</h2>
       <p class="sub">실제 연동을 하려면 아래 주소를 각 개발자 콘솔에 등록하고 <span class="mono">.env</span>에 키를 넣은 뒤 서버를 재시작하세요.</p>
@@ -413,7 +430,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
 const PAGES = ['home','upload','accounts','history'];
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null};
+               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -452,7 +469,7 @@ async function loadPlatforms(){
   state.platforms = res.platforms;
   state.publicBase = res.public_base_url;
   $('#footBase').textContent = res.public_base_url;
-  $('#btnLogout').classList.toggle('hidden', !res.auth_enabled);
+
   // 사라진 계정은 선택에서 제거
   Object.keys(state.selected).forEach(k => {
     const ids = platMeta(k).accounts.map(a => a.id);
@@ -1029,6 +1046,80 @@ function openSetEditor(setId){
 function closeSetEditor(){ state.editingSet = null; $('#setEditor').innerHTML = ''; }
 $('#btnNewSet').onclick = () => openSetEditor(null);
 
+/* ── 비밀번호 잠금 ── */
+async function loadSecurity(){
+  const res = await fetch('/api/security');
+  if(!res.ok) return;
+  state.security = await res.json();
+  renderSecurity();
+}
+
+function renderSecurity(){
+  const sec = state.security || {};
+  $('#lockWarn').classList.toggle('hidden', !!sec.locked);
+  $('#btnLogout').classList.toggle('hidden', !sec.locked);
+  const stateBox = $('#secState');
+  if(!stateBox) return;
+
+  stateBox.innerHTML = sec.locked
+    ? `<div class="sec-state"><span class="tagbadge on">잠금 켜짐</span>
+        <span class="muted">${sec.source === 'env'
+          ? '.env의 APP_PASSWORD로 잠겨 있습니다. 아래에서 바꾸면 브라우저 설정값이 우선합니다.'
+          : '이 화면에서 설정한 비밀번호로 잠겨 있습니다.'}</span></div>`
+    : `<div class="sec-state"><span class="tagbadge need">잠금 꺼짐</span>
+        <span class="muted">지금은 주소만 알면 누구나 들어와 내 채널에 게시할 수 있습니다.</span></div>`;
+
+  $('#secForm').innerHTML = `
+    <div class="sec-form">
+      ${sec.locked ? `<div class="field"><label>현재 비밀번호</label>
+        <input type="password" id="pwCur" autocomplete="current-password"></div>` : ''}
+      <div class="field"><label>${sec.locked ? '새 비밀번호' : '비밀번호'} (6자 이상)</label>
+        <input type="password" id="pwNew" autocomplete="new-password"></div>
+      <div class="field"><label>확인</label>
+        <input type="password" id="pwNew2" autocomplete="new-password"></div>
+      <div class="field"><button class="btn primary block" id="pwSave">${sec.locked ? '비밀번호 변경' : '잠금 켜기'}</button></div>
+    </div>
+    ${sec.locked && sec.source !== 'env'
+      ? '<button class="btn danger sm" id="pwOff" style="margin-top:12px">잠금 끄기</button>' : ''}`;
+
+  $('#pwSave').onclick = savePassword;
+  const off = $('#pwOff');
+  if(off) off.onclick = removePassword;
+  [...document.querySelectorAll('#secForm input')].forEach(el =>
+    el.onkeydown = e => { if(e.key === 'Enter') savePassword(); });
+}
+
+function secMsg(kind, text){ $('#secMsg').innerHTML = `<div class="${kind}">${esc(text)}</div>`; }
+
+async function savePassword(){
+  const cur = $('#pwCur') ? $('#pwCur').value : '';
+  const pw = $('#pwNew').value, pw2 = $('#pwNew2').value;
+  if(pw.length < 6){ secMsg('err', '비밀번호는 6자 이상으로 정하세요.'); return; }
+  if(pw !== pw2){ secMsg('err', '두 번 입력한 비밀번호가 다릅니다.'); return; }
+  const res = await fetch('/api/password', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({new_password: pw, current_password: cur}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ secMsg('err', data.detail || '비밀번호를 저장하지 못했습니다.'); return; }
+  await loadSecurity();
+  secMsg('ok', '비밀번호가 설정됐습니다. 다음 접속부터 로그인 화면이 뜹니다. (이 브라우저는 로그인 상태 유지)');
+}
+
+async function removePassword(){
+  const cur = $('#pwCur') ? $('#pwCur').value : '';
+  if(!cur){ secMsg('err', '잠금을 끄려면 현재 비밀번호를 입력하세요.'); return; }
+  if(!confirm('잠금을 끄면 주소를 아는 누구나 접속할 수 있습니다. 계속할까요?')) return;
+  const res = await fetch('/api/password', {
+    method:'DELETE', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({current_password: cur}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ secMsg('err', data.detail || '잠금을 끄지 못했습니다.'); return; }
+  await loadSecurity();
+  secMsg('ok', '잠금을 껐습니다.');
+}
+
 /* ── 기록 ── */
 async function loadHistory(){
   const jobs = await loadJobs();
@@ -1057,6 +1148,7 @@ $('#btnLogout').onclick = async () => {
 };
 
 (async function init(){
+  await loadSecurity();
   await loadJobs();
   await loadPlatforms();
   await loadSets();

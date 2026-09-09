@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS media (
     created_at  REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS channel_sets (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -406,3 +411,21 @@ def update_set(set_id: str, *, name: str | None = None, account_ids: list[str] |
 
 def delete_set(set_id: str) -> None:
     _exec("DELETE FROM channel_sets WHERE id=?", (set_id,))
+
+
+# ── 설정값 ───────────────────────────────────────────────────
+def get_setting(key: str) -> str | None:
+    rows = _rows("SELECT value FROM settings WHERE key=?", (key,))
+    return rows[0]["value"] if rows else None
+
+
+def set_setting(key: str, value: str) -> None:
+    _exec(
+        "INSERT INTO settings (key, value) VALUES (?,?)"
+        " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+
+
+def delete_setting(key: str) -> None:
+    _exec("DELETE FROM settings WHERE key=?", (key,))
