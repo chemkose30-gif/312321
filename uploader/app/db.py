@@ -429,3 +429,18 @@ def set_setting(key: str, value: str) -> None:
 
 def delete_setting(key: str) -> None:
     _exec("DELETE FROM settings WHERE key=?", (key,))
+
+
+def fail_interrupted_jobs() -> int:
+    """서버가 죽는 바람에 '진행 중'으로 남은 작업을 실패로 정리한다.
+
+    (재시작 뒤에도 영원히 진행 중으로 보이는 것을 막는다.)
+    """
+    cur = _exec(
+        "UPDATE job_targets SET status='failed', message='서버가 재시작되어 중단되었습니다. 다시 올려주세요.',"
+        " updated_at=? WHERE status IN ('running','pending')",
+        (time.time(),),
+    )
+    changed = cur.rowcount or 0
+    _exec("UPDATE jobs SET status='failed' WHERE status IN ('running','pending')")
+    return changed

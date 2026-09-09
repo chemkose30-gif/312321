@@ -17,7 +17,9 @@ services:
         sync: false
       - key: APP_SECRET     # 토큰 암호화 키
         generateValue: true
-      - key: PUBLIC_BASE_URL  # 배포 후 발급된 https 주소로 채우기
+      # PUBLIC_BASE_URL 은 Render 가 주는 RENDER_EXTERNAL_URL 로 자동 설정됩니다.
+      # 직접 도메인을 붙였다면 그때만 아래를 채우세요.
+      - key: PUBLIC_BASE_URL
         sync: false
       - key: YOUTUBE_CLIENT_ID
         sync: false

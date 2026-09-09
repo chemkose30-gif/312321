@@ -1,0 +1,39 @@
+# Fly.io 배포 설정
+#   flyctl launch --no-deploy --copy-config   (앱 이름 정하기)
+#   flyctl volumes create uploader_data --size 3
+#   flyctl secrets set APP_PASSWORD='정한비밀번호' APP_SECRET="$(openssl rand -base64 32)"
+#   flyctl deploy
+app = "allone-uploader"          # 원하는 이름으로 바꾸세요
+primary_region = "nrt"           # nrt = 도쿄 (한국에서 가장 가까움)
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8100"
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "uploader_data"       # 계정·기록·업로드 영상이 보관되는 디스크
+  destination = "/data"
+
+[http_service]
+  internal_port = 8100
+  force_https = true
+  auto_stop_machines = false     # 24시간 항상 켜둔다 (잠들지 않음)
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.http_options.response.headers]
+    Strict-Transport-Security = "max-age=31536000"
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "20s"
+  method = "GET"
+  path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

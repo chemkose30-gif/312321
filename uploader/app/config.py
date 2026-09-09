@@ -16,7 +16,24 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "uploader.db"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "http://localhost:8100").rstrip("/")
+def _detect_public_base_url() -> str:
+    """외부에서 접근하는 주소. 클라우드에서는 대개 자동으로 알아낼 수 있다."""
+    explicit = os.getenv("PUBLIC_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    render = os.getenv("RENDER_EXTERNAL_URL")  # Render 가 자동 주입
+    if render:
+        return render.rstrip("/")
+    fly_app = os.getenv("FLY_APP_NAME")  # Fly.io
+    if fly_app:
+        return f"https://{fly_app}.fly.dev"
+    railway = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway:
+        return f"https://{railway}"
+    return "http://localhost:8100"
+
+
+PUBLIC_BASE_URL = _detect_public_base_url()
 def _load_or_create_secret() -> str:
     """토큰 암호화 키. 환경변수가 없으면 무작위로 만들어 data/secret.key 에 보관한다.
 

@@ -46,6 +46,9 @@ async def _periodic_cleanup() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     db.connect()
+    interrupted = db.fail_interrupted_jobs()
+    if interrupted:
+        print(f"[startup] 재시작으로 중단된 게시 {interrupted}건을 실패 처리했습니다.")
     jobs.cleanup_old_files()
     cleaner = asyncio.create_task(_periodic_cleanup())
     try:

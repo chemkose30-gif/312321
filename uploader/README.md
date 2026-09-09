@@ -207,18 +207,16 @@ python3 -c "import secrets; print('APP_SECRET=' + secrets.token_urlsafe(32))"
 | 토큰 암호화 키 | 미지정 시 최초 실행에 무작위 생성해 `data/secret.key`(0600)에 보관 |
 | 예외 경로 | Instagram이 영상을 받아가는 `/media/{192비트 임의 토큰}` 과 `/healthz` 뿐 |
 
-### 방법 A — Render 등 컨테이너 호스팅 (권장)
+### 방법 A — 클라우드 (권장, 24시간 항상 켜짐)
 
-리포지토리에 `uploader/Dockerfile`과 `uploader/render.yaml`이 있습니다.
+**단계별 안내는 [CLOUD-배포.md](CLOUD-배포.md) 를 보세요.** 요약하면:
 
-1. Render에서 **New → Blueprint**로 이 리포지토리를 연결 (`render.yaml` 자동 인식)
-2. 환경변수 입력: `APP_PASSWORD`, 플랫폼 API 키들 (`APP_SECRET`은 자동 생성)
-3. 배포 후 발급된 주소(`https://xxx.onrender.com`)를 **`PUBLIC_BASE_URL`에 넣고 재배포**
-4. 각 플랫폼 개발자 콘솔의 리디렉션 URI를 그 주소로 갱신
-   (`https://xxx.onrender.com/api/oauth/youtube/callback` 등 — 앱의 `계정 관리` 하단에 그대로 표시됩니다)
+- **Render**: 저장소 루트의 `render.yaml` 을 Blueprint 로 연결 → `APP_PASSWORD` 입력 → 끝
+- **Fly.io**: `uploader/fly.toml` 사용 → `fly volumes create` → `fly secrets set` → `fly deploy`
 
+주소(`PUBLIC_BASE_URL`)는 **자동으로 잡힙니다** — Render 의 `RENDER_EXTERNAL_URL`,
+Fly 의 `FLY_APP_NAME`, Railway 의 `RAILWAY_PUBLIC_DOMAIN` 을 인식합니다.
 디스크(`/data`)를 붙여야 계정·세트·업로드 기록이 재배포 후에도 유지됩니다.
-Fly.io, Railway, Cloud Run 등 다른 서비스도 같은 Dockerfile로 올라갑니다.
 
 ### 방법 B — 내 서버 / VPS
 
