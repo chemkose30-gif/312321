@@ -875,6 +875,9 @@ function renderAccountPanels(){
         <div class="small muted">${esc(KEY_HINT[p.key] || '')}</div>
         <input type="text" data-cid="${p.key}" placeholder="클라이언트 ID / 앱 ID">
         <input type="password" data-csec="${p.key}" placeholder="클라이언트 보안 비밀번호 / 앱 시크릿">
+        ${p.key === 'tiktok' ? `<div class="small muted">요청할 권한(scope) — 아직 승인 안 된 권한을 요청하면 로그인이 거부됩니다.
+          처음에는 <span class="mono">user.info.basic</span> 만 두고 연결을 확인한 뒤, 승인 후 나머지를 추가하세요.</div>
+          <input type="text" data-scopes="tiktok" value="${esc(p.scopes || '')}" placeholder="user.info.basic,video.publish,video.upload">` : ''}
         <div class="small muted">개발자 콘솔의 <b>승인된 리디렉션 URI</b> 에 아래 주소를 그대로 등록해야 합니다
           (한 글자라도 다르면 <span class="mono">redirect_uri_mismatch</span> 오류가 납니다)</div>
         <div class="row" style="gap:8px">
@@ -926,9 +929,10 @@ function renderAccountPanels(){
     const platform = btn.dataset.savekeys;
     const client_id = document.querySelector(`[data-cid="${platform}"]`).value;
     const client_secret = document.querySelector(`[data-csec="${platform}"]`).value;
+    const scopeInput = document.querySelector(`[data-scopes="${platform}"]`);
     const res = await fetch('/api/platform-keys', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({platform, client_id, client_secret}),
+      body: JSON.stringify({platform, client_id, client_secret, scopes: scopeInput ? scopeInput.value : ''}),
     });
     const data = await res.json().catch(() => ({}));
     if(!res.ok){ flash('err', data.detail || 'API 키를 저장하지 못했습니다.'); return; }

@@ -296,6 +296,7 @@ async def get_platforms() -> dict:
             # 값은 절대 내보내지 않고, 서버가 그 이름의 값을 실제로 받았는지만 알려준다
             "env_status": {name: bool(os.getenv(name, "").strip()) for name in ENV_KEYS[key]},
             "key_source": "app" if credentials.stored(key) else ("env" if cfg.configured else None),
+            "scopes": tiktok.scopes() if key == "tiktok" else None,
             "demo": demo_platform(key),
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],
@@ -442,6 +443,7 @@ class PlatformKeys(BaseModel):
     platform: str
     client_id: str = ""
     client_secret: str = ""
+    scopes: str = ""  # 틱톡 전용 — 승인된 권한만 요청하고 싶을 때
 
 
 @app.post("/api/platform-keys")
@@ -453,6 +455,8 @@ async def save_platform_keys(payload: PlatformKeys) -> dict:
     if not client_id or not client_secret:
         raise HTTPException(400, "두 값을 모두 입력하세요.")
     credentials.save(payload.platform, client_id, client_secret)
+    if payload.platform == "tiktok":
+        db.set_setting("tiktok_scopes", payload.scopes.strip())
     # Meta 는 인스타그램과 페이스북이 같은 앱을 쓴다.
     twin = {"instagram": "facebook", "facebook": "instagram"}.get(payload.platform)
     if twin:

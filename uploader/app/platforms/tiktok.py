@@ -12,14 +12,25 @@ from .base import Progress, PublishError, PublishResult, build_caption, stream_f
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 API = "https://open.tiktokapis.com/v2"
-SCOPES = "user.info.basic,video.publish,video.upload"
+DEFAULT_SCOPES = "user.info.basic,video.publish,video.upload"
+
+
+def scopes() -> str:
+    """앱에서 지정한 권한 목록(없으면 기본값).
+
+    틱톡은 승인되지 않은 scope 를 요청하면 로그인 자체를 거부하므로,
+    승인된 것만 요청하도록 바꿀 수 있게 한다.
+    """
+    from .. import db
+
+    return (db.get_setting("tiktok_scopes") or "").strip() or DEFAULT_SCOPES
 
 
 def auth_url(state: str) -> str:
     cfg = PLATFORMS["tiktok"]
     params = {
         "client_key": cfg.client_id,
-        "scope": SCOPES,
+        "scope": scopes(),
         "response_type": "code",
         "redirect_uri": cfg.redirect_uri,
         "state": state,
