@@ -8,4 +8,5 @@ if [ ! -d .venv ]; then
   .venv/bin/pip install -q -r requirements.txt
 fi
 [ -f .env ] || cp .env.example .env
+echo "브라우저에서 http://localhost:$PORT 를 여세요. (종료: Ctrl+C)"
 exec .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
