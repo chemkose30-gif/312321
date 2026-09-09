@@ -822,6 +822,13 @@ function jobHtml(job, live){
 }
 
 /* ── 계정 관리 ── */
+const KEY_HINT = {
+  youtube: 'Google Cloud Console → 사용자 인증 정보 → OAuth 클라이언트 ID(웹 애플리케이션)에서 받은 두 값',
+  tiktok: 'TikTok for Developers → 앱 → Client key / Client secret',
+  instagram: 'Meta for Developers → 앱 설정 → 앱 ID / 앱 시크릿 코드 (인스타·페북 공용)',
+  facebook: 'Meta for Developers → 앱 설정 → 앱 ID / 앱 시크릿 코드 (인스타·페북 공용)',
+};
+
 const HANDLE_HINT = {
   youtube: '유튜브 채널명 또는 핸들 (예: @my-channel)',
   tiktok: '틱톡 아이디 (예: @my_id)',
@@ -840,14 +847,24 @@ function renderAccountPanels(){
             · ${p.configured
                 ? '<span style="color:#6ee7b7">실제 연동</span>'
                 : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
-          ${p.configured ? '' : `<div class="cnt" style="margin-top:5px">서버에 이 환경변수를 넣어야 실제 게시가 됩니다 —
-            ${(p.env_keys || []).map(k => `<span class="mono">${k}</span>
-              <span style="color:${(p.env_status || {})[k] ? '#6ee7b7' : 'var(--red)'}">${(p.env_status || {})[k] ? '받음' : '못 받음'}</span>`).join(' · ')}
-            </div>`}
+          ${p.configured
+            ? `<div class="cnt" style="margin-top:4px">API 키 ${p.key_source === 'app' ? '앱에서 입력됨' : '환경변수로 설정됨'}</div>`
+            : `<div class="cnt" style="margin-top:5px">아래 <b>API 키 입력</b>을 누르고 개발자 콘솔에서 받은 값을 붙여넣으세요.</div>`}
         </div>
         <div class="panel-actions">
+          <button class="btn sm" data-keys="${p.key}">${p.configured ? 'API 키 변경' : 'API 키 입력'}</button>
           <button class="btn primary sm" data-addid="${p.key}">+ 내 아이디 추가</button>
           <a class="btn sm" href="/api/oauth/${p.key}/start">${p.configured ? '로그인으로 연결' : '데모 계정 만들기'}</a>
+        </div>
+      </div>
+      <div class="addbox hidden" data-keybox="${p.key}" style="flex-direction:column;align-items:stretch;gap:9px">
+        <div class="small muted">${esc(KEY_HINT[p.key] || '')}</div>
+        <input type="text" data-cid="${p.key}" placeholder="클라이언트 ID / 앱 ID">
+        <input type="password" data-csec="${p.key}" placeholder="클라이언트 보안 비밀번호 / 앱 시크릿">
+        <div class="row">
+          <button class="btn primary sm" data-savekeys="${p.key}">저장</button>
+          <button class="btn ghost sm" data-cancelkeys="${p.key}">취소</button>
+          <span class="hint">저장한 키는 암호화되어 이 서버에만 보관됩니다. 리디렉션 URI는 아래에 있는 주소를 콘솔에 등록하세요.</span>
         </div>
       </div>
       <div class="addbox hidden" data-addbox="${p.key}">
@@ -873,6 +890,26 @@ function renderAccountPanels(){
       : `<div class="acc-empty">아직 등록된 아이디가 없습니다. 오른쪽 위 <b>+ 내 아이디 추가</b>로 시작하세요.</div>`}
     </div>`).join('');
 
+  $$('[data-keys]').forEach(btn => btn.onclick = () => {
+    const box = document.querySelector(`[data-keybox="${btn.dataset.keys}"]`);
+    box.classList.toggle('hidden');
+    if(!box.classList.contains('hidden')) box.querySelector('[data-cid]').focus();
+  });
+  $$('[data-cancelkeys]').forEach(btn => btn.onclick = () =>
+    document.querySelector(`[data-keybox="${btn.dataset.cancelkeys}"]`).classList.add('hidden'));
+  $$('[data-savekeys]').forEach(btn => btn.onclick = async () => {
+    const platform = btn.dataset.savekeys;
+    const client_id = document.querySelector(`[data-cid="${platform}"]`).value;
+    const client_secret = document.querySelector(`[data-csec="${platform}"]`).value;
+    const res = await fetch('/api/platform-keys', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({platform, client_id, client_secret}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){ flash('err', data.detail || 'API 키를 저장하지 못했습니다.'); return; }
+    await loadPlatforms();
+    flash('ok', `${platMeta(platform).label} API 키를 저장했습니다. 이제 '로그인으로 연결'을 누르세요.`);
+  });
   $$('[data-addid]').forEach(btn => btn.onclick = () => {
     const box = document.querySelector(`[data-addbox="${btn.dataset.addid}"]`);
     box.classList.remove('hidden');

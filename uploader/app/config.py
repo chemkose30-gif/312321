@@ -78,10 +78,23 @@ class PlatformConfig:
     key: str
     label: str
     color: str
-    client_id: str
-    client_secret: str
+    env_id: str       # 환경변수 이름 (예: YOUTUBE_CLIENT_ID)
+    env_secret: str   # 환경변수 이름 (예: YOUTUBE_CLIENT_SECRET)
     # OAuth 콜백 경로에 쓰이는 프로바이더 이름(인스타/페북은 Meta 하나를 공유).
     provider: str
+
+    @property
+    def client_id(self) -> str:
+        """앱 화면에서 입력한 값이 우선, 없으면 환경변수."""
+        from . import credentials
+
+        return credentials.get(self.key, "client_id") or os.getenv(self.env_id, "").strip()
+
+    @property
+    def client_secret(self) -> str:
+        from . import credentials
+
+        return credentials.get(self.key, "client_secret") or os.getenv(self.env_secret, "").strip()
 
     @property
     def configured(self) -> bool:
@@ -95,23 +108,19 @@ class PlatformConfig:
 PLATFORMS: dict[str, PlatformConfig] = {
     "youtube": PlatformConfig(
         key="youtube", label="YouTube", color="#ff0033", provider="youtube",
-        client_id=os.getenv("YOUTUBE_CLIENT_ID", ""),
-        client_secret=os.getenv("YOUTUBE_CLIENT_SECRET", ""),
+        env_id="YOUTUBE_CLIENT_ID", env_secret="YOUTUBE_CLIENT_SECRET",
     ),
     "tiktok": PlatformConfig(
         key="tiktok", label="TikTok", color="#25f4ee", provider="tiktok",
-        client_id=os.getenv("TIKTOK_CLIENT_KEY", ""),
-        client_secret=os.getenv("TIKTOK_CLIENT_SECRET", ""),
+        env_id="TIKTOK_CLIENT_KEY", env_secret="TIKTOK_CLIENT_SECRET",
     ),
     "instagram": PlatformConfig(
         key="instagram", label="Instagram", color="#e1306c", provider="meta",
-        client_id=os.getenv("META_APP_ID", ""),
-        client_secret=os.getenv("META_APP_SECRET", ""),
+        env_id="META_APP_ID", env_secret="META_APP_SECRET",
     ),
     "facebook": PlatformConfig(
         key="facebook", label="Facebook", color="#1877f2", provider="meta",
-        client_id=os.getenv("META_APP_ID", ""),
-        client_secret=os.getenv("META_APP_SECRET", ""),
+        env_id="META_APP_ID", env_secret="META_APP_SECRET",
     ),
 }
 

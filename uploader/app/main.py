@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, db, jobs
+from . import auth, credentials, db, jobs
 from .config import (
     APP_PASSWORD,
     BASE_DIR,
@@ -272,6 +272,7 @@ async def get_platforms() -> dict:
             "env_keys": ENV_KEYS[key],
             # 값은 절대 내보내지 않고, 서버가 그 이름의 값을 실제로 받았는지만 알려준다
             "env_status": {name: bool(os.getenv(name, "").strip()) for name in ENV_KEYS[key]},
+            "key_source": "app" if credentials.stored(key) else ("env" if cfg.configured else None),
             "demo": demo_platform(key),
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],
@@ -411,6 +412,40 @@ def _create_demo_accounts(platform: str) -> None:
     db.upsert_account(
         platform, f"{external}_{n}", f"{name} {n}", access_token="demo", meta={"demo": True}
     )
+
+
+# ── 플랫폼 API 키 (화면에서 직접 입력) ───────────────────────
+class PlatformKeys(BaseModel):
+    platform: str
+    client_id: str = ""
+    client_secret: str = ""
+
+
+@app.post("/api/platform-keys")
+async def save_platform_keys(payload: PlatformKeys) -> dict:
+    """개발자 콘솔에서 받은 키를 앱에서 입력받아 암호화 저장한다."""
+    if payload.platform not in PLATFORMS:
+        raise HTTPException(400, "알 수 없는 플랫폼입니다.")
+    client_id, client_secret = payload.client_id.strip(), payload.client_secret.strip()
+    if not client_id or not client_secret:
+        raise HTTPException(400, "두 값을 모두 입력하세요.")
+    credentials.save(payload.platform, client_id, client_secret)
+    # Meta 는 인스타그램과 페이스북이 같은 앱을 쓴다.
+    twin = {"instagram": "facebook", "facebook": "instagram"}.get(payload.platform)
+    if twin:
+        credentials.save(twin, client_id, client_secret)
+    return {"ok": True}
+
+
+@app.delete("/api/platform-keys/{platform}")
+async def delete_platform_keys(platform: str) -> dict:
+    if platform not in PLATFORMS:
+        raise HTTPException(400, "알 수 없는 플랫폼입니다.")
+    credentials.clear(platform)
+    twin = {"instagram": "facebook", "facebook": "instagram"}.get(platform)
+    if twin:
+        credentials.clear(twin)
+    return {"ok": True}
 
 
 # ── 채널 세트 ────────────────────────────────────────────────
