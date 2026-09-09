@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 맥에서 24시간 돌리기 (launchd)
+     1) 이 폴더에서 ./run.sh 를 한 번 실행해 준비를 끝냅니다.
+     2) 아래 /경로/를 실제 폴더 경로로 바꿉니다.
+     3) cp deploy/com.allone.uploader.plist ~/Library/LaunchAgents/
+        launchctl load -w ~/Library/LaunchAgents/com.allone.uploader.plist
+     끄기: launchctl unload -w ~/Library/LaunchAgents/com.allone.uploader.plist -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.allone.uploader</string>
+  <key>WorkingDirectory</key><string>/경로/allone-uploader</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/경로/allone-uploader/.venv/bin/python</string>
+    <string>-m</string><string>uvicorn</string><string>app.main:app</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>8100</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/경로/allone-uploader/data/server.log</string>
+  <key>StandardErrorPath</key><string>/경로/allone-uploader/data/server.log</string>
+</dict></plist>

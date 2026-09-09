@@ -33,11 +33,27 @@ from .platforms.base import PublishError
 
 STATIC_DIR = BASE_DIR / "static"
 
+async def _periodic_cleanup() -> None:
+    """24시간 켜 두는 경우를 위해 주기적으로 오래된 업로드 파일을 정리한다."""
+    while True:
+        await asyncio.sleep(6 * 3600)
+        try:
+            jobs.cleanup_old_files()
+        except Exception:  # 정리 실패가 서버를 멈추게 하지는 않는다
+            pass
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     db.connect()
     jobs.cleanup_old_files()
-    yield
+    cleaner = asyncio.create_task(_periodic_cleanup())
+    try:
+        yield
+    finally:
+        cleaner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleaner
 
 
 app = FastAPI(title="멀티 플랫폼 업로더", version="1.0.0", lifespan=lifespan)

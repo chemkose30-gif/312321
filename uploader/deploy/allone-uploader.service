@@ -1,0 +1,23 @@
+# 리눅스에서 24시간 돌리기 (systemd)
+#   1) 이 폴더를 /opt/allone-uploader 로 옮기고 ./run.sh 를 한 번 실행해 준비를 끝냅니다.
+#   2) sudo cp deploy/allone-uploader.service /etc/systemd/system/
+#   3) sudo systemctl daemon-reload && sudo systemctl enable --now allone-uploader
+#   상태 확인: systemctl status allone-uploader / 로그: journalctl -u allone-uploader -f
+[Unit]
+Description=AllOne Uploader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/allone-uploader
+ExecStart=/opt/allone-uploader/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+Restart=always
+RestartSec=5
+# 보안 강화 (선택)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
