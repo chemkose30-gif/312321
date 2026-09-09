@@ -840,8 +840,10 @@ function renderAccountPanels(){
             · ${p.configured
                 ? '<span style="color:#6ee7b7">실제 연동</span>'
                 : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
-          ${p.configured ? '' : `<div class="cnt" style="margin-top:4px">서버에 이 환경변수를 넣어야 실제 게시가 됩니다:
-            <span class="mono">${(p.env_keys || []).join('</span>, <span class="mono">')}</span></div>`}
+          ${p.configured ? '' : `<div class="cnt" style="margin-top:5px">서버에 이 환경변수를 넣어야 실제 게시가 됩니다 —
+            ${(p.env_keys || []).map(k => `<span class="mono">${k}</span>
+              <span style="color:${(p.env_status || {})[k] ? '#6ee7b7' : 'var(--red)'}">${(p.env_status || {})[k] ? '받음' : '못 받음'}</span>`).join(' · ')}
+            </div>`}
         </div>
         <div class="panel-actions">
           <button class="btn primary sm" data-addid="${p.key}">+ 내 아이디 추가</button>

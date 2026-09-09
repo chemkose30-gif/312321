@@ -270,6 +270,8 @@ async def get_platforms() -> dict:
             "provider": cfg.provider,
             "configured": cfg.configured,
             "env_keys": ENV_KEYS[key],
+            # 값은 절대 내보내지 않고, 서버가 그 이름의 값을 실제로 받았는지만 알려준다
+            "env_status": {name: bool(os.getenv(name, "").strip()) for name in ENV_KEYS[key]},
             "demo": demo_platform(key),
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],
