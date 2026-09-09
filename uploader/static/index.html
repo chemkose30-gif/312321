@@ -398,6 +398,20 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     </div>
 
     <div class="card">
+      <h2>사이트 소유권 확인 파일</h2>
+      <p class="sub">틱톡·메타가 "이 주소가 당신 것인지" 확인하려고 파일을 요구할 때 씁니다.
+        콘솔이 알려준 <b>파일 이름</b>과 <b>내용</b>을 그대로 넣고 저장하면, 그 주소로 즉시 공개됩니다.</p>
+      <div class="sec-form">
+        <div class="field"><label>파일 이름 (예: tiktokAbC123.txt)</label>
+          <input type="text" id="vfName" placeholder="tiktok....txt"></div>
+        <div class="field"><label>파일 내용</label>
+          <input type="text" id="vfContent" placeholder="tiktok-developers-site-verification=..."></div>
+        <div class="field"><button class="btn primary block" id="vfSave">저장</button></div>
+      </div>
+      <div id="vfList"></div>
+    </div>
+
+    <div class="card">
       <h2>리디렉션 URI 설정</h2>
       <p class="sub">실제 연동을 하려면 아래 주소를 각 개발자 콘솔에 등록하고 <span class="mono">.env</span>에 키를 넣은 뒤 서버를 재시작하세요.</p>
       <div id="redirectList"></div>
@@ -1011,6 +1025,7 @@ async function saveCurrentAsSet(){
   const data = await res.json().catch(() => ({}));
   if(!res.ok){ flash('err', data.detail || '세트를 저장하지 못했습니다.'); return; }
   await loadSets();
+  await loadVerifyFiles();
   flash('ok', `'${name}' 세트를 저장했습니다. 다음 업로드부터 한 번에 선택할 수 있습니다.`);
 }
 
@@ -1090,6 +1105,7 @@ function openSetEditor(setId){
     if(!res.ok){ $('#setErr').innerHTML = `<div class="err">${esc(data.detail || '저장에 실패했습니다.')}</div>`; return; }
     closeSetEditor();
     await loadSets();
+  await loadVerifyFiles();
     flash('ok', setId ? '세트를 수정했습니다.' : '세트를 만들었습니다.');
   };
   $('#setName').focus();
@@ -1132,6 +1148,40 @@ function renderSecurity(){
 
 
 
+/* ── 소유권 확인 파일 ── */
+async function loadVerifyFiles(){
+  const box = $('#vfList');
+  if(!box) return;
+  const res = await fetch('/api/verify-files');
+  if(!res.ok) return;
+  const {files} = await res.json();
+  box.innerHTML = files.length ? files.map(f => `
+    <div class="set-row">
+      <div class="nm mono">${esc(f.filename)}</div>
+      <div class="set-members"><a class="mono small" href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.url)}</a></div>
+      <button class="btn danger sm" data-delvf="${esc(f.filename)}">삭제</button>
+    </div>`).join('')
+    : '<div class="acc-empty">등록된 확인 파일이 없습니다.</div>';
+  $$('[data-delvf]').forEach(b => b.onclick = async () => {
+    await fetch('/api/verify-files/' + encodeURIComponent(b.dataset.delvf), {method:'DELETE'});
+    loadVerifyFiles();
+  });
+}
+
+if($('#vfSave')) $('#vfSave').onclick = async () => {
+  const filename = $('#vfName').value.trim(), content = $('#vfContent').value.trim();
+  if(!filename || !content){ flash('err', '파일 이름과 내용을 모두 입력하세요.'); return; }
+  const res = await fetch('/api/verify-files', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({filename, content}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ flash('err', data.detail || '저장하지 못했습니다.'); return; }
+  $('#vfName').value = ''; $('#vfContent').value = '';
+  loadVerifyFiles();
+  flash('ok', `확인 파일을 공개했습니다: ${data.url}`);
+};
+
 /* ── 기록 ── */
 async function loadHistory(){
   const jobs = await loadJobs();
@@ -1164,6 +1214,7 @@ $('#btnLogout').onclick = async () => {
   await loadJobs();
   await loadPlatforms();
   await loadSets();
+  await loadVerifyFiles();
   renderTags();
   route();
 })();

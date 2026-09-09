@@ -12,7 +12,14 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
 from urllib.parse import urlparse
 
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -73,6 +80,16 @@ PROVIDERS = {
 # 인증 없이 열어두는 경로: 로그인/최초설정 API, 상태 확인, 그리고 Instagram이
 # 영상을 가져가는 /media/{token}(192비트 임의 토큰으로 보호).
 OAUTH_STATE_COOKIE = "uploader_oauth_state"
+# 플랫폼이 사이트 소유권을 확인할 때 요구하는 파일 (예: tiktokXXXX.txt) 이름 형식
+VERIFY_FILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.(txt|html)$")
+
+
+def verification_content(path: str) -> str | None:
+    """루트에 올려둔 소유권 확인 파일 내용(있으면)."""
+    name = path.lstrip("/")
+    if "/" in name or not VERIFY_FILE_RE.match(name):
+        return None
+    return db.get_setting(f"verify:{name}")
 PUBLIC_PREFIXES = ("/media/", "/static/")
 PUBLIC_PATHS = {"/api/login", "/api/setup-state", "/healthz", "/favicon.ico"}
 
@@ -125,6 +142,12 @@ async def guard(request: Request, call_next):
             blocked = JSONResponse({"detail": "허용되지 않은 요청입니다."}, status_code=403)
 
     # 2) 로그인 확인 — 비밀번호가 없으면 최초 설정 화면부터
+    # 플랫폼 소유권 확인 파일은 로그인 없이 그대로 내려줘야 한다
+    if blocked is None and method == "GET":
+        content = verification_content(path)
+        if content is not None:
+            return PlainTextResponse(content, headers=SECURITY_HEADERS)
+
     if blocked is None and not (path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)):
         if auth.needs_setup():
             setup_call = path == "/api/password" and method == "POST"
@@ -445,6 +468,38 @@ async def delete_platform_keys(platform: str) -> dict:
     twin = {"instagram": "facebook", "facebook": "instagram"}.get(platform)
     if twin:
         credentials.clear(twin)
+    return {"ok": True}
+
+
+# ── 사이트 소유권 확인 파일 ──────────────────────────────────
+class VerifyFile(BaseModel):
+    filename: str
+    content: str
+
+
+@app.get("/api/verify-files")
+async def list_verify_files() -> dict:
+    names = [
+        row["key"].removeprefix("verify:")
+        for row in db._rows("SELECT key FROM settings WHERE key LIKE 'verify:%'")
+    ]
+    return {"files": [{"filename": n, "url": f"{PUBLIC_BASE_URL}/{n}"} for n in names]}
+
+
+@app.post("/api/verify-files")
+async def add_verify_file(payload: VerifyFile) -> dict:
+    filename = payload.filename.strip().lstrip("/")
+    if not VERIFY_FILE_RE.match(filename):
+        raise HTTPException(400, "파일 이름은 영문·숫자와 .txt 또는 .html 형식이어야 합니다.")
+    if len(payload.content) > 4096:
+        raise HTTPException(400, "내용이 너무 깁니다.")
+    db.set_setting(f"verify:{filename}", payload.content.strip())
+    return {"ok": True, "url": f"{PUBLIC_BASE_URL}/{filename}"}
+
+
+@app.delete("/api/verify-files/{filename}")
+async def delete_verify_file(filename: str) -> dict:
+    db.delete_setting(f"verify:{filename.lstrip('/')}")
     return {"ok": True}
 
 
