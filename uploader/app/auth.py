@@ -85,12 +85,23 @@ def password_configured() -> bool:
 
 
 def check_password(candidate: str) -> bool:
+    """환경변수(APP_PASSWORD)가 있으면 그것이 우선.
+
+    비밀번호는 앱 안에서 바꿀 수 없고 서버 소유자만 환경변수로 바꿀 수 있으므로,
+    환경변수가 항상 최종 권한을 갖는다.
+    """
     if not candidate:
         return False
+    if APP_PASSWORD:
+        return hmac.compare_digest(candidate.encode(), APP_PASSWORD.encode())
     stored = stored_hash()
-    if stored:
-        return _verify_hash(candidate, stored)
-    return bool(APP_PASSWORD) and hmac.compare_digest(candidate.encode(), APP_PASSWORD.encode())
+    return bool(stored) and _verify_hash(candidate, stored)
+
+
+def password_source() -> str | None:
+    if APP_PASSWORD:
+        return "env"
+    return "browser" if stored_hash() else None
 
 
 def set_password(password: str) -> None:

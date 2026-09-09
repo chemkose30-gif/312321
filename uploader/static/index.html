@@ -391,11 +391,10 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 
     <div class="card" id="securityCard">
       <h2>비밀번호 잠금</h2>
-      <p class="sub">이 앱은 로그인해야만 들어올 수 있습니다. 비밀번호는 해싱해서 저장되며,
-        여기서 언제든 바꿀 수 있습니다.</p>
+      <p class="sub">이 앱은 로그인해야만 들어올 수 있습니다. 비밀번호는 해싱해서 저장되고,
+        서버 소유자만 바꿀 수 있습니다.</p>
       <div id="secState"></div>
       <div id="secForm"></div>
-      <div id="secMsg"></div>
     </div>
 
     <div class="card">
@@ -1061,43 +1060,22 @@ function renderSecurity(){
 
   stateBox.innerHTML = `<div class="sec-state"><span class="tagbadge on">로그인 필요</span>
       <span class="muted">${sec.source === 'env'
-        ? '서버 환경변수(APP_PASSWORD)로 잠겨 있습니다. 아래에서 바꾸면 이 설정이 우선합니다.'
-        : '이 화면에서 정한 비밀번호로 잠겨 있습니다.'}</span></div>`;
+        ? '서버 환경변수(APP_PASSWORD)로 잠겨 있습니다.'
+        : '최초 설정 화면에서 정한 비밀번호로 잠겨 있습니다. 환경변수를 지정하면 그 값이 우선합니다.'}</span></div>`;
 
   $('#secForm').innerHTML = `
-    <div class="sec-form">
-      <div class="field"><label>현재 비밀번호</label>
-        <input type="password" id="pwCur" autocomplete="current-password"></div>
-      <div class="field"><label>새 비밀번호 (8자 이상)</label>
-        <input type="password" id="pwNew" autocomplete="new-password"></div>
-      <div class="field"><label>확인</label>
-        <input type="password" id="pwNew2" autocomplete="new-password"></div>
-      <div class="field"><button class="btn primary block" id="pwSave">비밀번호 변경</button></div>
+    <div class="warn" style="margin-top:0">
+      보안을 위해 <b>비밀번호는 이 화면에서 바꿀 수 없습니다.</b>
+      (로그인된 창을 누가 열어보더라도 잠금을 빼앗기지 않도록)
     </div>
-    <p class="small muted" style="margin-top:10px">비밀번호를 바꾸면 다른 기기에 남아 있던 로그인은 모두 끊깁니다.</p>`;
-
-  $('#pwSave').onclick = savePassword;
-  [...document.querySelectorAll('#secForm input')].forEach(el =>
-    el.onkeydown = e => { if(e.key === 'Enter') savePassword(); });
+    <p class="sub" style="margin:12px 0 0">
+      바꾸려면 서버에서 환경변수 <span class="mono">APP_PASSWORD</span> 를 새 값으로 바꾸고 재시작하세요.
+      환경변수 값이 항상 우선 적용됩니다.<br>
+      · 클라우드(Render 등) : 서비스 → Environment → <span class="mono">APP_PASSWORD</span> 수정 → 자동 재시작<br>
+      · 내 PC : 폴더의 <span class="mono">.env</span> 파일에서 수정 후 다시 실행
+    </p>`;
 }
 
-function secMsg(kind, text){ $('#secMsg').innerHTML = `<div class="${kind}">${esc(text)}</div>`; }
-
-async function savePassword(){
-  const cur = $('#pwCur') ? $('#pwCur').value : '';
-  const pw = $('#pwNew').value, pw2 = $('#pwNew2').value;
-  if(pw.length < 8){ secMsg('err', '비밀번호는 8자 이상으로 정하세요.'); return; }
-  if(pw !== pw2){ secMsg('err', '두 번 입력한 비밀번호가 다릅니다.'); return; }
-  const res = await fetch('/api/password', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({new_password: pw, current_password: cur}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if(!res.ok){ secMsg('err', data.detail || '비밀번호를 저장하지 못했습니다.'); return; }
-  await loadSecurity();
-  $('#secForm').querySelectorAll('input').forEach(el => el.value = '');
-  secMsg('ok', '비밀번호를 바꿨습니다. 다른 기기의 로그인은 끊겼고, 이 브라우저는 그대로 유지됩니다.');
-}
 
 
 /* ── 기록 ── */

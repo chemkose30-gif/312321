@@ -197,35 +197,34 @@ class PasswordIn(BaseModel):
 async def security_state() -> dict:
     return {
         "locked": auth.password_configured(),
-        "source": "browser" if auth.stored_hash() else ("env" if auth.password_configured() else None),
+        "source": auth.password_source(),
+        "changeable_in_app": False,  # 앱에서는 변경 불가 — 서버 환경변수로만
     }
 
 
 @app.post("/api/password")
 async def set_password(payload: PasswordIn, request: Request) -> JSONResponse:
-    """비밀번호를 처음 정하거나 바꾼다.
+    """최초 1회, 서버가 도는 컴퓨터에서만 비밀번호를 정한다.
 
-    - 최초 설정: 서버가 도는 컴퓨터(로컬/사설망)에서만 허용한다.
-      공개된 주소에서 아무나 먼저 비밀번호를 선점하는 것을 막기 위해서다.
-    - 변경: 로그인된 세션에서 현재 비밀번호를 확인한다.
+    한 번 정해진 뒤에는 앱 안에서 바꿀 수 없다(세션을 탈취당해도 잠금을
+    빼앗기지 않도록). 변경은 서버 환경변수 APP_PASSWORD 로만 한다.
     """
+    if not auth.needs_setup():
+        raise HTTPException(
+            403,
+            "비밀번호는 앱에서 바꿀 수 없습니다. 서버의 환경변수 APP_PASSWORD 를 "
+            "바꾸고 재시작하세요(환경변수 값이 우선 적용됩니다).",
+        )
+    if not client_is_local(request):
+        raise HTTPException(
+            403,
+            "최초 비밀번호는 서버가 설치된 컴퓨터에서만 정할 수 있습니다. "
+            "원격 서버라면 환경변수 APP_PASSWORD 를 설정한 뒤 재시작하세요.",
+        )
     new_password = payload.new_password.strip()
     if len(new_password) < 8:
         raise HTTPException(400, "비밀번호는 8자 이상으로 정하세요.")
-    if auth.needs_setup():
-        if not client_is_local(request):
-            raise HTTPException(
-                403,
-                "최초 비밀번호는 서버가 설치된 컴퓨터에서만 정할 수 있습니다. "
-                "원격 서버라면 환경변수 APP_PASSWORD 를 설정한 뒤 재시작하세요.",
-            )
-    elif not auth.check_password(payload.current_password):
-        ip = request.client.host if request.client else "unknown"
-        auth.record_failure(ip)
-        await asyncio.sleep(1)
-        raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다.")
     auth.set_password(new_password)
-    # 비밀번호를 바꾸면 다른 기기의 세션은 끊기고, 방금 설정한 이 브라우저만 유지된다.
     return _with_session({"ok": True})
 
 
