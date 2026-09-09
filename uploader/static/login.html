@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>올원업로드 · 로그인</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23e1306c'/><path d='M16 7l7 8h-4v9h-6v-9H9z' fill='white'/></svg>">
+<style>
+:root{--bg:#0a0c10;--bg2:#111318;--border:rgba(255,255,255,.09);--text:#e8eaf0;--text2:#8892a4;--blue:#3b82f6;--red:#ef4444;
+  --font:'Pretendard','Apple SD Gothic Neo',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;display:grid;place-items:center;padding:24px}
+.box{width:100%;max-width:380px;text-align:center}
+.mark{width:52px;height:52px;border-radius:16px;margin:0 auto 20px;background:linear-gradient(135deg,#ff0033,#e1306c 45%,#1877f2);display:grid;place-items:center;font-size:24px;color:#fff}
+h1{font-size:21px;letter-spacing:-.02em;margin-bottom:8px}
+p.sub{color:var(--text2);font-size:13px;line-height:1.65;margin-bottom:26px}
+form{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:22px}
+label{display:block;text-align:left;font-size:12px;color:var(--text2);margin-bottom:7px}
+input{width:100%;background:var(--bg);border:1px solid rgba(255,255,255,.16);border-radius:9px;color:var(--text);
+  padding:12px 13px;font-size:14px;font-family:inherit;outline:none;transition:.15s}
+input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.14)}
+button{width:100%;margin-top:14px;padding:13px;border:none;border-radius:9px;background:var(--blue);color:#fff;
+  font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;transition:.15s}
+button:hover{background:#2f74e0}
+button:disabled{opacity:.5;cursor:not-allowed}
+.err{margin-top:14px;font-size:12.5px;color:#fca5a5;background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.25);
+  border-radius:9px;padding:10px 12px;line-height:1.5;display:none;text-align:left}
+.foot{margin-top:18px;font-size:11.5px;color:#5a6478;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="mark">↑</div>
+  <h1>올원업로드</h1>
+  <p class="sub">유튜브 · 틱톡 · 인스타 · 페이스북 동시 업로더<br>계속하려면 비밀번호를 입력하세요.</p>
+  <form id="f">
+    <label for="pw">비밀번호</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus placeholder="••••••••">
+    <button type="submit" id="btn">로그인</button>
+    <div class="err" id="err"></div>
+  </form>
+  <p class="foot">서버 <code>.env</code>의 <b>APP_PASSWORD</b>에 설정된 값입니다.</p>
+</div>
+<script>
+const form = document.getElementById('f'), err = document.getElementById('err'), btn = document.getElementById('btn');
+form.onsubmit = async e => {
+  e.preventDefault();
+  btn.disabled = true; err.style.display = 'none';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: document.getElementById('pw').value}),
+    });
+    if (res.ok) { location.href = '/'; return; }
+    const data = await res.json().catch(() => ({}));
+    err.textContent = data.detail || '로그인에 실패했습니다.';
+    err.style.display = 'block';
+  } catch (_) {
+    err.textContent = '서버에 연결할 수 없습니다.';
+    err.style.display = 'block';
+  }
+  btn.disabled = false;
+  document.getElementById('pw').select();
+};
+</script>
+</body>
+</html>

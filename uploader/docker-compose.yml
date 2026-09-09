@@ -1,0 +1,22 @@
+services:
+  uploader:
+    build: .
+    ports:
+      - "8100:8100"
+    environment:
+      # 외부에 공개한다면 아래 두 개는 반드시 채우세요.
+      APP_PASSWORD: ${APP_PASSWORD:?APP_PASSWORD를 설정하세요}
+      APP_SECRET: ${APP_SECRET:?APP_SECRET을 설정하세요}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8100}
+      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+      TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+      TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+    volumes:
+      - uploader-data:/data
+    restart: unless-stopped
+
+volumes:
+  uploader-data:

@@ -10,6 +10,8 @@
 | `#accounts` | 플랫폼별 계정 추가·별칭 지정·연결 끊기, **채널 세트** 관리 |
 | `#history` | 최근 30건의 업로드와 채널별 결과 |
 
+`APP_PASSWORD`를 설정하면 모든 화면 앞에 로그인 페이지가 붙습니다(우측 상단에 로그아웃 버튼).
+
 - 백엔드: FastAPI + httpx (플랫폼 공식 API 직접 호출)
 - 프론트: 의존성 없는 단일 HTML (`static/index.html`)
 - 저장소: SQLite (액세스 토큰은 `APP_SECRET` 기반 Fernet으로 암호화 저장)
@@ -136,6 +138,8 @@ uploader/
 
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
+| `POST` | `/api/login` · `/api/logout` | 로그인 / 로그아웃 (`APP_PASSWORD` 설정 시) |
+| `GET` | `/healthz` | 헬스체크 (호스팅 서비스용) |
 | `GET` | `/api/platforms` | 플랫폼 설정 상태와 연결된 계정 |
 | `GET` | `/api/oauth/{platform}/start` | OAuth 시작(키 없으면 데모 계정 생성) |
 | `GET` | `/api/oauth/{provider}/callback` | OAuth 콜백 |
@@ -152,8 +156,57 @@ uploader/
 | `GET` | `/api/jobs`, `/api/jobs/{id}` | 진행 상황 / 기록 |
 | `GET` | `/media/{token}` | 업로드 영상 공개 서빙(Range 지원) |
 
-## 4. 알아둘 점
+## 4. 외부에서 사용하기 (배포)
+
+> **먼저 잠그세요.** 이 앱은 연결된 계정에 영상을 올릴 수 있으므로, 공개 주소에 그대로 두면
+> 주소를 아는 누구나 내 채널에 게시할 수 있습니다. `APP_PASSWORD`를 설정하면 로그인 화면이 켜집니다.
+
+```bash
+# 비밀번호와 암호화 키 만들기
+python3 -c "import secrets; print('APP_PASSWORD=' + secrets.token_urlsafe(12))"
+python3 -c "import secrets; print('APP_SECRET=' + secrets.token_urlsafe(32))"
+```
+
+`APP_PASSWORD`가 비어 있으면 잠금이 꺼집니다(로컬 전용). 로그인 세션은 서명된 HttpOnly 쿠키로
+`SESSION_DAYS`(기본 14일) 동안 유지되고, 실패가 5분에 8회를 넘으면 해당 IP를 잠시 막습니다.
+Instagram이 영상을 가져가는 `/media/{임의토큰}`만 잠금에서 제외됩니다.
+
+### 방법 A — Render 등 컨테이너 호스팅 (권장)
+
+리포지토리에 `uploader/Dockerfile`과 `uploader/render.yaml`이 있습니다.
+
+1. Render에서 **New → Blueprint**로 이 리포지토리를 연결 (`render.yaml` 자동 인식)
+2. 환경변수 입력: `APP_PASSWORD`, 플랫폼 API 키들 (`APP_SECRET`은 자동 생성)
+3. 배포 후 발급된 주소(`https://xxx.onrender.com`)를 **`PUBLIC_BASE_URL`에 넣고 재배포**
+4. 각 플랫폼 개발자 콘솔의 리디렉션 URI를 그 주소로 갱신
+   (`https://xxx.onrender.com/api/oauth/youtube/callback` 등 — 앱의 `계정 관리` 하단에 그대로 표시됩니다)
+
+디스크(`/data`)를 붙여야 계정·세트·업로드 기록이 재배포 후에도 유지됩니다.
+Fly.io, Railway, Cloud Run 등 다른 서비스도 같은 Dockerfile로 올라갑니다.
+
+### 방법 B — 내 서버 / VPS
+
+```bash
+cd uploader
+export APP_PASSWORD='...' APP_SECRET='...' PUBLIC_BASE_URL='https://내도메인'
+docker compose up -d          # 8100 포트, 데이터는 uploader-data 볼륨에 보존
+```
+
+HTTPS는 앞단에 Caddy/Nginx 같은 리버스 프록시를 두세요. OAuth와 Instagram 모두 https 주소를 요구합니다.
+
+### 방법 C — 잠깐만 외부에 열기
+
+로컬에서 돌리면서 임시 주소가 필요할 때:
+
+```bash
+cloudflared tunnel --url http://localhost:8100   # 또는 ngrok http 8100
+```
+
+출력된 https 주소를 `.env`의 `PUBLIC_BASE_URL`에 넣고 서버를 재시작하면 그대로 씁니다.
+터널을 끄면 주소도 사라지므로 테스트용입니다.
+
+## 5. 알아둘 점
 
 - 각 플랫폼의 게시 권한은 **앱 심사**를 통과해야 일반 사용자에게 열립니다. 심사 전에는 개발자 본인 계정으로만 테스트할 수 있습니다.
-- 인증은 이 앱을 로컬/사내에서 단독 실행하는 것을 전제로 하며, 로그인 기능이 없습니다. 외부에 공개 배포하려면 앞단에 인증(리버스 프록시 등)을 두세요.
+- 로그인은 **비밀번호 하나를 공유하는 단일 사용자 방식**입니다. 여러 명이 각자 계정으로 쓰는 구조가 아니므로, 팀에서 함께 쓴다면 비밀번호를 공유하거나 앞단에 별도 인증(SSO 등)을 두세요.
 - 영상 규격(길이·비율·용량)은 플랫폼마다 다릅니다. UI에서 세로/길이에 따른 주의 문구를 표시하지만, 최종 판정은 각 플랫폼이 합니다.

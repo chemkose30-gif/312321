@@ -14,13 +14,16 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, jobs
+from . import auth, db, jobs
 from .config import (
+    APP_PASSWORD,
+    AUTH_ENABLED,
     BASE_DIR,
     MAX_UPLOAD_BYTES,
     PLATFORM_ORDER,
     PLATFORMS,
     PUBLIC_BASE_URL,
+    SESSION_DAYS,
     UPLOAD_DIR,
     demo_platform,
 )
@@ -49,10 +52,73 @@ PROVIDERS = {
 }
 
 
+# ── 로그인 ───────────────────────────────────────────────────
+# 인증 없이 열어두는 경로: 로그인 API, 상태 확인, 그리고 Instagram이 영상을
+# 가져가는 /media/{token}(추측 불가능한 임의 토큰으로 보호).
+PUBLIC_PREFIXES = ("/media/", "/static/")
+PUBLIC_PATHS = {"/api/login", "/healthz", "/favicon.ico"}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if (
+        not AUTH_ENABLED
+        or path in PUBLIC_PATHS
+        or path.startswith(PUBLIC_PREFIXES)
+        or auth.valid_token(request.cookies.get(auth.COOKIE))
+    ):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+    return FileResponse(STATIC_DIR / "login.html", headers={"Cache-Control": "no-store"})
+
+
+class LoginIn(BaseModel):
+    password: str = ""
+
+
+@app.post("/api/login")
+async def login(payload: LoginIn, request: Request) -> JSONResponse:
+    if not AUTH_ENABLED:
+        return JSONResponse({"ok": True, "auth": False})
+    ip = request.client.host if request.client else "unknown"
+    if auth.throttled(ip):
+        raise HTTPException(429, "로그인 시도가 너무 많습니다. 5분 뒤에 다시 시도하세요.")
+    if not auth.check_password(payload.password, APP_PASSWORD):
+        auth.record_failure(ip)
+        await asyncio.sleep(1)  # 무차별 대입 지연
+        raise HTTPException(401, "비밀번호가 올바르지 않습니다.")
+    auth.clear_failures(ip)
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        auth.COOKIE,
+        auth.issue_token(),
+        httponly=True,
+        samesite="lax",
+        secure=PUBLIC_BASE_URL.startswith("https://"),
+        max_age=SESSION_DAYS * 86400,
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/logout")
+async def logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth.COOKIE, path="/")
+    return response
+
+
+@app.get("/healthz")
+async def healthz() -> dict:
+    return {"ok": True}
+
+
 # ── 정적 파일 ────────────────────────────────────────────────
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 # ── 플랫폼 / 계정 ────────────────────────────────────────────
@@ -72,7 +138,11 @@ async def get_platforms() -> dict:
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],
         })
-    return {"platforms": out, "public_base_url": PUBLIC_BASE_URL}
+    return {
+        "platforms": out,
+        "public_base_url": PUBLIC_BASE_URL,
+        "auth_enabled": AUTH_ENABLED,
+    }
 
 
 @app.get("/api/oauth/{platform}/start")

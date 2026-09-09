@@ -20,6 +20,11 @@ PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "http://localhost:8100").rstr
 APP_SECRET = os.getenv("APP_SECRET") or "insecure-dev-secret-change-me"
 PORT = int(os.getenv("PORT") or 8100)
 
+# 외부에 공개할 때 필요한 로그인 비밀번호. 비어 있으면 잠금이 꺼진다(로컬 전용).
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+AUTH_ENABLED = bool(APP_PASSWORD)
+SESSION_DAYS = int(os.getenv("SESSION_DAYS") or 14)
+
 META_API_VERSION = os.getenv("META_API_VERSION") or "v21.0"
 GRAPH = f"https://graph.facebook.com/{META_API_VERSION}"
 GRAPH_VIDEO = f"https://graph-video.facebook.com/{META_API_VERSION}"

@@ -1,0 +1,33 @@
+# Render(render.com)에 그대로 올릴 수 있는 설정.
+# 리포지토리를 연결하고 Blueprint로 이 파일을 선택하면 됩니다.
+services:
+  - type: web
+    name: allone-uploader
+    runtime: docker
+    dockerfilePath: ./uploader/Dockerfile
+    dockerContext: ./uploader
+    plan: starter          # 무료 플랜은 디스크를 붙일 수 없어 starter 이상 권장
+    healthCheckPath: /healthz
+    disk:
+      name: uploader-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: APP_PASSWORD   # 로그인 비밀번호 — 배포 시 직접 입력
+        sync: false
+      - key: APP_SECRET     # 토큰 암호화 키
+        generateValue: true
+      - key: PUBLIC_BASE_URL  # 배포 후 발급된 https 주소로 채우기
+        sync: false
+      - key: YOUTUBE_CLIENT_ID
+        sync: false
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false
+      - key: TIKTOK_CLIENT_KEY
+        sync: false
+      - key: TIKTOK_CLIENT_SECRET
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false

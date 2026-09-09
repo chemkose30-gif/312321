@@ -237,6 +237,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <div class="nav-right">
       <span class="badge" id="modeBadge">로딩 중…</span>
       <a class="btn primary sm" href="#upload">업로드 시작</a>
+      <button class="btn sm hidden" id="btnLogout">로그아웃</button>
     </div>
   </div>
 </header>
@@ -445,10 +446,13 @@ window.addEventListener('hashchange', route);
 
 /* ── 데이터 로드 ── */
 async function loadPlatforms(){
-  const res = await fetch('/api/platforms').then(r => r.json());
+  const raw = await fetch('/api/platforms');
+  if(raw.status === 401){ location.reload(); return; }   // 세션 만료 → 로그인 화면
+  const res = await raw.json();
   state.platforms = res.platforms;
   state.publicBase = res.public_base_url;
   $('#footBase').textContent = res.public_base_url;
+  $('#btnLogout').classList.toggle('hidden', !res.auth_enabled);
   // 사라진 계정은 선택에서 제거
   Object.keys(state.selected).forEach(k => {
     const ids = platMeta(k).accounts.map(a => a.id);
@@ -1046,6 +1050,11 @@ async function loadHistory(){
     history.replaceState({}, '', location.pathname + '#accounts');
   }
 })();
+
+$('#btnLogout').onclick = async () => {
+  await fetch('/api/logout', {method:'POST'});
+  location.reload();
+};
 
 (async function init(){
   await loadJobs();
