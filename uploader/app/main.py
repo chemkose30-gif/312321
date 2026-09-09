@@ -247,6 +247,15 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
+# 플랫폼별로 서버에 넣어야 하는 환경변수 이름 (설정이 안 됐을 때 화면에 안내)
+ENV_KEYS = {
+    "youtube": ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"],
+    "tiktok": ["TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"],
+    "instagram": ["META_APP_ID", "META_APP_SECRET"],
+    "facebook": ["META_APP_ID", "META_APP_SECRET"],
+}
+
+
 # ── 플랫폼 / 계정 ────────────────────────────────────────────
 @app.get("/api/platforms")
 async def get_platforms() -> dict:
@@ -260,6 +269,7 @@ async def get_platforms() -> dict:
             "color": cfg.color,
             "provider": cfg.provider,
             "configured": cfg.configured,
+            "env_keys": ENV_KEYS[key],
             "demo": demo_platform(key),
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],

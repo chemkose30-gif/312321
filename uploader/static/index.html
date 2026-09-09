@@ -837,7 +837,11 @@ function renderAccountPanels(){
         <div>
           <div style="font-weight:650">${esc(p.label)}</div>
           <div class="cnt">${p.accounts.length ? `${p.accounts.length}개 아이디 등록됨` : '등록된 아이디 없음'}
-            · ${p.configured ? '실제 연동' : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
+            · ${p.configured
+                ? '<span style="color:#6ee7b7">실제 연동</span>'
+                : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
+          ${p.configured ? '' : `<div class="cnt" style="margin-top:4px">서버에 이 환경변수를 넣어야 실제 게시가 됩니다:
+            <span class="mono">${(p.env_keys || []).join('</span>, <span class="mono">')}</span></div>`}
         </div>
         <div class="panel-actions">
           <button class="btn primary sm" data-addid="${p.key}">+ 내 아이디 추가</button>
