@@ -1,6 +1,7 @@
 """멀티 플랫폼 업로더 — YouTube / TikTok / Instagram / Facebook 동시 업로드."""
 import asyncio
 import contextlib
+import ipaddress
 import mimetypes
 import os
 import re
@@ -9,7 +10,8 @@ import shutil
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlparse
+
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -39,9 +41,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="멀티 플랫폼 업로더", version="1.0.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
 
 # provider → (auth_url, exchange_code)
 PROVIDERS = {
@@ -52,25 +51,81 @@ PROVIDERS = {
 
 
 # ── 로그인 ───────────────────────────────────────────────────
-# 인증 없이 열어두는 경로: 로그인 API, 상태 확인, 그리고 Instagram이 영상을
-# 가져가는 /media/{token}(추측 불가능한 임의 토큰으로 보호).
+# 인증 없이 열어두는 경로: 로그인/최초설정 API, 상태 확인, 그리고 Instagram이
+# 영상을 가져가는 /media/{token}(192비트 임의 토큰으로 보호).
 PUBLIC_PREFIXES = ("/media/", "/static/")
-PUBLIC_PATHS = {"/api/login", "/healthz", "/favicon.ico"}
+PUBLIC_PATHS = {"/api/login", "/api/setup-state", "/healthz", "/favicon.ico"}
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+        "media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'"
+    ),
+}
+
+
+def client_is_local(request: Request) -> bool:
+    """서버와 같은 컴퓨터(또는 같은 사설망)에서 온 요청인지."""
+    host = request.client.host if request.client else ""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
+def _no_store(page: str, status_code: int = 200) -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / page, status_code=status_code, headers={"Cache-Control": "no-store"}
+    )
 
 
 @app.middleware("http")
-async def require_login(request: Request, call_next):
-    path = request.url.path
-    if (
-        not auth.password_configured()
-        or path in PUBLIC_PATHS
-        or path.startswith(PUBLIC_PREFIXES)
-        or auth.valid_token(request.cookies.get(auth.COOKIE))
-    ):
-        return await call_next(request)
-    if path.startswith("/api/"):
-        return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
-    return FileResponse(STATIC_DIR / "login.html", headers={"Cache-Control": "no-store"})
+async def guard(request: Request, call_next):
+    path, method = request.url.path, request.method
+    blocked: Response | None = None
+
+    # 1) 다른 사이트에서 넘어온 상태 변경 요청 차단 (CSRF)
+    origin = request.headers.get("origin")
+    if method not in ("GET", "HEAD", "OPTIONS") and origin:
+        if urlparse(origin).netloc != request.headers.get("host"):
+            blocked = JSONResponse({"detail": "허용되지 않은 요청입니다."}, status_code=403)
+
+    # 2) 로그인 확인 — 비밀번호가 없으면 최초 설정 화면부터
+    if blocked is None and not (path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)):
+        if auth.needs_setup():
+            setup_call = path == "/api/password" and method == "POST"
+            if not setup_call:
+                blocked = (
+                    JSONResponse(
+                        {"detail": "최초 비밀번호 설정이 필요합니다.", "needs_setup": True},
+                        status_code=401,
+                    )
+                    if path.startswith("/api/")
+                    else _no_store("setup.html")
+                )
+        elif not auth.valid_token(request.cookies.get(auth.COOKIE)):
+            blocked = (
+                JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+                if path.startswith("/api/")
+                else _no_store("login.html")
+            )
+
+    response = blocked if blocked is not None else await call_next(request)
+    for key, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    return response
+
+
+@app.get("/api/setup-state")
+async def setup_state(request: Request) -> dict:
+    """로그인 전에도 볼 수 있는 최소 정보(설정 필요 여부)."""
+    return {"needs_setup": auth.needs_setup(), "can_setup_here": client_is_local(request)}
 
 
 class LoginIn(BaseModel):
@@ -121,39 +176,30 @@ async def security_state() -> dict:
 
 @app.post("/api/password")
 async def set_password(payload: PasswordIn, request: Request) -> JSONResponse:
-    """브라우저에서 비밀번호를 정하거나 바꾼다.
+    """비밀번호를 처음 정하거나 바꾼다.
 
-    이미 잠겨 있으면 현재 비밀번호를 확인한다(이 경로는 로그인된 세션만 도달한다).
+    - 최초 설정: 서버가 도는 컴퓨터(로컬/사설망)에서만 허용한다.
+      공개된 주소에서 아무나 먼저 비밀번호를 선점하는 것을 막기 위해서다.
+    - 변경: 로그인된 세션에서 현재 비밀번호를 확인한다.
     """
     new_password = payload.new_password.strip()
-    if len(new_password) < 6:
-        raise HTTPException(400, "비밀번호는 6자 이상으로 정하세요.")
-    if auth.password_configured() and not auth.check_password(payload.current_password):
+    if len(new_password) < 8:
+        raise HTTPException(400, "비밀번호는 8자 이상으로 정하세요.")
+    if auth.needs_setup():
+        if not client_is_local(request):
+            raise HTTPException(
+                403,
+                "최초 비밀번호는 서버가 설치된 컴퓨터에서만 정할 수 있습니다. "
+                "원격 서버라면 환경변수 APP_PASSWORD 를 설정한 뒤 재시작하세요.",
+            )
+    elif not auth.check_password(payload.current_password):
         ip = request.client.host if request.client else "unknown"
         auth.record_failure(ip)
         await asyncio.sleep(1)
         raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다.")
     auth.set_password(new_password)
-    # 방금 설정한 브라우저는 그대로 쓸 수 있도록 세션을 발급한다.
+    # 비밀번호를 바꾸면 다른 기기의 세션은 끊기고, 방금 설정한 이 브라우저만 유지된다.
     return _with_session({"ok": True})
-
-
-@app.delete("/api/password")
-async def remove_password(payload: PasswordIn) -> dict:
-    """잠금 해제 — 비밀번호는 본문으로 받는다(URL에 남기지 않기 위해)."""
-    if not auth.password_configured():
-        return {"ok": True}
-    if not auth.check_password(payload.current_password):
-        await asyncio.sleep(1)
-        raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다.")
-    if APP_PASSWORD:
-        raise HTTPException(
-            400,
-            ".env의 APP_PASSWORD가 설정돼 있어 브라우저에서는 끌 수 없습니다. "
-            "그 값을 지우고 서버를 재시작하세요.",
-        )
-    auth.clear_password()
-    return {"ok": True}
 
 
 @app.post("/api/logout")

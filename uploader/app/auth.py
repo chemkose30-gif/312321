@@ -8,10 +8,27 @@ from . import db
 from .config import APP_PASSWORD, APP_SECRET, SESSION_DAYS
 
 PASSWORD_KEY = "app_password"
+SALT_KEY = "session_salt"
 PBKDF2_ROUNDS = 200_000
 
 COOKIE = "uploader_session"
-_SIGN_KEY = hashlib.sha256(f"session:{APP_SECRET}".encode()).digest()
+
+
+def _session_salt() -> str:
+    """비밀번호가 바뀌면 함께 바뀌는 값. 이전에 발급된 세션을 모두 무효화한다."""
+    salt = db.get_setting(SALT_KEY)
+    if not salt:
+        salt = secrets.token_urlsafe(16)
+        db.set_setting(SALT_KEY, salt)
+    return salt
+
+
+def rotate_sessions() -> None:
+    db.set_setting(SALT_KEY, secrets.token_urlsafe(16))
+
+
+def _sign_key() -> bytes:
+    return hashlib.sha256(f"session:{APP_SECRET}:{_session_salt()}".encode()).digest()
 
 # IP별 로그인 실패 기록 (무차별 대입 완화)
 _failures: dict[str, list[float]] = {}
@@ -20,7 +37,7 @@ WINDOW = 300.0
 
 
 def _sign(expires_at: int) -> str:
-    return hmac.new(_SIGN_KEY, str(expires_at).encode(), hashlib.sha256).hexdigest()
+    return hmac.new(_sign_key(), str(expires_at).encode(), hashlib.sha256).hexdigest()
 
 
 def issue_token() -> str:
@@ -78,10 +95,12 @@ def check_password(candidate: str) -> bool:
 
 def set_password(password: str) -> None:
     db.set_setting(PASSWORD_KEY, hash_password(password))
+    rotate_sessions()  # 다른 기기에 남아 있던 로그인 세션을 모두 끊는다
 
 
-def clear_password() -> None:
-    db.delete_setting(PASSWORD_KEY)
+def needs_setup() -> bool:
+    """아직 비밀번호가 없어 최초 설정이 필요한 상태."""
+    return not password_configured()
 
 
 def throttled(ip: str) -> bool:

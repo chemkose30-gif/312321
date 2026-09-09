@@ -17,7 +17,30 @@ DB_PATH = DATA_DIR / "uploader.db"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "http://localhost:8100").rstrip("/")
-APP_SECRET = os.getenv("APP_SECRET") or "insecure-dev-secret-change-me"
+def _load_or_create_secret() -> str:
+    """토큰 암호화 키. 환경변수가 없으면 무작위로 만들어 data/secret.key 에 보관한다.
+
+    (고정된 기본값을 쓰면 저장된 액세스 토큰을 누구나 복호화할 수 있다.)
+    """
+    from_env = os.getenv("APP_SECRET")
+    if from_env:
+        return from_env
+    key_file = DATA_DIR / "secret.key"
+    if key_file.exists():
+        return key_file.read_text().strip()
+    import secrets as _secrets
+
+    value = _secrets.token_urlsafe(48)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    key_file.write_text(value)
+    try:
+        key_file.chmod(0o600)
+    except OSError:
+        pass  # 윈도우 등에서는 무시
+    return value
+
+
+APP_SECRET = _load_or_create_secret()
 PORT = int(os.getenv("PORT") or 8100)
 
 # 외부에 공개할 때 필요한 로그인 비밀번호. 비어 있으면 잠금이 꺼진다(로컬 전용).
