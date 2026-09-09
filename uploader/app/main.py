@@ -72,6 +72,7 @@ PROVIDERS = {
 # ── 로그인 ───────────────────────────────────────────────────
 # 인증 없이 열어두는 경로: 로그인/최초설정 API, 상태 확인, 그리고 Instagram이
 # 영상을 가져가는 /media/{token}(192비트 임의 토큰으로 보호).
+OAUTH_STATE_COOKIE = "uploader_oauth_state"
 PUBLIC_PREFIXES = ("/media/", "/static/")
 PUBLIC_PATHS = {"/api/login", "/api/setup-state", "/healthz", "/favicon.ico"}
 
@@ -281,8 +282,19 @@ async def oauth_start(platform: str):
         return RedirectResponse(f"/?connected={platform}&demo=1", status_code=303)
 
     state = secrets.token_urlsafe(24)
-    db.save_state(state, cfg.provider)
-    return RedirectResponse(PROVIDERS[cfg.provider][0](state), status_code=303)
+    db.save_state(state, cfg.provider)  # 예비 확인용
+    response = RedirectResponse(PROVIDERS[cfg.provider][0](state), status_code=303)
+    # 서명 쿠키에도 담아둔다 — 서버가 재시작되거나 데이터가 초기화돼도 연결이 이어지도록.
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        auth.sign_state(cfg.provider, state),
+        httponly=True,
+        samesite="lax",
+        secure=PUBLIC_BASE_URL.startswith("https://"),
+        max_age=1800,
+        path="/",
+    )
+    return response
 
 
 @app.get("/api/oauth/{provider}/callback")
@@ -295,8 +307,17 @@ async def oauth_callback(provider: str, request: Request):
         return RedirectResponse(f"/?error={detail}", status_code=303)
 
     state = params.get("state") or ""
-    if db.pop_state(state) != provider:
-        return RedirectResponse("/?error=인증 state가 유효하지 않습니다. 다시 시도하세요.", status_code=303)
+    cookie_ok = auth.verify_state(request.cookies.get(OAUTH_STATE_COOKIE), provider, state)
+    if not cookie_ok and db.pop_state(state) != provider:
+        return RedirectResponse(
+            "/?error=" + (
+                "로그인 연결 정보가 만료되었거나 이미 사용되었습니다. "
+                "계정 관리에서 '로그인으로 연결'을 다시 눌러주세요. "
+                "(이 페이지를 새로고침하면 같은 오류가 납니다)"
+            ),
+            status_code=303,
+        )
+    db.pop_state(state)
 
     code = params.get("code")
     if not code:
@@ -308,7 +329,9 @@ async def oauth_callback(provider: str, request: Request):
         return RedirectResponse(f"/?error={exc}", status_code=303)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(f"/?error={type(exc).__name__}: {exc}", status_code=303)
-    return RedirectResponse(f"/?connected={provider}", status_code=303)
+    done = RedirectResponse(f"/?connected={provider}", status_code=303)
+    done.delete_cookie(OAUTH_STATE_COOKIE, path="/")
+    return done
 
 
 class ManualAccount(BaseModel):

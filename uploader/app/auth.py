@@ -27,6 +27,30 @@ def rotate_sessions() -> None:
     db.set_setting(SALT_KEY, secrets.token_urlsafe(16))
 
 
+# OAuth state 서명용 키 — DB(세션 솔트)와 무관하게 APP_SECRET 만으로 만든다.
+# (재시작이나 데이터 초기화가 있어도 진행 중인 로그인 연결이 깨지지 않도록)
+_OAUTH_KEY = hashlib.sha256(f"oauth:{APP_SECRET}".encode()).digest()
+
+
+def sign_state(provider: str, state: str) -> str:
+    mac = hmac.new(_OAUTH_KEY, f"{provider}:{state}".encode(), hashlib.sha256).hexdigest()
+    return f"{provider}:{state}:{mac}"
+
+
+def verify_state(cookie: str | None, provider: str, state: str) -> bool:
+    """브라우저가 들고 온 서명 쿠키가 이번 요청의 provider/state 와 맞는지."""
+    if not cookie or not state:
+        return False
+    parts = cookie.split(":")
+    if len(parts) != 3:
+        return False
+    cookie_provider, cookie_state, mac = parts
+    if cookie_provider != provider or not hmac.compare_digest(cookie_state, state):
+        return False
+    expected = hmac.new(_OAUTH_KEY, f"{cookie_provider}:{cookie_state}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, expected)
+
+
 def _sign_key() -> bytes:
     return hashlib.sha256(f"session:{APP_SECRET}:{_session_salt()}".encode()).digest()
 
