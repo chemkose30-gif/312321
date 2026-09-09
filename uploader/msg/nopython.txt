@@ -1,0 +1,10 @@
+  Python 을 찾을 수 없습니다.
+
+  방법 1 : 이 창을 닫고 run.bat 을 한 번 더 실행하세요.
+           방금 자동 설치가 끝났다면 그때는 인식됩니다.
+
+  방법 2 : 열어드린 python.org 페이지에서 직접 설치하세요.
+           설치 첫 화면 맨 아래 "Add python.exe to PATH" 를 꼭 체크!
+           설치 후 이 창을 닫고 run.bat 을 다시 실행하세요.
+
+  ※ Microsoft Store 창이 열렸다면 그건 진짜 Python 이 아닙니다.
