@@ -236,3 +236,101 @@ def multipart_body(
         return gen()
 
     return boundary, length, factory
+
+
+# ── 인스타그램 resumable 업로드 ──────────────────────────────
+# 기본(pull) 방식은 인스타그램이 우리 서버에 접속해 영상을 내려받는다.
+# 큰 파일이면 인스타 쪽 대기열 + 다운로드 때문에 오래 걸리고 진행률도 알 수 없다.
+# resumable 방식은 우리가 메타 서버로 직접 밀어넣어서 더 빠르고 진행률이 보인다.
+RUPLOAD = "https://rupload.facebook.com/ig-api-upload"
+
+
+async def ig_resumable_upload(
+    client,
+    api_version: str,
+    container_id: str,
+    token: str,
+    job: dict,
+    progress: Progress,
+) -> None:
+    """영상 바이트를 메타 업로드 서버로 직접 전송한다. 실패하면 PublishError."""
+    size = job["video_size"]
+    res = await client.post(
+        f"{RUPLOAD}/{api_version}/{container_id}",
+        headers={
+            "Authorization": f"OAuth {token}",
+            "offset": "0",
+            "file_size": str(size),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+        },
+        content=stream_file(
+            job["video_path"], progress, base_pct=10, span_pct=55, label="Instagram 전송 중"
+        ),
+    )
+    if res.status_code >= 400:
+        raise PublishError(f"Instagram 전송 실패: {res.text[:300]}")
+    body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+    if body and body.get("success") is False:
+        raise PublishError(f"Instagram 전송 실패: {res.text[:300]}")
+
+
+# 어떤 방식이 되는지 한 번 확인하면 기억해 둔다 ("resumable" | "pull").
+IG_MODE_KEY = "ig_upload_mode"
+
+
+async def ig_create_container(
+    client,
+    base: str,
+    api_version: str,
+    ig_user_id: str,
+    token: str,
+    params: dict,
+    job: dict,
+    progress: Progress,
+    video_url: str,
+) -> str:
+    """릴스 컨테이너를 만든다.
+
+    가능하면 resumable(직접 전송) 방식을 쓰고, 안 되면 기존 URL(pull) 방식으로 돌아간다.
+    한 번 판별한 결과는 저장해서 다음부터는 헛걸음하지 않는다.
+    """
+    from .. import db
+
+    if (db.get_setting(IG_MODE_KEY) or "") != "pull":
+        unsupported = False   # 계정/앱이 이 방식을 아예 안 받는 경우에만 기억한다
+        try:
+            await progress(6, "Instagram 업로드 세션 생성 중")
+            res = await client.post(
+                f"{base}/{ig_user_id}/media",
+                params={**params, "upload_type": "resumable", "access_token": token},
+            )
+            container_id = (res.json() or {}).get("id") if res.status_code < 400 else None
+            if container_id:
+                await ig_resumable_upload(client, api_version, container_id, token, job, progress)
+                db.set_setting(IG_MODE_KEY, "resumable")
+                return container_id
+            unsupported = 400 <= res.status_code < 500
+        except (PublishError, ValueError, KeyError):
+            pass
+        except Exception:  # 네트워크 오류 — 이번만 기존 방식으로 넘어간다
+            pass
+        if unsupported:
+            db.set_setting(IG_MODE_KEY, "pull")
+        await progress(8, "직접 전송이 안 돼 기존 방식으로 전환합니다")
+
+    if not video_url.startswith("https://"):
+        raise PublishError(
+            "Instagram이 이 서버에서 영상을 내려받아야 하는데 공개 주소가 아닙니다"
+            f"(현재: {video_url}). PUBLIC_BASE_URL 을 외부에서 접근 가능한 https 주소로 설정하세요."
+        )
+    res = await client.post(
+        f"{base}/{ig_user_id}/media",
+        params={**params, "video_url": video_url, "access_token": token},
+    )
+    if res.status_code >= 400:
+        raise PublishError(f"Instagram 컨테이너 생성 실패: {res.text[:300]}")
+    container_id = (res.json() or {}).get("id")
+    if not container_id:
+        raise PublishError("Instagram이 컨테이너 ID를 반환하지 않았습니다.")
+    return container_id

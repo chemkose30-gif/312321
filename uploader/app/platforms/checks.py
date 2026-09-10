@@ -3,7 +3,13 @@ import httpx
 
 from ..config import GRAPH, PUBLIC_BASE_URL
 from . import instagram_login
-from .base import IG_MAX_HASHTAGS, build_caption, count_hashtags, ig_process_budget
+from .base import (
+    IG_MAX_HASHTAGS,
+    IG_MODE_KEY,
+    build_caption,
+    count_hashtags,
+    ig_process_budget,
+)
 
 Issue = dict  # {"level": "error"|"warn"|"ok", "text": str}
 
@@ -171,10 +177,12 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
     login_mode = (account.get("meta") or {}).get("auth") == "instagram_login"
     base = instagram_login.GRAPH if login_mode else GRAPH
 
-    if not PUBLIC_BASE_URL.startswith("https://"):
+    from .. import db
+    pull_mode = (db.get_setting(IG_MODE_KEY) or "") == "pull"
+    if pull_mode and not PUBLIC_BASE_URL.startswith("https://"):
         out.append(err(
-            "인스타그램은 외부에서 접근되는 https 주소로 영상을 내려받습니다. "
-            f"지금 주소는 {PUBLIC_BASE_URL} 라서 게시가 실패합니다."
+            "인스타그램이 이 서버에서 영상을 내려받는 방식인데 공개 https 주소가 아닙니다 "
+            f"(현재 {PUBLIC_BASE_URL}). 게시가 실패합니다."
         ))
 
     caption = build_caption(job, limit=None)

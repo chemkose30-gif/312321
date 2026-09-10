@@ -17,12 +17,14 @@ from .base import (
     PublishError,
     PublishResult,
     build_caption,
+    ig_create_container,
     wait_for_ig_container,
 )
 
 AUTH_URL = "https://www.instagram.com/oauth/authorize"
 TOKEN_URL = "https://api.instagram.com/oauth/access_token"
-GRAPH = "https://graph.instagram.com/v23.0"
+API_VERSION = "v23.0"
+GRAPH = f"https://graph.instagram.com/{API_VERSION}"
 LONG_LIVED_URL = "https://graph.instagram.com/access_token"
 REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
 SCOPES = "instagram_business_basic,instagram_business_content_publish"
@@ -150,29 +152,17 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
     token = await _fresh_token(account)
     ig_user_id = account["external_id"]
     video_url = media_url(job)
-    if PUBLIC_BASE_URL.startswith("http://localhost") or PUBLIC_BASE_URL.startswith("http://127."):
-        raise PublishError(
-            "Instagram은 외부에서 접근 가능한 영상 URL이 필요합니다. "
-            "PUBLIC_BASE_URL을 공개 주소로 설정하세요."
-        )
 
-    await progress(8, "릴스 컨테이너 생성 중")
+    params = {
+        "media_type": "REELS",
+        "caption": build_caption(job, limit=2200, max_tags=IG_MAX_HASHTAGS),
+        "share_to_feed": "true" if options.get("share_to_feed", True) else "false",
+    }
+
     async with httpx.AsyncClient(timeout=None) as client:
-        create = await client.post(
-            f"{GRAPH}/{ig_user_id}/media",
-            params={
-                "media_type": "REELS",
-                "video_url": video_url,
-                "caption": build_caption(job, limit=2200, max_tags=IG_MAX_HASHTAGS),
-                "share_to_feed": "true" if options.get("share_to_feed", True) else "false",
-                "access_token": token,
-            },
+        container_id = await ig_create_container(
+            client, GRAPH, API_VERSION, ig_user_id, token, params, job, progress, video_url,
         )
-        if create.status_code >= 400:
-            raise PublishError(f"Instagram 컨테이너 생성 실패: {create.text[:300]}")
-        container_id = (create.json() or {}).get("id")
-        if not container_id:
-            raise PublishError("Instagram이 컨테이너 ID를 반환하지 않았습니다.")
 
         await wait_for_ig_container(
             client, GRAPH, container_id, token, progress,
