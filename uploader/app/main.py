@@ -36,7 +36,7 @@ from .config import (
     UPLOAD_DIR,
     demo_platform,
 )
-from .platforms import instagram_login, meta, tiktok, youtube
+from .platforms import checks, instagram_login, meta, tiktok, youtube
 from .platforms.base import PublishError
 
 STATIC_DIR = BASE_DIR / "static"
@@ -862,6 +862,99 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
 
     background.add_task(_launch, job_id)
     return {"job_id": job_id}
+
+
+class PreflightIn(BaseModel):
+    media_id: str | None = None
+    title: str = ""
+    description: str = ""
+    hashtags: list[str] = Field(default_factory=list)
+    targets: list[TargetIn]
+    options: dict = Field(default_factory=dict)
+    duration: float = 0
+    width: int = 0
+    height: int = 0
+
+
+# 플랫폼별 영상 용량 상한(바이트) — 넘으면 업로드 자체가 거부된다.
+MAX_VIDEO_BYTES = {
+    "instagram": 1 * 1024**3,
+    "tiktok": 4 * 1024**3,
+    "facebook": 10 * 1024**3,
+    "youtube": 256 * 1024**3,
+}
+
+
+async def _preflight_one(payload: PreflightIn, target: TargetIn, media: dict | None) -> dict:
+    label = PLATFORMS[target.platform].label
+    account = db.get_account(target.account_id)
+    base = {
+        "platform": target.platform,
+        "platform_label": label,
+        "account_id": target.account_id,
+        "account_name": (account or {}).get("name") or "알 수 없는 계정",
+    }
+    if account is None:
+        return {**base, "items": [checks.err("계정을 찾을 수 없습니다. 계정 관리에서 다시 연결하세요.")]}
+
+    items: list[dict] = []
+    size = (media or {}).get("size") or 0
+    cap = MAX_VIDEO_BYTES.get(target.platform)
+    if size and cap and size > cap:
+        items.append(checks.err(
+            f"영상 용량이 {size / 1024**3:.1f}GB입니다. {label} 상한은 {cap // 1024**3}GB입니다."
+        ))
+
+    if demo_platform(target.platform):
+        items.append(checks.warn("API 키가 없어 데모 모드입니다. 실제로 게시되지 않습니다."))
+        return {**base, "items": items}
+    if not account.get("access_token"):
+        items.append(checks.err("아이디만 등록된 계정입니다. 계정 관리에서 로그인 연결을 마치세요."))
+        return {**base, "items": items}
+
+    job = {
+        "title": payload.title.strip(),
+        "description": payload.description.strip(),
+        "hashtags": [t.strip().lstrip("#") for t in payload.hashtags if t.strip()],
+        "video_name": (media or {}).get("name") or "",
+        "video_size": size,
+        "duration": payload.duration,
+        "width": payload.width,
+        "height": payload.height,
+    }
+    options = (payload.options or {}).get(target.platform, {}) or {}
+    try:
+        items += await checks.CHECKERS[target.platform](account, job, options)
+    except Exception as exc:  # 점검 자체가 실패해도 업로드는 막지 않는다.
+        items.append(checks.warn(f"{label} 상태를 확인하지 못했습니다: {type(exc).__name__}: {exc}"))
+    return {**base, "items": items}
+
+
+@app.post("/api/preflight")
+async def preflight(payload: PreflightIn) -> dict:
+    """게시 전에 플랫폼별로 걸릴 만한 것을 미리 확인한다(실제 게시는 하지 않음)."""
+    if not payload.targets:
+        raise HTTPException(400, "점검할 채널을 1개 이상 선택하세요.")
+    for target in payload.targets:
+        if target.platform not in PLATFORMS:
+            raise HTTPException(400, f"알 수 없는 플랫폼: {target.platform}")
+
+    media = db.get_media(payload.media_id) if payload.media_id else None
+    general: list[dict] = []
+    if payload.media_id and (not media or not os.path.exists(media["path"])):
+        general.append(checks.err("업로드된 영상을 찾을 수 없습니다. 영상을 다시 올려주세요."))
+    elif not payload.media_id:
+        general.append(checks.warn("아직 영상을 올리지 않아 영상 관련 항목은 건너뜁니다."))
+
+    results = await asyncio.gather(
+        *(_preflight_one(payload, t, media) for t in payload.targets)
+    )
+    results = list(results)
+    errors = sum(1 for r in results for i in r["items"] if i["level"] == "error") \
+        + sum(1 for i in general if i["level"] == "error")
+    warns = sum(1 for r in results for i in r["items"] if i["level"] == "warn") \
+        + sum(1 for i in general if i["level"] == "warn")
+    return {"general": general, "results": results, "errors": errors, "warnings": warns}
 
 
 async def _launch(job_id: str) -> None:

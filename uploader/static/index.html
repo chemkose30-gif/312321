@@ -196,6 +196,17 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .plat-body label.f{margin-top:12px}
 .check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);margin-top:9px;cursor:pointer}
 .check input{accent-color:var(--blue);width:15px;height:15px}
+.pf-group{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-top:12px;background:var(--bg2)}
+.pf-head{display:flex;align-items:center;gap:9px;font-weight:650;font-size:13.5px;margin-bottom:8px}
+.pf-item{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.6;padding:3px 0;color:var(--text2)}
+.pf-item .mk{flex:none;width:16px;text-align:center}
+.pf-item.error{color:var(--red)}
+.pf-item.warn{color:var(--amber)}
+.pf-item.ok{color:var(--green)}
+.pf-summary{font-size:13px;padding:10px 12px;border-radius:var(--radius-sm);margin-top:12px}
+.pf-summary.pass{color:var(--green);background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25)}
+.pf-summary.fail{color:var(--red);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25)}
+.pf-summary.warnish{color:var(--amber);background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25)}
 .warn{font-size:11.5px;color:var(--amber);background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.22);border-radius:var(--radius-sm);padding:8px 10px;margin-top:12px;line-height:1.5}
 .err{font-size:12.5px;color:#fca5a5;background:rgba(239,68,68,.09);border:1px solid rgba(239,68,68,.25);border-radius:var(--radius-sm);padding:10px 12px;margin-top:12px;line-height:1.5}
 .ok{font-size:12.5px;color:#6ee7b7;background:rgba(16,185,129,.09);border:1px solid rgba(16,185,129,.25);border-radius:var(--radius-sm);padding:10px 12px;margin-top:12px}
@@ -377,6 +388,14 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div id="tagWarn"></div>
     </div>
 
+    <div class="card">
+      <h2><span class="step">4</span>업로드 전 점검</h2>
+      <p class="sub">실제로 올리기 전에 각 플랫폼에 물어봐서 걸릴 만한 것을 미리 찾습니다.
+        (로그인 만료, 길이·용량 제한, 해시태그 초과, 인스타 24시간 게시 한도, 틱톡 공개 범위 등)</p>
+      <button class="btn" id="btnPrecheck">점검하기</button>
+      <div id="preflightBox"></div>
+    </div>
+
     <div id="publishErr"></div>
     <button class="btn primary lg block" id="btnPublish" style="margin-top:4px" disabled>올릴 채널을 먼저 선택하세요</button>
 
@@ -466,7 +485,7 @@ const PAGES = ['home','upload','accounts','history'];
 const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
 let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
+               duration:0, width:0, height:0, vertical:false, pfSkip:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -617,7 +636,7 @@ $('#drop').ondrop = e => {
 };
 $('#fileInput').onchange = e => e.target.files[0] && uploadFile(e.target.files[0]);
 $('#btnReset').onclick = () => {
-  state.media = null; state.duration = 0;
+  state.media = null; state.duration = 0; state.width = 0; state.height = 0;
   $('#mediaBox').classList.add('hidden'); $('#drop').classList.remove('hidden');
   $('#fileInput').value = ''; $('#upBar').style.width = '0'; $('#upMsg').textContent = '';
   refreshPublishButton();
@@ -642,6 +661,7 @@ function uploadFile(file){
   video.src = URL.createObjectURL(file);
   video.onloadedmetadata = () => {
     const w = video.videoWidth, h = video.videoHeight, sec = Math.round(video.duration);
+    state.width = w; state.height = h;
     $('#mDim').textContent = `${Math.floor(sec/60)}분 ${sec%60}초 · ${w}×${h}`;
     state.duration = sec; state.vertical = h > w;
     $('#mRatio').textContent = state.vertical ? '세로 (쇼츠/릴스 최적)' : '가로 (일반 영상)';
@@ -837,16 +857,97 @@ function optionsHtml(p){
 function refreshPublishButton(){
   const n = totalPicked();
   const btn = $('#btnPublish');
+  state.pfSkip = false;   // 내용이 바뀌면 점검을 다시 받는다
   btn.disabled = !state.media || n === 0;
   btn.textContent = !n ? '올릴 채널을 먼저 선택하세요'
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
     : `${n}개 채널에 한 번에 올리기`;
 }
 
+/* ── 업로드 전 점검 ── */
+const PF_MARK = {error:'✕', warn:'!', ok:'✓'};
+function preflightPayload(){
+  return {
+    media_id: state.media ? state.media.id : null,
+    title: $('#title').value.trim(),
+    description: $('#desc').value.trim(),
+    hashtags: state.tags,
+    targets: Object.entries(state.selected)
+      .flatMap(([platform, ids]) => ids.map(account_id => ({platform, account_id}))),
+    options: state.options,
+    duration: state.duration || 0,
+    width: state.width || 0,
+    height: state.height || 0,
+  };
+}
+
+function pfItems(items){
+  return items.map(i =>
+    `<div class="pf-item ${i.level}"><span class="mk">${PF_MARK[i.level] || '·'}</span><span>${esc(i.text)}</span></div>`
+  ).join('');
+}
+
+async function runPreflight(){
+  const payload = preflightPayload();
+  const box = $('#preflightBox');
+  if(!payload.targets.length){
+    box.innerHTML = '<div class="pf-summary warnish">올릴 채널을 먼저 선택하세요.</div>';
+    return null;
+  }
+  const btn = $('#btnPrecheck');
+  btn.disabled = true; btn.textContent = '점검 중...';
+  box.innerHTML = '<div class="small muted" style="margin-top:12px">각 플랫폼에 확인하는 중입니다...</div>';
+  try{
+    const res = await fetch('/api/preflight', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      box.innerHTML = `<div class="pf-summary fail">점검하지 못했습니다: ${esc(data.detail || res.status)}</div>`;
+      return null;
+    }
+    const groups = data.results.map(r => `
+      <div class="pf-group">
+        <div class="pf-head"><i style="background:${platMeta(r.platform).color};width:20px;height:20px;
+          border-radius:6px;display:inline-flex;align-items:center;justify-content:center;font-size:11px">${PICO[r.platform]}</i>
+          ${esc(r.platform_label)} · ${esc(r.account_name)}</div>
+        ${pfItems(r.items) || '<div class="pf-item ok"><span class="mk">✓</span><span>문제 없음</span></div>'}
+      </div>`).join('');
+    const summary = data.errors
+      ? `<div class="pf-summary fail">지금 올리면 실패할 항목이 ${data.errors}개 있습니다. 위의 ✕ 항목을 먼저 해결하세요.</div>`
+      : data.warnings
+        ? `<div class="pf-summary warnish">막히는 건 없지만 확인할 점이 ${data.warnings}개 있습니다. 그대로 올려도 게시는 됩니다.</div>`
+        : '<div class="pf-summary pass">모두 통과했습니다. 바로 올려도 됩니다.</div>';
+    box.innerHTML = (data.general.length ? `<div class="pf-group">${pfItems(data.general)}</div>` : '') + groups + summary;
+    return data;
+  } finally {
+    btn.disabled = false; btn.textContent = '다시 점검하기';
+  }
+}
+$('#btnPrecheck').onclick = () => runPreflight();
+
 /* ── 게시 ── */
 $('#btnPublish').onclick = async () => {
   const title = $('#title').value.trim();
   if(!title){ flash('err', '제목을 입력하세요.'); return; }
+
+  // 한 번도 점검을 통과하지 않았다면 먼저 점검하고, 막힐 항목이 있으면 게시를 멈춘다.
+  if(!state.pfSkip){
+    const btn = $('#btnPublish');
+    const before = btn.textContent;
+    btn.disabled = true; btn.textContent = '업로드 전 점검 중...';
+    const pf = await runPreflight().catch(() => null);
+    btn.disabled = false;
+    if(pf && pf.errors){
+      state.pfSkip = true;
+      btn.textContent = '점검 결과를 무시하고 그대로 올리기';
+      $('#preflightBox').scrollIntoView({behavior:'smooth', block:'center'});
+      flash('err', `막힐 항목이 ${pf.errors}개 있습니다. 점검 결과를 확인하세요.`);
+      return;
+    }
+    btn.textContent = before;
+  }
+  state.pfSkip = false;
   $('#btnPublish').disabled = true;
   $('#publishErr').innerHTML = '';
   const targets = Object.entries(state.selected)
