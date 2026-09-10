@@ -327,11 +327,18 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
   <div class="wrap">
     <div class="page-head">
       <h1>새 업로드</h1>
-      <p>영상은 서버에 한 번만 저장되고, 선택한 모든 계정으로 동시에 전송됩니다.</p>
+      <p>올릴 채널을 먼저 고르고 영상을 올리세요. 영상은 서버에 한 번만 저장되고, 선택한 모든 계정으로 동시에 전송됩니다.</p>
     </div>
 
     <div class="card">
-      <h2><span class="step">1</span>영상 선택</h2>
+      <h2><span class="step">1</span>올릴 채널 선택</h2>
+      <p class="sub">먼저 어디에 올릴지 고르세요. 자주 쓰는 조합은 <b>세트</b>로 저장해 클릭 한 번에 선택할 수 있습니다.</p>
+      <div class="setbar" id="setBar"></div>
+      <div class="plat-grid" id="platGrid"></div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step">2</span>영상 선택</h2>
       <p class="sub">MP4 / MOV / WebM 파일을 지원합니다. 세로 영상(9:16)이면 쇼츠 · 릴스 · 틱톡에 그대로 최적화됩니다.</p>
       <div class="drop" id="drop">
         <div class="ico">🎬</div>
@@ -358,7 +365,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     </div>
 
     <div class="card">
-      <h2><span class="step">2</span>제목 · 설명 · 해시태그</h2>
+      <h2><span class="step">3</span>제목 · 설명 · 해시태그</h2>
       <p class="sub">한 번만 작성하면 각 플랫폼 형식(글자수 제한, 캡션 규칙)에 맞춰 자동 변환됩니다.</p>
       <label class="f">제목 <span class="counter" id="cTitle">0 / 100</span></label>
       <input type="text" id="title" placeholder="예) 3분만에 끝내는 김치볶음밥">
@@ -368,14 +375,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div class="tags" id="tagBox"><input type="text" id="tagInput" placeholder="예) 요리, 자취요리, shorts"></div>
     </div>
 
-    <div class="card">
-      <h2><span class="step">3</span>올릴 채널 선택</h2>
-      <p class="sub">계정마다 체크해서 고르세요. 자주 쓰는 조합은 <b>세트</b>로 저장해 한 번에 선택할 수 있습니다.</p>
-      <div class="setbar" id="setBar"></div>
-      <div class="plat-grid" id="platGrid"></div>
-      <div id="publishErr"></div>
-      <button class="btn primary lg block" id="btnPublish" style="margin-top:18px" disabled>올릴 채널을 선택하세요</button>
-    </div>
+    <div id="publishErr"></div>
+    <button class="btn primary lg block" id="btnPublish" style="margin-top:4px" disabled>올릴 채널을 먼저 선택하세요</button>
 
     <div id="liveJob"></div>
   </div>
@@ -818,8 +819,9 @@ function refreshPublishButton(){
   const n = totalPicked();
   const btn = $('#btnPublish');
   btn.disabled = !state.media || n === 0;
-  btn.textContent = !state.media ? '먼저 영상을 올려주세요'
-    : n ? `${n}개 채널에 한 번에 올리기` : '올릴 채널을 선택하세요';
+  btn.textContent = !n ? '올릴 채널을 먼저 선택하세요'
+    : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
+    : `${n}개 채널에 한 번에 올리기`;
 }
 
 /* ── 게시 ── */
