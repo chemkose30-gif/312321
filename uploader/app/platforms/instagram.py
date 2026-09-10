@@ -9,7 +9,7 @@ import asyncio
 import httpx
 
 from ..config import GRAPH, PUBLIC_BASE_URL
-from .base import Progress, PublishError, PublishResult, build_caption
+from .base import IG_MAX_HASHTAGS, Progress, PublishError, PublishResult, build_caption
 
 
 def media_url(job: dict) -> str:
@@ -27,7 +27,7 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             ".env의 PUBLIC_BASE_URL을 공개 주소(예: ngrok https 주소)로 설정하세요."
         )
 
-    caption = build_caption(job, limit=2200)
+    caption = build_caption(job, limit=2200, max_tags=IG_MAX_HASHTAGS)
     params = {
         "media_type": "REELS",
         "video_url": video_url,

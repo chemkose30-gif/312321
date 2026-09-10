@@ -108,7 +108,7 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
     token = await _access_token(account)
     headers = {"Authorization": f"Bearer {token}"}
     title = (options.get("title") or job["title"] or job["video_name"])[:100]
-    description = build_caption(job, include_title=False, limit=5000)
+    description = build_caption(job, include_title=False, limit=5000, max_tags=15)
     body = {
         "snippet": {
             "title": title,

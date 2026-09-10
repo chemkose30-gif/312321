@@ -12,7 +12,7 @@ import httpx
 
 from .. import credentials, db
 from ..config import PUBLIC_BASE_URL
-from .base import Progress, PublishError, PublishResult, build_caption
+from .base import IG_MAX_HASHTAGS, Progress, PublishError, PublishResult, build_caption
 
 AUTH_URL = "https://www.instagram.com/oauth/authorize"
 TOKEN_URL = "https://api.instagram.com/oauth/access_token"
@@ -157,7 +157,7 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             params={
                 "media_type": "REELS",
                 "video_url": video_url,
-                "caption": build_caption(job, limit=2200),
+                "caption": build_caption(job, limit=2200, max_tags=IG_MAX_HASHTAGS),
                 "share_to_feed": "true" if options.get("share_to_feed", True) else "false",
                 "access_token": token,
             },

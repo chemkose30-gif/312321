@@ -1,5 +1,6 @@
 """플랫폼 어댑터 공통 타입/헬퍼."""
 import asyncio
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
@@ -53,14 +54,61 @@ async def stream_file(
             await asyncio.sleep(0)
 
 
-def build_caption(job: dict, *, limit: int | None = None, include_title: bool = True) -> str:
-    """설명 + 해시태그를 합쳐 플랫폼 캡션을 만든다."""
+# 인스타그램 캡션당 해시태그 한도 (초과 시 code 36004 로 거부됨)
+IG_MAX_HASHTAGS = 30
+
+HASHTAG_RE = re.compile(r"#[^\s#]+")
+
+
+def count_hashtags(text: str) -> int:
+    return len(HASHTAG_RE.findall(text or ""))
+
+
+def _trim_hashtags(text: str, keep: int) -> str:
+    """텍스트 안의 해시태그를 앞에서부터 keep개만 남기고, 나머지는 '#'만 떼어낸다."""
+    seen = 0
+
+    def sub(m: "re.Match[str]") -> str:
+        nonlocal seen
+        seen += 1
+        return m.group(0) if seen <= keep else m.group(0)[1:]
+
+    return HASHTAG_RE.sub(sub, text or "")
+
+
+def build_caption(
+    job: dict,
+    *,
+    limit: int | None = None,
+    include_title: bool = True,
+    max_tags: int | None = None,
+) -> str:
+    """설명 + 해시태그를 합쳐 플랫폼 캡션을 만든다.
+
+    max_tags를 주면 캡션 전체의 해시태그 개수를 그 값 이하로 맞춘다.
+    (인스타그램은 캡션당 해시태그 30개를 넘으면 게시가 거부된다.)
+    본문에 이미 들어 있는 해시태그를 먼저 세고, 남는 자리만큼만 태그 목록을 붙인다.
+    """
     parts = []
     if include_title and job.get("title"):
         parts.append(job["title"])
     if job.get("description"):
         parts.append(job["description"])
-    tags = " ".join(f"#{t.lstrip('#')}" for t in job.get("hashtags", []) if t.strip())
+
+    tag_list = [f"#{t.lstrip('#')}" for t in job.get("hashtags", []) if t.strip()]
+    if max_tags is not None:
+        used = sum(count_hashtags(p) for p in parts)
+        room = max(max_tags - used, 0)
+        tag_list = tag_list[:room]
+        if used > max_tags:
+            # 본문 자체가 이미 한도를 넘으면 초과분은 '#'을 떼어 일반 단어로 남긴다.
+            budget = max_tags
+            for i, part in enumerate(parts):
+                n = count_hashtags(part)
+                parts[i] = _trim_hashtags(part, min(n, budget))
+                budget = max(budget - n, 0)
+
+    tags = " ".join(tag_list)
     if tags:
         parts.append(tags)
     caption = "\n\n".join(parts).strip()
