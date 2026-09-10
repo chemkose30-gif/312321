@@ -1,3 +1,3 @@
-from . import facebook, instagram, meta, tiktok, youtube  # noqa: F401
+from . import facebook, instagram, instagram_login, meta, tiktok, youtube  # noqa: F401
 
-__all__ = ["youtube", "tiktok", "instagram", "facebook", "meta"]
+__all__ = ["youtube", "tiktok", "instagram", "instagram_login", "facebook", "meta"]

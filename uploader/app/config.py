@@ -132,7 +132,14 @@ DEMO_MODE = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes")
 
 def demo_platform(key: str) -> bool:
     """해당 플랫폼을 데모(모의 업로드)로 처리해야 하는지."""
-    return DEMO_MODE or not PLATFORMS[key].configured
+    if DEMO_MODE:
+        return True
+    if key == "instagram":
+        from .platforms import instagram_login
+
+        if instagram_login.enabled():
+            return not instagram_login.configured()
+    return not PLATFORMS[key].configured
 
 
 _fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(APP_SECRET.encode()).digest()))

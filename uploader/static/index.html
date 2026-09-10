@@ -872,6 +872,18 @@ function renderAccountPanels(){
         </div>
       </div>
       <div class="addbox hidden" data-keybox="${p.key}" style="flex-direction:column;align-items:stretch;gap:9px">
+        ${p.key === 'instagram' ? `<div class="field" style="margin-bottom:4px">
+            <label class="f" style="margin-top:0">연결 방식</label>
+            <select data-mode="instagram">
+              <option value="facebook" ${p.auth_mode !== 'instagram' ? 'selected' : ''}>페이스북 페이지 경유 (페이지 필요)</option>
+              <option value="instagram" ${p.auth_mode === 'instagram' ? 'selected' : ''}>인스타그램 직접 로그인 (페이지 불필요)</option>
+            </select>
+            <div class="small muted" style="margin-top:6px">
+              직접 로그인은 <b>Instagram 앱 ID / 시크릿</b>을 넣습니다 —
+              메타 콘솔의 <span class="mono">이용 사례 → Instagram API → Instagram 로그인이 포함된 API</span> 화면에 있는 값입니다.<br>
+              저장하면 아래 리디렉션 URI가 방식에 맞게 바뀌니, 그 주소를 콘솔에 등록하세요.
+            </div>
+          </div>` : ''}
         <div class="small muted">${esc(KEY_HINT[p.key] || '')}</div>
         <input type="text" data-cid="${p.key}" placeholder="클라이언트 ID / 앱 ID">
         <input type="password" data-csec="${p.key}" placeholder="클라이언트 보안 비밀번호 / 앱 시크릿">
@@ -932,9 +944,14 @@ function renderAccountPanels(){
     const client_id = document.querySelector(`[data-cid="${platform}"]`).value;
     const client_secret = document.querySelector(`[data-csec="${platform}"]`).value;
     const scopeInput = document.querySelector(`[data-scopes="${platform}"]`);
+    const modeInput = document.querySelector(`[data-mode="${platform}"]`);
     const res = await fetch('/api/platform-keys', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({platform, client_id, client_secret, scopes: scopeInput ? scopeInput.value : ''}),
+      body: JSON.stringify({
+        platform, client_id, client_secret,
+        scopes: scopeInput ? scopeInput.value : '',
+        auth_mode: modeInput ? modeInput.value : '',
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if(!res.ok){ flash('err', data.detail || 'API 키를 저장하지 못했습니다.'); return; }

@@ -6,13 +6,20 @@ from pathlib import Path
 
 from . import db
 from .config import UPLOAD_DIR, demo_platform
-from .platforms import facebook, instagram, tiktok, youtube
+from .platforms import facebook, instagram, instagram_login, tiktok, youtube
 from .platforms.base import Progress, PublishError, PublishResult
+
+async def _publish_instagram(account, job, options, progress):
+    """계정이 어떤 방식으로 연결됐는지에 따라 게시 경로를 고른다."""
+    if (account.get("meta") or {}).get("auth") == "instagram_login":
+        return await instagram_login.publish(account, job, options, progress)
+    return await instagram.publish(account, job, options, progress)
+
 
 PUBLISHERS = {
     "youtube": youtube.publish,
     "tiktok": tiktok.publish,
-    "instagram": instagram.publish,
+    "instagram": _publish_instagram,
     "facebook": facebook.publish,
 }
 

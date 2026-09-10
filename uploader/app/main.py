@@ -35,7 +35,7 @@ from .config import (
     UPLOAD_DIR,
     demo_platform,
 )
-from .platforms import meta, tiktok, youtube
+from .platforms import instagram_login, meta, tiktok, youtube
 from .platforms.base import PublishError
 
 STATIC_DIR = BASE_DIR / "static"
@@ -73,7 +73,19 @@ PROVIDERS = {
     "youtube": (youtube.auth_url, youtube.exchange_code),
     "tiktok": (tiktok.auth_url, tiktok.exchange_code),
     "meta": (meta.auth_url, meta.exchange_code),
+    "instagram_login": (instagram_login.auth_url, instagram_login.exchange_code),
 }
+
+
+def provider_for(platform: str) -> str:
+    """인스타는 두 가지 연결 방식 중 설정된 쪽을 쓴다."""
+    if platform == "instagram" and instagram_login.enabled():
+        return "instagram_login"
+    return PLATFORMS[platform].provider
+
+
+def redirect_uri_for(platform: str) -> str:
+    return f"{PUBLIC_BASE_URL}/api/oauth/{provider_for(platform)}/callback"
 
 
 # ── 로그인 ───────────────────────────────────────────────────
@@ -291,7 +303,11 @@ async def get_platforms() -> dict:
             "label": cfg.label,
             "color": cfg.color,
             "provider": cfg.provider,
-            "configured": cfg.configured,
+            "configured": (
+                instagram_login.configured() if key == "instagram" and instagram_login.enabled()
+                else cfg.configured
+            ),
+            "auth_mode": "instagram" if key == "instagram" and instagram_login.enabled() else "facebook",
             "env_keys": ENV_KEYS[key],
             # 값은 절대 내보내지 않고, 서버가 그 이름의 값을 실제로 받았는지만 알려준다
             "env_status": {name: bool(os.getenv(name, "").strip()) for name in ENV_KEYS[key]},
@@ -302,7 +318,7 @@ async def get_platforms() -> dict:
                 else None
             ),
             "demo": demo_platform(key),
-            "redirect_uri": cfg.redirect_uri,
+            "redirect_uri": redirect_uri_for(key),
             "accounts": [a for a in accounts if a["platform"] == key],
         })
     return {
@@ -318,17 +334,21 @@ async def oauth_start(platform: str):
         raise HTTPException(404, "알 수 없는 플랫폼")
     cfg = PLATFORMS[platform]
 
-    if demo_platform(platform):
+    if platform == "instagram" and instagram_login.enabled():
+        if not instagram_login.configured():
+            raise HTTPException(400, "Instagram 앱 ID와 시크릿을 먼저 입력하세요.")
+    elif demo_platform(platform):
         _create_demo_accounts(platform)
         return RedirectResponse(f"/?connected={platform}&demo=1", status_code=303)
 
+    provider = provider_for(platform)
     state = secrets.token_urlsafe(24)
-    db.save_state(state, cfg.provider)  # 예비 확인용
-    response = RedirectResponse(PROVIDERS[cfg.provider][0](state), status_code=303)
+    db.save_state(state, provider)  # 예비 확인용
+    response = RedirectResponse(PROVIDERS[provider][0](state), status_code=303)
     # 서명 쿠키에도 담아둔다 — 서버가 재시작되거나 데이터가 초기화돼도 연결이 이어지도록.
     response.set_cookie(
         OAUTH_STATE_COOKIE,
-        auth.sign_state(cfg.provider, state),
+        auth.sign_state(provider, state),
         httponly=True,
         samesite="lax",
         secure=PUBLIC_BASE_URL.startswith("https://"),
@@ -447,7 +467,8 @@ class PlatformKeys(BaseModel):
     platform: str
     client_id: str = ""
     client_secret: str = ""
-    scopes: str = ""  # 틱톡 전용 — 승인된 권한만 요청하고 싶을 때
+    scopes: str = ""      # 틱톡·메타 — 승인된 권한만 요청하고 싶을 때
+    auth_mode: str = ""   # 인스타 — "facebook"(기본) 또는 "instagram"(직접 로그인)
 
 
 @app.post("/api/platform-keys")
@@ -458,6 +479,14 @@ async def save_platform_keys(payload: PlatformKeys) -> dict:
     client_id, client_secret = payload.client_id.strip(), payload.client_secret.strip()
     if not client_id or not client_secret:
         raise HTTPException(400, "두 값을 모두 입력하세요.")
+    # 인스타 직접 로그인 방식은 별도의 Instagram 앱 자격증명을 쓴다
+    if payload.platform == "instagram" and payload.auth_mode == "instagram":
+        credentials.save(instagram_login.CRED_KEY, client_id, client_secret)
+        db.set_setting(instagram_login.MODE_KEY, "instagram")
+        return {"ok": True}
+    if payload.platform == "instagram":
+        db.set_setting(instagram_login.MODE_KEY, "facebook")
+
     credentials.save(payload.platform, client_id, client_secret)
     if payload.platform == "tiktok":
         db.set_setting("tiktok_scopes", payload.scopes.strip())
