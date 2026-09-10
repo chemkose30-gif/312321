@@ -78,6 +78,14 @@ async def exchange_code(code: str) -> list[str]:
         else:
             expires_at = time.time() + 3600
 
+        # 진단용: 어떤 계정으로 로그인했고 어떤 권한이 실제로 허용됐는지
+        me = await client.get(f"{GRAPH}/me", params={"fields": "name,id", "access_token": user_token})
+        who = me.json() if me.status_code < 400 else {}
+        perms = await client.get(f"{GRAPH}/me/permissions", params={"access_token": user_token})
+        perm_rows = (perms.json().get("data") or []) if perms.status_code < 400 else []
+        granted = [r["permission"] for r in perm_rows if r.get("status") == "granted"]
+        declined = [r["permission"] for r in perm_rows if r.get("status") != "granted"]
+
         pages = await client.get(
             f"{GRAPH}/me/accounts",
             params={
@@ -91,10 +99,13 @@ async def exchange_code(code: str) -> list[str]:
 
     if not items:
         raise PublishError(
-            "가져올 수 있는 Facebook 페이지가 없습니다. 로그인 화면의 "
-            "'이 앱이 액세스할 수 있는 페이지 선택' 단계에서 페이지를 체크했는지 확인하세요. "
-            "이미 동의한 상태라면 페이스북 설정 > 비즈니스 통합에서 이 앱을 삭제한 뒤 "
-            "다시 '로그인으로 연결'을 눌러주세요."
+            "가져올 수 있는 Facebook 페이지가 없습니다. "
+            f"[로그인한 계정: {who.get('name') or '알 수 없음'}] "
+            f"[허용된 권한: {', '.join(granted) or '없음'}] "
+            f"[거부된 권한: {', '.join(declined) or '없음'}] — "
+            "허용된 권한에 pages_show_list 가 없으면 로그인 화면에서 페이지 접근을 허용하지 않은 것이고, "
+            "권한은 있는데 목록이 비어 있으면 그 계정이 페이지 관리자가 아니거나 "
+            "'이 앱이 액세스할 수 있는 페이지 선택'에서 페이지를 고르지 않은 것입니다."
         )
 
     account_ids: list[str] = []
