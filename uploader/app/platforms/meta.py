@@ -16,6 +16,8 @@ DEFAULT_SCOPES = [
     "pages_manage_posts",
     "instagram_basic",
     "instagram_content_publish",
+    # 비즈니스 포트폴리오가 소유한 페이지를 찾으려면 필요하다
+    "business_management",
 ]
 
 
@@ -42,6 +44,39 @@ def auth_url(state: str) -> str:
         "auth_type": "rerequest",
     }
     return f"https://www.facebook.com/{META_API_VERSION}/dialog/oauth?{urlencode(params)}"
+
+
+PAGE_FIELDS = "id,name,access_token,picture{url},instagram_business_account{id,username,profile_picture_url}"
+
+
+async def _owned_pages(user_token: str) -> list[dict]:
+    """비즈니스 포트폴리오가 소유한 페이지 목록(개인 역할로는 안 잡히는 경우)."""
+    pages: list[dict] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        businesses = await client.get(
+            f"{GRAPH}/me/businesses", params={"fields": "id,name", "access_token": user_token}
+        )
+        if businesses.status_code >= 400:
+            return pages
+        for business in businesses.json().get("data") or []:
+            owned = await client.get(
+                f"{GRAPH}/{business['id']}/owned_pages",
+                params={"fields": PAGE_FIELDS, "access_token": user_token},
+            )
+            if owned.status_code >= 400:
+                continue
+            for page in owned.json().get("data") or []:
+                if not page.get("access_token"):
+                    # 포트폴리오 조회에는 페이지 토큰이 빠져 있어 따로 가져온다
+                    detail = await client.get(
+                        f"{GRAPH}/{page['id']}",
+                        params={"fields": "access_token", "access_token": user_token},
+                    )
+                    if detail.status_code < 400:
+                        page["access_token"] = (detail.json() or {}).get("access_token")
+                if page.get("access_token"):
+                    pages.append(page)
+    return pages
 
 
 async def exchange_code(code: str) -> list[str]:
@@ -96,6 +131,10 @@ async def exchange_code(code: str) -> list[str]:
         if pages.status_code >= 400:
             raise PublishError(f"Facebook 페이지 조회 실패: {pages.text}")
         items = pages.json().get("data") or []
+
+    # 비즈니스 포트폴리오가 소유한 페이지는 /me/accounts 에 안 나오는 경우가 있다.
+    if not items:
+        items = await _owned_pages(user_token)
 
     if not items:
         raise PublishError(
