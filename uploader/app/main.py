@@ -106,8 +106,9 @@ def verification_content(path: str) -> str | None:
 PUBLIC_PREFIXES = ("/media/", "/static/")
 PUBLIC_PATHS = {
     "/api/login", "/api/setup-state", "/healthz", "/favicon.ico",
-    # 플랫폼 콘솔이 요구하는 문서 — 로그인 없이 열려야 한다
+    # 플랫폼 콘솔이 요구하는 문서·콜백 — 로그인 없이 열려야 한다
     "/privacy", "/terms",
+    "/api/meta/deauthorize", "/api/meta/data-deletion",
 }
 
 SECURITY_HEADERS = {
@@ -344,6 +345,22 @@ async def terms_page() -> HTMLResponse:
     return HTMLResponse(
         POLICY_PAGE.format(title="서비스 이용약관", body=TERMS_BODY.format(base=PUBLIC_BASE_URL))
     )
+
+
+@app.post("/api/meta/deauthorize")
+async def meta_deauthorize() -> dict:
+    """메타가 '앱 연결 해제' 를 알릴 때 호출하는 주소.
+
+    콘솔 설정에 URL 이 필요해서 열어둔다. 실제 토큰 정리는 사용자가
+    계정 관리에서 연결을 끊을 때 이뤄진다.
+    """
+    return {"ok": True}
+
+
+@app.post("/api/meta/data-deletion")
+async def meta_data_deletion() -> dict:
+    """메타의 데이터 삭제 요청 콜백. 처리 상태를 확인할 수 있는 주소를 돌려준다."""
+    return {"url": f"{PUBLIC_BASE_URL}/privacy", "confirmation_code": secrets.token_hex(8)}
 
 
 @app.get("/healthz")
