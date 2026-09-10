@@ -432,6 +432,17 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <datalist id="catList"></datalist>
     <div id="accPanels"></div>
 
+    <div class="card" id="speedCard">
+      <h2>속도 진단</h2>
+      <p class="sub">어디가 느린지 실제로 재봅니다. 내 인터넷 → 서버 구간, 서버 디스크·CPU, 각 플랫폼까지의 응답 시간을
+        한 번에 확인합니다. (테스트로 32MB를 전송하므로 잠시 걸립니다)</p>
+      <div class="row">
+        <button class="btn primary" id="btnSpeed">진단 시작</button>
+        <span class="hint mono" id="buildInfo"></span>
+      </div>
+      <div id="speedBox"></div>
+    </div>
+
     <div class="card" id="securityCard">
       <h2>비밀번호 잠금</h2>
       <p class="sub">이 앱은 로그인해야만 들어올 수 있습니다. 비밀번호는 해싱해서 저장되고,
@@ -546,6 +557,7 @@ async function loadPlatforms(){
   renderSetBar();
   renderSets();
   renderHome();
+  loadVersion();
 }
 
 async function loadSets(){
@@ -876,6 +888,67 @@ function refreshPublishButton(){
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
     : `${n}개 채널에 한 번에 올리기`;
 }
+
+/* ── 속도 진단 ── */
+async function loadVersion(){
+  try{
+    const v = await fetch('/api/version').then(r => r.json());
+    const el = $('#buildInfo');
+    if(el) el.textContent = `서버 버전 ${v.version} · ${v.commit} · 가동 ${Math.floor(v.uptime_sec/60)}분`;
+  }catch(_){}
+}
+
+function speedRow(label, value, note){
+  return `<div class="meta-row"><span>${esc(label)}</span>
+    <span><b>${esc(value)}</b>${note ? ` <span class="small muted">${esc(note)}</span>` : ''}</span></div>`;
+}
+
+$('#btnSpeed').onclick = async () => {
+  const btn = $('#btnSpeed'), box = $('#speedBox');
+  btn.disabled = true; btn.textContent = '측정 중...';
+  box.innerHTML = '<div class="small muted" style="margin-top:12px">서버로 32MB를 보내는 중입니다...</div>';
+  try{
+    // 1) 브라우저 → 서버 업로드 속도
+    const bytes = 32 * 1024 * 1024;
+    const blob = new Blob([new Uint8Array(bytes)]);
+    const t0 = performance.now();
+    const up = await fetch('/api/speedtest/upload', {
+      method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: blob,
+    }).then(r => r.json());
+    const upSec = (performance.now() - t0) / 1000;
+    const upMbps = bytes * 8 / upSec / 1e6;
+
+    box.innerHTML = '<div class="small muted" style="margin-top:12px">서버 상태를 확인하는 중입니다...</div>';
+    const srv = await fetch('/api/speedtest/server').then(r => r.json());
+
+    const est = size => size / (upMbps * 1e6 / 8);
+    const mins = sec => sec >= 60 ? `${Math.round(sec/60)}분` : `${Math.round(sec)}초`;
+    const slowUp = upMbps < 20;
+    const slowDisk = srv.disk_write_mbs !== null && srv.disk_write_mbs < 40;
+    const slowCpu = srv.cpu_sec > 1.2;
+
+    box.innerHTML = `<div class="meta-list" style="margin-top:14px">
+      ${speedRow('내 인터넷 → 서버', `${upMbps.toFixed(1)} Mbps`,
+        `820MB 올리는 데 약 ${mins(est(820*1024*1024))}`)}
+      ${speedRow('서버 디스크 쓰기', srv.disk_write_mbs === null ? '측정 실패' : `${srv.disk_write_mbs} MB/s`)}
+      ${speedRow('서버 CPU', `${srv.cpu_sec}초`, '낮을수록 빠름 (0.5초 이하면 넉넉함)')}
+      ${speedRow('디스크 여유', `${srv.disk_free_gb} GB / ${srv.disk_total_gb} GB`,
+        `업로드 보관 ${srv.uploads_gb} GB`)}
+      ${speedRow('메타(인스타·페북) 응답', srv.endpoints.meta === null ? '실패' : `${srv.endpoints.meta} ms`)}
+      ${speedRow('구글(유튜브) 응답', srv.endpoints.google === null ? '실패' : `${srv.endpoints.google} ms`)}
+      ${speedRow('서버 버전', srv.commit)}
+    </div>
+    ${slowUp ? `<div class="warn">내 인터넷에서 서버로 보내는 속도가 ${upMbps.toFixed(1)} Mbps 로 느립니다.
+      영상 업로드가 오래 걸리는 주된 원인입니다. 유선 연결이나 다른 네트워크로 시도해 보세요.</div>` : ''}
+    ${slowDisk ? '<div class="warn">서버 디스크 쓰기가 느립니다. 인스턴스 등급을 올리면 개선됩니다.</div>' : ''}
+    ${slowCpu ? '<div class="warn">서버 CPU가 부족합니다. Render 인스턴스를 Standard 이상으로 올리면 개선됩니다.</div>' : ''}
+    ${(!slowUp && !slowDisk && !slowCpu) ? '<div class="pf-summary pass">눈에 띄는 병목이 없습니다.</div>' : ''}`;
+  }catch(err){
+    box.innerHTML = `<div class="pf-summary fail">측정하지 못했습니다: ${esc(String(err))}</div>`;
+  }finally{
+    btn.disabled = false; btn.textContent = '다시 진단';
+  }
+};
 
 /* ── 업로드 전 점검 ── */
 const PF_MARK = {error:'✕', warn:'!', ok:'✓'};

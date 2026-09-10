@@ -7,8 +7,10 @@ import os
 import re
 import secrets
 import shutil
+import time
 from pathlib import Path
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
 from urllib.parse import unquote, urlparse
 
@@ -363,9 +365,92 @@ async def meta_data_deletion() -> dict:
     return {"url": f"{PUBLIC_BASE_URL}/privacy", "confirmation_code": secrets.token_hex(8)}
 
 
+# 지금 서버에서 돌고 있는 코드가 어느 버전인지.
+# APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
+APP_VERSION = "2026-09-10-속도진단"
+BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
+BUILD_STARTED = time.time()
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
-    return {"ok": True}
+    return {"ok": True, "version": APP_VERSION, "commit": BUILD_COMMIT or "unknown"}
+
+
+@app.get("/api/version")
+async def version() -> dict:
+    return {
+        "version": APP_VERSION,
+        "commit": BUILD_COMMIT or "-",
+        "started_at": BUILD_STARTED,
+        "uptime_sec": int(time.time() - BUILD_STARTED),
+    }
+
+
+@app.post("/api/speedtest/upload")
+async def speedtest_upload(request: Request) -> dict:
+    """받은 바이트를 버린다. 브라우저 → 서버 실제 속도를 재기 위한 것."""
+    started = time.perf_counter()
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > 200 * 1024 * 1024:
+            break
+    elapsed = max(time.perf_counter() - started, 1e-6)
+    return {"bytes": received, "seconds": round(elapsed, 3),
+            "mbps": round(received * 8 / elapsed / 1e6, 1)}
+
+
+@app.get("/api/speedtest/server")
+async def speedtest_server() -> dict:
+    """서버 자체 성능 — 디스크 쓰기 속도, CPU, 외부 응답 시간."""
+    result: dict = {}
+
+    # 1) 디스크 쓰기 (영상이 저장되는 그 디스크)
+    probe = Path(UPLOAD_DIR) / f"._speedtest_{secrets.token_hex(6)}"
+    block = b"\0" * (1024 * 1024)
+    try:
+        started = time.perf_counter()
+        with probe.open("wb") as fh:
+            for _ in range(64):
+                fh.write(block)
+            fh.flush()
+            os.fsync(fh.fileno())
+        elapsed = max(time.perf_counter() - started, 1e-6)
+        result["disk_write_mbs"] = round(64 / elapsed, 1)
+    except OSError as exc:
+        result["disk_write_mbs"] = None
+        result["disk_error"] = str(exc)
+    finally:
+        probe.unlink(missing_ok=True)
+
+    # 2) CPU — 같은 일을 하는 데 걸리는 시간 (낮을수록 빠름)
+    started = time.perf_counter()
+    total = 0
+    for i in range(2_000_000):
+        total += i * i
+    result["cpu_sec"] = round(time.perf_counter() - started, 3)
+
+    # 3) 외부 왕복 시간
+    result["endpoints"] = {}
+    async with httpx.AsyncClient(timeout=10) as client:
+        for name, url in (
+            ("meta", "https://graph.facebook.com/v21.0/"),
+            ("google", "https://www.googleapis.com/discovery/v1/apis?name=youtube"),
+        ):
+            started = time.perf_counter()
+            try:
+                await client.get(url)
+                result["endpoints"][name] = round((time.perf_counter() - started) * 1000)
+            except httpx.HTTPError:
+                result["endpoints"][name] = None
+
+    disk = jobs.disk_usage()
+    result["disk_free_gb"] = round(disk["free"] / 1024**3, 1)
+    result["disk_total_gb"] = round(disk["total"] / 1024**3, 1)
+    result["uploads_gb"] = round(disk["uploads"] / 1024**3, 2)
+    result["commit"] = f"{APP_VERSION} ({BUILD_COMMIT or '-'})"
+    return result
 
 
 # ── 정적 파일 ────────────────────────────────────────────────
