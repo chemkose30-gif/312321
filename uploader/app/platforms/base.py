@@ -298,6 +298,9 @@ async def ig_create_container(
     from .. import db
 
     if (db.get_setting(IG_MODE_KEY) or "") != "pull":
+        # 1단계: 세션만 먼저 열어 본다. 여기서 실패해야 pull 로 돌아갈 수 있다.
+        #        (영상 전송을 시작한 뒤에 폴백하면 같은 파일을 두 번 보내게 된다.)
+        container_id = None
         unsupported = False   # 계정/앱이 이 방식을 아예 안 받는 경우에만 기억한다
         try:
             await progress(6, "Instagram 업로드 세션 생성 중")
@@ -306,15 +309,16 @@ async def ig_create_container(
                 params={**params, "upload_type": "resumable", "access_token": token},
             )
             container_id = (res.json() or {}).get("id") if res.status_code < 400 else None
-            if container_id:
-                await ig_resumable_upload(client, api_version, container_id, token, job, progress)
-                db.set_setting(IG_MODE_KEY, "resumable")
-                return container_id
-            unsupported = 400 <= res.status_code < 500
-        except (PublishError, ValueError, KeyError):
-            pass
+            unsupported = not container_id and 400 <= res.status_code < 500
         except Exception:  # 네트워크 오류 — 이번만 기존 방식으로 넘어간다
             pass
+
+        if container_id:
+            # 2단계: 전송 시작. 여기서 실패하면 그대로 알린다 (재전송하지 않는다).
+            await ig_resumable_upload(client, api_version, container_id, token, job, progress)
+            db.set_setting(IG_MODE_KEY, "resumable")
+            return container_id
+
         if unsupported:
             db.set_setting(IG_MODE_KEY, "pull")
         await progress(8, "직접 전송이 안 돼 기존 방식으로 전환합니다")
