@@ -350,7 +350,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 
     <div class="card">
       <h2><span class="step">2</span>영상 선택</h2>
-      <p class="sub">MP4 / MOV / WebM 파일을 지원합니다. 세로 영상(9:16)이면 쇼츠 · 릴스 · 틱톡에 그대로 최적화됩니다.</p>
+      <p class="sub">MP4 / MOV / WebM 파일을 지원합니다. 세로 영상(9:16)이면 쇼츠 · 릴스 · 틱톡에 그대로 최적화됩니다.
+        <b>업로드한 원본을 재압축 없이 각 플랫폼에 그대로 전달합니다.</b> 화질은 원본이 좋을수록 좋습니다.</p>
       <div class="drop" id="drop">
         <div class="ico">🎬</div>
         <b>여기로 영상을 끌어다 놓거나 클릭해서 선택</b>
@@ -364,6 +365,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
           <div class="meta-row"><span>크기</span><span id="mSize"></span></div>
           <div class="meta-row"><span>길이 / 해상도</span><span id="mDim">-</span></div>
           <div class="meta-row"><span>비율</span><span id="mRatio">-</span></div>
+          <div class="meta-row"><span>비트레이트</span><span id="mBitrate">-</span></div>
           <div class="bar"><i id="upBar"></i></div>
           <div class="small muted" id="upMsg" style="margin-top:7px"></div>
           <div class="row" style="margin-top:12px">
@@ -656,13 +658,18 @@ function uploadFile(file){
   $('#mediaBox').classList.remove('hidden');
   $('#mName').textContent = file.name;
   $('#mSize').textContent = fmtSize(file.size);
-  $('#mDim').textContent = '-'; $('#mRatio').textContent = '-';
+  $('#mDim').textContent = '-'; $('#mRatio').textContent = '-'; $('#mBitrate').textContent = '-';
   const video = $('#preview');
   video.src = URL.createObjectURL(file);
   video.onloadedmetadata = () => {
     const w = video.videoWidth, h = video.videoHeight, sec = Math.round(video.duration);
     state.width = w; state.height = h;
     $('#mDim').textContent = `${Math.floor(sec/60)}분 ${sec%60}초 · ${w}×${h}`;
+    if(sec && state.media){
+      const mbps = (state.media.size * 8) / sec / 1e6;
+      const q = mbps >= 15 ? '매우 높음' : mbps >= 8 ? '높음' : mbps >= 4 ? '보통' : '낮음';
+      $('#mBitrate').textContent = `약 ${mbps.toFixed(1)} Mbps · 화질 ${q}`;
+    }
     state.duration = sec; state.vertical = h > w;
     $('#mRatio').textContent = state.vertical ? '세로 (쇼츠/릴스 최적)' : '가로 (일반 영상)';
     renderPlatforms();
@@ -815,7 +822,7 @@ function optionsHtml(p){
   if(p.key === 'tiktok' && state.duration > 600) warn.push('계정 등급에 따라 10분이 넘는 영상은 거부될 수 있습니다.');
   if(p.key === 'instagram' && state.duration && !state.vertical) warn.push('릴스는 9:16 세로 영상을 권장합니다. 가로 영상은 잘려 보일 수 있습니다.');
   if(p.key === 'instagram' && state.media && state.media.size > 300*1024*1024)
-    warn.push(`영상이 ${Math.round(state.media.size/1024/1024)}MB입니다. 인스타그램이 이 서버에서 영상을 내려받아 인코딩하기 때문에, 파일이 크면 처리 시간 초과로 실패할 수 있습니다. 300MB 이하로 압축을 권합니다.`);
+    warn.push(`영상이 ${Math.round(state.media.size/1024/1024)}MB입니다. 인스타그램이 원본을 내려받아 인코딩하므로 게시까지 수십 분 걸릴 수 있습니다. 원본 화질 그대로 올라가고, 창을 닫아도 서버에서 계속 진행됩니다.`);
   if(p.key === 'instagram' && !p.demo && /^https?:\/\/(localhost|127\.)/.test(state.publicBase))
     warn.push('Instagram은 외부에서 접근 가능한 영상 URL이 필요합니다. .env의 PUBLIC_BASE_URL을 공개 주소로 바꾸세요.');
   if(chosen.length > 1) warn.push(`선택한 ${chosen.length}개 계정에 아래 설정이 동일하게 적용됩니다.`);

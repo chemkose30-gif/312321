@@ -123,6 +123,15 @@ def build_caption(
 IG_PROCESS_BUDGET_SEC = 20 * 60
 
 
+IG_PROCESS_BUDGET_MAX_SEC = 45 * 60
+
+
+def ig_process_budget(size_bytes: int) -> int:
+    """파일이 클수록 인스타가 내려받는 시간도 길어지므로 대기 시간을 늘려 잡는다."""
+    mb = (size_bytes or 0) / 1024 / 1024
+    return int(min(max(IG_PROCESS_BUDGET_SEC, mb * 3), IG_PROCESS_BUDGET_MAX_SEC))
+
+
 def _size_hint(size_bytes: int) -> str:
     if not size_bytes:
         return ""
@@ -130,8 +139,8 @@ def _size_hint(size_bytes: int) -> str:
     if mb < 300:
         return ""
     return (
-        f" 영상이 {mb:.0f}MB로 커서 인스타그램이 내려받는 데 오래 걸립니다. "
-        "300MB 이하로 압축해서 다시 올려보세요."
+        f" 영상이 {mb:.0f}MB라 인스타그램이 내려받는 데 시간이 오래 걸립니다. "
+        "잠시 뒤 다시 시도하면 대개 성공합니다."
     )
 
 
@@ -143,9 +152,11 @@ async def wait_for_ig_container(
     progress: Progress,
     *,
     size_bytes: int = 0,
-    budget_sec: int = IG_PROCESS_BUDGET_SEC,
+    budget_sec: int | None = None,
 ) -> None:
     """컨테이너가 FINISHED 가 될 때까지 기다린다. 실패하면 PublishError."""
+    if budget_sec is None:
+        budget_sec = ig_process_budget(size_bytes)
     started = time.monotonic()
     last_code = None
     delay = 5
@@ -155,8 +166,7 @@ async def wait_for_ig_container(
             raise PublishError(
                 f"Instagram이 {int(budget_sec) // 60}분 안에 영상 처리를 끝내지 못했습니다"
                 f"(마지막 상태: {last_code or '응답 없음'})."
-                + (_size_hint(size_bytes) or
-                   " 잠시 후 다시 시도하거나, 영상을 더 작게 압축해 보세요.")
+                + (_size_hint(size_bytes) or " 잠시 후 다시 시도해 보세요.")
             )
         await asyncio.sleep(delay)
         # 처음에는 자주, 이후에는 뜸하게 확인한다.

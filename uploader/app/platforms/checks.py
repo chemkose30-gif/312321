@@ -3,7 +3,7 @@ import httpx
 
 from ..config import GRAPH, PUBLIC_BASE_URL
 from . import instagram_login
-from .base import IG_MAX_HASHTAGS, build_caption, count_hashtags
+from .base import IG_MAX_HASHTAGS, build_caption, count_hashtags, ig_process_budget
 
 Issue = dict  # {"level": "error"|"warn"|"ok", "text": str}
 
@@ -191,8 +191,9 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
     size_mb = (job.get("video_size") or 0) / 1024 / 1024
     if size_mb >= 300:
         out.append(warn(
-            f"영상이 {size_mb:.0f}MB입니다. 인스타그램이 이 서버에서 영상을 내려받아 인코딩하는데, "
-            "파일이 크면 처리 시간이 초과돼 실패할 수 있습니다. 300MB 이하로 압축하는 것을 권합니다."
+            f"영상이 {size_mb:.0f}MB입니다. 인스타그램이 이 서버에서 원본을 내려받아 인코딩하므로 "
+            f"게시까지 최대 {ig_process_budget(job.get('video_size') or 0) // 60}분까지 걸릴 수 있습니다. "
+            "원본 화질 그대로 올라가며, 화면을 닫아도 서버에서 계속 진행됩니다."
         ))
 
     duration = job.get("duration") or 0
