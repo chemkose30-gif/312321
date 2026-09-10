@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from fastapi.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
@@ -103,7 +104,11 @@ def verification_content(path: str) -> str | None:
         return None
     return db.get_setting(f"verify:{name}")
 PUBLIC_PREFIXES = ("/media/", "/static/")
-PUBLIC_PATHS = {"/api/login", "/api/setup-state", "/healthz", "/favicon.ico"}
+PUBLIC_PATHS = {
+    "/api/login", "/api/setup-state", "/healthz", "/favicon.ico",
+    # 플랫폼 콘솔이 요구하는 문서 — 로그인 없이 열려야 한다
+    "/privacy", "/terms",
+}
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -269,6 +274,76 @@ async def logout() -> JSONResponse:
     response = JSONResponse({"ok": True})
     response.delete_cookie(auth.COOKIE, path="/")
     return response
+
+
+POLICY_PAGE = """<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
+<style>body{{max-width:720px;margin:0 auto;padding:40px 20px;font-family:'Pretendard','Apple SD Gothic Neo',
+-apple-system,sans-serif;line-height:1.8;color:#1a1a1a}}h1{{font-size:24px;margin-bottom:8px}}
+h2{{font-size:16px;margin:28px 0 8px}}p,li{{font-size:14.5px;color:#333}}
+.meta{{color:#777;font-size:13px;margin-bottom:28px}}a{{color:#1877f2}}</style></head><body>{body}</body></html>"""
+
+PRIVACY_BODY = """
+<h1>개인정보처리방침</h1>
+<p class="meta">최종 수정: 2026년 · 서비스 주소: {base}</p>
+<p>이 서비스(이하 "앱")는 운영자 본인이 자신의 소셜 미디어 계정에 영상을 게시하기 위해
+직접 설치·운영하는 도구입니다. 앱은 운영자의 서버에서만 동작하며, 제3자에게 데이터를 판매하거나
+광고 목적으로 제공하지 않습니다.</p>
+<h2>수집하는 정보</h2>
+<ul>
+<li>연결한 플랫폼 계정의 식별자, 표시 이름, 프로필 사진 주소</li>
+<li>게시 권한을 위한 액세스 토큰 (암호화하여 저장)</li>
+<li>업로드한 영상 파일과 제목·설명·해시태그 등 게시 내용</li>
+<li>게시 결과 기록(성공/실패, 게시물 링크)</li>
+</ul>
+<h2>이용 목적</h2>
+<p>수집한 정보는 오직 <b>운영자가 지정한 계정에 영상을 게시</b>하고 그 결과를 보여주기 위해서만 사용합니다.</p>
+<h2>보관과 삭제</h2>
+<ul>
+<li>업로드한 영상 원본은 7일이 지나면 자동 삭제됩니다.</li>
+<li>계정 연결 정보는 앱의 <b>계정 관리</b>에서 연결을 끊으면 즉시 삭제됩니다.</li>
+<li>각 플랫폼에서도 앱 권한을 직접 해제할 수 있습니다.</li>
+</ul>
+<h2>제3자 제공</h2>
+<p>정보를 제3자에게 제공하지 않습니다. 다만 게시를 위해 사용자가 선택한 플랫폼
+(YouTube, TikTok, Instagram, Facebook)의 공식 API로 영상과 게시 내용이 전송됩니다.</p>
+<h2>문의</h2>
+<p>이 앱의 운영자에게 문의하세요.</p>
+<p><a href="/terms">서비스 이용약관 보기</a></p>
+"""
+
+TERMS_BODY = """
+<h1>서비스 이용약관</h1>
+<p class="meta">최종 수정: 2026년 · 서비스 주소: {base}</p>
+<h2>1. 서비스 소개</h2>
+<p>이 앱은 하나의 영상을 여러 소셜 미디어 계정에 동시에 게시하도록 돕는 개인용 도구입니다.</p>
+<h2>2. 이용 조건</h2>
+<ul>
+<li>이용자는 자신이 권한을 가진 계정만 연결해야 합니다.</li>
+<li>이용자는 게시하는 콘텐츠에 대한 권리를 보유해야 하며, 각 플랫폼의 정책을 따라야 합니다.</li>
+<li>불법 콘텐츠, 타인의 저작물 무단 게시, 스팸 목적의 사용을 금지합니다.</li>
+</ul>
+<h2>3. 책임의 한계</h2>
+<p>이 앱은 각 플랫폼의 공식 API를 통해 게시를 중계할 뿐이며, 플랫폼의 정책 변경·점검·거부로
+게시가 실패할 수 있습니다. 게시 결과와 그로 인한 영향에 대한 책임은 이용자에게 있습니다.</p>
+<h2>4. 서비스 변경·중단</h2>
+<p>운영자는 사전 통지 없이 서비스를 변경하거나 중단할 수 있습니다.</p>
+<p><a href="/privacy">개인정보처리방침 보기</a></p>
+"""
+
+
+@app.get("/privacy")
+async def privacy_page() -> HTMLResponse:
+    return HTMLResponse(
+        POLICY_PAGE.format(title="개인정보처리방침", body=PRIVACY_BODY.format(base=PUBLIC_BASE_URL))
+    )
+
+
+@app.get("/terms")
+async def terms_page() -> HTMLResponse:
+    return HTMLResponse(
+        POLICY_PAGE.format(title="서비스 이용약관", body=TERMS_BODY.format(base=PUBLIC_BASE_URL))
+    )
 
 
 @app.get("/healthz")
