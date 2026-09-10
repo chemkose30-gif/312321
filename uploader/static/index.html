@@ -441,6 +441,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 <script>
 const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
 const PAGES = ['home','upload','accounts','history'];
+let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
                duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}};
 
@@ -480,6 +481,7 @@ async function loadPlatforms(){
   const res = await raw.json();
   state.platforms = res.platforms;
   state.publicBase = res.public_base_url;
+  PUBLIC_BASE = res.public_base_url;
   $('#footBase').textContent = res.public_base_url;
 
   // 사라진 계정은 선택에서 제거
@@ -881,9 +883,12 @@ function renderAccountPanels(){
               <option value="instagram" ${p.auth_mode === 'instagram' ? 'selected' : ''}>인스타그램 직접 로그인 (페이지 불필요)</option>
             </select>
             <div class="small muted" style="margin-top:6px">
-              직접 로그인은 <b>Instagram 앱 ID / 시크릿</b>을 넣습니다 —
-              메타 콘솔의 <span class="mono">이용 사례 → Instagram API → Instagram 로그인이 포함된 API</span> 화면에 있는 값입니다.<br>
-              저장하면 아래 리디렉션 URI가 방식에 맞게 바뀌니, 그 주소를 콘솔에 등록하세요.
+              <b>직접 로그인 준비물 2가지</b> — 메타 콘솔
+              <span class="mono">이용 사례 → Instagram API → Instagram 로그인이 포함된 API</span> 화면에서:<br>
+              ① <b>Instagram 앱 ID</b> 와 <b>Instagram 앱 시크릿 코드</b>(표시 버튼) 를 아래 두 칸에 붙여넣기<br>
+              ② 같은 화면의 <b>비즈니스 로그인 설정 → 리디렉션 URL</b> 에 아래 주소 등록<br>
+              <span class="mono">${esc(PUBLIC_BASE || '')}/api/oauth/instagram_login/callback</span><br>
+              저장을 누르면 <b>곧바로 인스타그램 로그인 화면</b>으로 넘어갑니다.
             </div>
           </div>` : ''}
         <div class="small muted">${esc(KEY_HINT[p.key] || '')}</div>
@@ -958,6 +963,12 @@ function renderAccountPanels(){
     const data = await res.json().catch(() => ({}));
     if(!res.ok){ flash('err', data.detail || 'API 키를 저장하지 못했습니다.'); return; }
     await loadPlatforms();
+    if(modeInput && modeInput.value === 'instagram'){
+      // 저장 직후 바로 인스타 로그인으로 넘어간다 (단계 줄이기)
+      flash('ok', 'API 키를 저장했습니다. 인스타그램 로그인 화면으로 이동합니다…');
+      setTimeout(() => { location.href = '/api/oauth/instagram/start'; }, 700);
+      return;
+    }
     flash('ok', `${platMeta(platform).label} API 키를 저장했습니다. 이제 '로그인으로 연결'을 누르세요.`);
   });
   $$('[data-addid]').forEach(btn => btn.onclick = () => {
