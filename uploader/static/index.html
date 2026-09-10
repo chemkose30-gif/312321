@@ -861,6 +861,8 @@ function renderAccountPanels(){
             · ${p.configured
                 ? '<span style="color:#6ee7b7">실제 연동</span>'
                 : '<span style="color:var(--amber)">API 키 미설정 (데모)</span>'}</div>
+          ${p.key === 'instagram' ? `<div class="cnt" style="margin-top:4px">연결 방식:
+            <b style="color:${p.auth_mode === 'instagram' ? '#6ee7b7' : 'var(--text2)'}">${p.auth_mode === 'instagram' ? '인스타그램 직접 로그인' : '페이스북 페이지 경유'}</b></div>` : ''}
           ${p.configured
             ? `<div class="cnt" style="margin-top:4px">API 키 ${p.key_source === 'app' ? '앱에서 입력됨' : '환경변수로 설정됨'}</div>`
             : `<div class="cnt" style="margin-top:5px">아래 <b>API 키 입력</b>을 누르고 개발자 콘솔에서 받은 값을 붙여넣으세요.</div>`}
