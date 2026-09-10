@@ -296,7 +296,11 @@ async def get_platforms() -> dict:
             # 값은 절대 내보내지 않고, 서버가 그 이름의 값을 실제로 받았는지만 알려준다
             "env_status": {name: bool(os.getenv(name, "").strip()) for name in ENV_KEYS[key]},
             "key_source": "app" if credentials.stored(key) else ("env" if cfg.configured else None),
-            "scopes": tiktok.scopes() if key == "tiktok" else None,
+            "scopes": (
+                tiktok.scopes() if key == "tiktok"
+                else meta.scopes() if key in ("instagram", "facebook")
+                else None
+            ),
             "demo": demo_platform(key),
             "redirect_uri": cfg.redirect_uri,
             "accounts": [a for a in accounts if a["platform"] == key],
@@ -457,6 +461,8 @@ async def save_platform_keys(payload: PlatformKeys) -> dict:
     credentials.save(payload.platform, client_id, client_secret)
     if payload.platform == "tiktok":
         db.set_setting("tiktok_scopes", payload.scopes.strip())
+    if payload.platform in ("instagram", "facebook"):
+        db.set_setting("meta_scopes", payload.scopes.strip())
     # Meta 는 인스타그램과 페이스북이 같은 앱을 쓴다.
     twin = {"instagram": "facebook", "facebook": "instagram"}.get(payload.platform)
     if twin:

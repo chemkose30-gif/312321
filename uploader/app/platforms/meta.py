@@ -8,15 +8,25 @@ from .. import db
 from ..config import GRAPH, META_API_VERSION, PLATFORMS
 from .base import PublishError
 
-SCOPES = [
+# publish_video 와 business_management 는 이제 이 흐름에 필요 없거나 앱에서
+# 유효하지 않은 경우가 많아 기본값에서 제외한다. 필요하면 화면에서 조절.
+DEFAULT_SCOPES = [
     "pages_show_list",
     "pages_read_engagement",
     "pages_manage_posts",
-    "publish_video",
     "instagram_basic",
     "instagram_content_publish",
-    "business_management",
 ]
+
+
+def scopes() -> str:
+    """앱에서 지정한 권한 목록(없으면 기본값).
+
+    이용 사례에 포함되지 않은 권한을 요청하면 메타가 'Invalid Scopes' 로 거부한다.
+    """
+    from .. import db
+
+    return (db.get_setting("meta_scopes") or "").strip() or ",".join(DEFAULT_SCOPES)
 
 
 def auth_url(state: str) -> str:
@@ -25,7 +35,7 @@ def auth_url(state: str) -> str:
         "client_id": cfg.client_id,
         "redirect_uri": cfg.redirect_uri,
         "response_type": "code",
-        "scope": ",".join(SCOPES),
+        "scope": scopes(),
         "state": state,
     }
     return f"https://www.facebook.com/{META_API_VERSION}/dialog/oauth?{urlencode(params)}"
