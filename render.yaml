@@ -6,7 +6,9 @@ services:
     runtime: docker
     dockerfilePath: ./uploader/Dockerfile
     dockerContext: ./uploader
-    plan: starter          # 무료 플랜은 디스크를 붙일 수 없어 starter 이상 권장
+    # standard = 1 CPU / 2GB. 큰 영상을 각 플랫폼으로 내보낼 때 속도가 가장 크게 좌우된다.
+    # (starter 는 0.5 CPU, 무료 플랜은 디스크를 붙일 수 없다)
+    plan: standard
     healthCheckPath: /healthz
     disk:
       name: uploader-data
