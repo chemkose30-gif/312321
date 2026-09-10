@@ -37,6 +37,9 @@ def auth_url(state: str) -> str:
         "response_type": "code",
         "scope": scopes(),
         "state": state,
+        # 이미 한 번 동의했더라도 페이지 선택 화면을 다시 띄운다
+        # (처음에 페이지를 고르지 않으면 목록이 비어 온다)
+        "auth_type": "rerequest",
     }
     return f"https://www.facebook.com/{META_API_VERSION}/dialog/oauth?{urlencode(params)}"
 
@@ -88,7 +91,10 @@ async def exchange_code(code: str) -> list[str]:
 
     if not items:
         raise PublishError(
-            "관리 중인 Facebook 페이지가 없습니다. 페이지를 만들고 앱에 권한을 부여한 뒤 다시 시도하세요."
+            "가져올 수 있는 Facebook 페이지가 없습니다. 로그인 화면의 "
+            "'이 앱이 액세스할 수 있는 페이지 선택' 단계에서 페이지를 체크했는지 확인하세요. "
+            "이미 동의한 상태라면 페이스북 설정 > 비즈니스 통합에서 이 앱을 삭제한 뒤 "
+            "다시 '로그인으로 연결'을 눌러주세요."
         )
 
     account_ids: list[str] = []
