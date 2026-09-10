@@ -814,6 +814,8 @@ function optionsHtml(p){
   if(p.key === 'youtube' && state.duration > 180 && state.vertical) warn.push('3분이 넘는 세로 영상은 쇼츠가 아닌 일반 영상으로 게시됩니다.');
   if(p.key === 'tiktok' && state.duration > 600) warn.push('계정 등급에 따라 10분이 넘는 영상은 거부될 수 있습니다.');
   if(p.key === 'instagram' && state.duration && !state.vertical) warn.push('릴스는 9:16 세로 영상을 권장합니다. 가로 영상은 잘려 보일 수 있습니다.');
+  if(p.key === 'instagram' && state.media && state.media.size > 300*1024*1024)
+    warn.push(`영상이 ${Math.round(state.media.size/1024/1024)}MB입니다. 인스타그램이 이 서버에서 영상을 내려받아 인코딩하기 때문에, 파일이 크면 처리 시간 초과로 실패할 수 있습니다. 300MB 이하로 압축을 권합니다.`);
   if(p.key === 'instagram' && !p.demo && /^https?:\/\/(localhost|127\.)/.test(state.publicBase))
     warn.push('Instagram은 외부에서 접근 가능한 영상 URL이 필요합니다. .env의 PUBLIC_BASE_URL을 공개 주소로 바꾸세요.');
   if(chosen.length > 1) warn.push(`선택한 ${chosen.length}개 계정에 아래 설정이 동일하게 적용됩니다.`);

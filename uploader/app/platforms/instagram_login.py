@@ -4,7 +4,6 @@
 - 페이스북 페이지가 필요 없고, 인스타 프로페셔널 계정만 있으면 된다.
 - 앱 ID/시크릿도 페이스북 앱과 별개인 'Instagram 앱 ID / 시크릿' 을 쓴다.
 """
-import asyncio
 import time
 from urllib.parse import urlencode
 
@@ -12,7 +11,14 @@ import httpx
 
 from .. import credentials, db
 from ..config import PUBLIC_BASE_URL
-from .base import IG_MAX_HASHTAGS, Progress, PublishError, PublishResult, build_caption
+from .base import (
+    IG_MAX_HASHTAGS,
+    Progress,
+    PublishError,
+    PublishResult,
+    build_caption,
+    wait_for_ig_container,
+)
 
 AUTH_URL = "https://www.instagram.com/oauth/authorize"
 TOKEN_URL = "https://api.instagram.com/oauth/access_token"
@@ -168,21 +174,10 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
         if not container_id:
             raise PublishError("Instagram이 컨테이너 ID를 반환하지 않았습니다.")
 
-        for attempt in range(60):
-            await asyncio.sleep(4)
-            status = await client.get(
-                f"{GRAPH}/{container_id}",
-                params={"fields": "status_code,status", "access_token": token},
-            )
-            body = status.json() if status.status_code < 400 else {}
-            code = body.get("status_code")
-            await progress(min(15 + attempt * 2, 85), f"Instagram 처리 중 ({code or '대기'})")
-            if code == "FINISHED":
-                break
-            if code in ("ERROR", "EXPIRED"):
-                raise PublishError(f"Instagram 영상 처리 실패: {body.get('status') or code}")
-        else:
-            raise PublishError("Instagram 영상 처리 시간이 초과되었습니다.")
+        await wait_for_ig_container(
+            client, GRAPH, container_id, token, progress,
+            size_bytes=job.get("video_size") or 0,
+        )
 
         await progress(92, "게시 중")
         published = await client.post(

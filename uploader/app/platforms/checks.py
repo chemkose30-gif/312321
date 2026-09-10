@@ -188,6 +188,13 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
     if len(caption) > 2200:
         out.append(warn(f"캡션이 {len(caption)}자입니다. 2200자까지만 올라갑니다."))
 
+    size_mb = (job.get("video_size") or 0) / 1024 / 1024
+    if size_mb >= 300:
+        out.append(warn(
+            f"영상이 {size_mb:.0f}MB입니다. 인스타그램이 이 서버에서 영상을 내려받아 인코딩하는데, "
+            "파일이 크면 처리 시간이 초과돼 실패할 수 있습니다. 300MB 이하로 압축하는 것을 권합니다."
+        ))
+
     duration = job.get("duration") or 0
     if duration and duration < 3:
         out.append(err(f"릴스는 3초 이상이어야 합니다(현재 {_mmss(duration)})."))

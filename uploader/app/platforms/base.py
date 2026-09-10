@@ -1,6 +1,7 @@
 """플랫폼 어댑터 공통 타입/헬퍼."""
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
@@ -115,6 +116,72 @@ def build_caption(
     if limit and len(caption) > limit:
         caption = caption[: limit - 1].rstrip() + "…"
     return caption
+
+
+# 인스타그램이 우리 서버에서 영상을 내려받아 인코딩할 때까지 기다리는 시간(초).
+# 큰 파일은 다운로드만으로도 몇 분이 걸리기 때문에 넉넉히 잡는다.
+IG_PROCESS_BUDGET_SEC = 20 * 60
+
+
+def _size_hint(size_bytes: int) -> str:
+    if not size_bytes:
+        return ""
+    mb = size_bytes / 1024 / 1024
+    if mb < 300:
+        return ""
+    return (
+        f" 영상이 {mb:.0f}MB로 커서 인스타그램이 내려받는 데 오래 걸립니다. "
+        "300MB 이하로 압축해서 다시 올려보세요."
+    )
+
+
+async def wait_for_ig_container(
+    client,
+    graph: str,
+    container_id: str,
+    token: str,
+    progress: Progress,
+    *,
+    size_bytes: int = 0,
+    budget_sec: int = IG_PROCESS_BUDGET_SEC,
+) -> None:
+    """컨테이너가 FINISHED 가 될 때까지 기다린다. 실패하면 PublishError."""
+    started = time.monotonic()
+    last_code = None
+    delay = 5
+    while True:
+        elapsed = time.monotonic() - started
+        if elapsed >= budget_sec:
+            raise PublishError(
+                f"Instagram이 {int(budget_sec) // 60}분 안에 영상 처리를 끝내지 못했습니다"
+                f"(마지막 상태: {last_code or '응답 없음'})."
+                + (_size_hint(size_bytes) or
+                   " 잠시 후 다시 시도하거나, 영상을 더 작게 압축해 보세요.")
+            )
+        await asyncio.sleep(delay)
+        # 처음에는 자주, 이후에는 뜸하게 확인한다.
+        if time.monotonic() - started > 120:
+            delay = 15
+
+        res = await client.get(
+            f"{graph}/{container_id}",
+            params={"fields": "status_code,status", "access_token": token},
+        )
+        body = res.json() if res.status_code < 400 else {}
+        last_code = body.get("status_code") or last_code
+        mins = int((time.monotonic() - started) // 60)
+        pct = min(15 + int((time.monotonic() - started) / budget_sec * 70), 85)
+        await progress(
+            pct,
+            f"Instagram 처리 중 ({last_code or '대기'}"
+            + (f" · {mins}분 경과" if mins else "") + ")",
+        )
+        if last_code == "FINISHED":
+            return
+        if last_code in ("ERROR", "EXPIRED"):
+            raise PublishError(
+                f"Instagram 영상 처리 실패: {body.get('status') or last_code}"
+            )
 
 
 def multipart_body(

@@ -4,12 +4,18 @@ Instagram은 파일 업로드를 받지 않고 '공개적으로 접근 가능한
 그래서 이 앱은 업로드된 파일을 {PUBLIC_BASE_URL}/media/{token} 으로 임시 공개한다.
 로컬에서 테스트할 때는 PUBLIC_BASE_URL이 외부에서 접근 가능한 주소여야 한다.
 """
-import asyncio
 
 import httpx
 
 from ..config import GRAPH, PUBLIC_BASE_URL
-from .base import IG_MAX_HASHTAGS, Progress, PublishError, PublishResult, build_caption
+from .base import (
+    IG_MAX_HASHTAGS,
+    Progress,
+    PublishError,
+    PublishResult,
+    build_caption,
+    wait_for_ig_container,
+)
 
 
 def media_url(job: dict) -> str:
@@ -45,22 +51,10 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
         if not container_id:
             raise PublishError("Instagram이 컨테이너 ID를 반환하지 않았습니다.")
 
-        # 인스타그램이 우리 서버에서 영상을 내려받아 인코딩할 때까지 대기.
-        for attempt in range(60):
-            await asyncio.sleep(4)
-            status = await client.get(
-                f"{GRAPH}/{container_id}",
-                params={"fields": "status_code,status", "access_token": token},
-            )
-            body = status.json() if status.status_code < 400 else {}
-            code = body.get("status_code")
-            await progress(min(15 + attempt * 2, 85), f"Instagram 처리 중 ({code or '대기'})")
-            if code == "FINISHED":
-                break
-            if code in ("ERROR", "EXPIRED"):
-                raise PublishError(f"Instagram 영상 처리 실패: {body.get('status') or code}")
-        else:
-            raise PublishError("Instagram 영상 처리 시간이 초과되었습니다.")
+        await wait_for_ig_container(
+            client, GRAPH, container_id, token, progress,
+            size_bytes=job.get("video_size") or 0,
+        )
 
         await progress(92, "게시 중")
         publish_res = await client.post(
