@@ -745,9 +745,10 @@ function updateCounters(){
   box.textContent = ig ? `${n} / ${IG_MAX_TAGS}개 (인스타 기준)` : `${n}개`;
   box.classList.toggle('over', ig && n > IG_MAX_TAGS);
   $('#tagWarn').innerHTML = (ig && n > IG_MAX_TAGS)
-    ? `<div class="warn">인스타그램은 캡션당 해시태그 ${IG_MAX_TAGS}개까지만 허용합니다.
-        지금 ${n}개라서 <b>${n - IG_MAX_TAGS}개는 #을 떼고 일반 단어로</b> 올라갑니다.
-        그대로 올리려면 태그를 ${n - IG_MAX_TAGS}개 줄이세요.</div>`
+    ? `<div class="warn">인스타그램은 캡션당 해시태그 ${IG_MAX_TAGS}개까지 허용하고, 넘으면 게시를 거부합니다.
+        지금 ${n}개라서 <b>인스타에는 앞에서부터 ${IG_MAX_TAGS}개만</b> 올라갑니다
+        (초과분 ${n - IG_MAX_TAGS}개는 해시태그 칸 뒤쪽부터 빠지고, 설명 본문에 적은 태그는 #만 떼고 글자는 남습니다).
+        유튜브·틱톡·페북에는 태그가 그대로 다 올라갑니다.</div>`
     : '';
 }
 

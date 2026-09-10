@@ -181,8 +181,9 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
     tags = count_hashtags(caption)
     if tags > IG_MAX_HASHTAGS:
         out.append(warn(
-            f"해시태그가 {tags}개입니다. 인스타 한도는 {IG_MAX_HASHTAGS}개라서 "
-            f"{tags - IG_MAX_HASHTAGS}개는 #을 떼고 일반 단어로 올라갑니다."
+            f"해시태그가 {tags}개입니다. 인스타 한도({IG_MAX_HASHTAGS}개)에 맞춰 앞에서부터 "
+            f"{IG_MAX_HASHTAGS}개만 올리고 나머지 {tags - IG_MAX_HASHTAGS}개는 뺍니다. "
+            "다른 플랫폼에는 태그가 그대로 다 올라갑니다."
         ))
     if len(caption) > 2200:
         out.append(warn(f"캡션이 {len(caption)}자입니다. 2200자까지만 올라갑니다."))
