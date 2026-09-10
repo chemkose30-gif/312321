@@ -143,6 +143,15 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .addbox input{max-width:230px}
 .addbox .hint{font-size:11.5px;color:var(--text3)}
 
+.viewtabs{display:inline-flex;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:3px}
+.viewtab{border:none;background:none;color:var(--text2);font-size:12.5px;padding:6px 14px;border-radius:20px;cursor:pointer}
+.viewtab.active{background:var(--bg4);color:var(--text);font-weight:600}
+.cat-input{max-width:150px}
+.cat-tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:#c4b5fd;background:rgba(139,92,246,.14);border-radius:20px;padding:3px 10px}
+.home-set{display:flex;align-items:center;gap:12px;padding:13px 16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);margin-bottom:10px;flex-wrap:wrap;text-decoration:none;transition:.15s}
+.home-set:hover{border-color:var(--border2);background:var(--bg3)}
+.home-set .nm{font-weight:650;font-size:14px;min-width:110px}
+
 /* 채널 세트 */
 .setbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:15px;padding-bottom:14px;border-bottom:1px solid var(--border)}
 .setbar .lbl{font-size:12px;color:var(--text2);margin-right:2px}
@@ -266,6 +275,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div class="chips" id="homeChips"></div>
     </div>
 
+    <div id="homeSets"></div>
+
     <div class="grid4" id="homeStats"></div>
 
     <section class="block">
@@ -378,9 +389,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <p>플랫폼마다 아이디를 원하는 만큼 추가하세요. <b>내 아이디 추가</b>로 유튜브·인스타 아이디를 직접 적어 목록을 먼저 만들고,
         <b>로그인 연결</b>을 마치면 그 아이디로 실제 게시가 시작됩니다.</p>
     </div>
-    <div id="accPanels"></div>
-
-    <div class="card">
+    <div class="card" id="setCard">
       <h2>채널 세트</h2>
       <p class="sub">자주 함께 올리는 계정을 묶어두면 업로드 화면에서 클릭 한 번으로 전부 선택됩니다.
         (예: <b>브랜드A 전체</b> = 유튜브 메인 + 틱톡 부계정 + 인스타)</p>
@@ -388,6 +397,16 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div id="setEditor"></div>
       <button class="btn primary" id="btnNewSet" style="margin-top:14px">+ 새 세트 만들기</button>
     </div>
+
+    <div class="row" style="margin-top:22px;align-items:center">
+      <b style="font-size:15px">연결된 아이디</b>
+      <div class="viewtabs" style="margin-left:auto">
+        <button class="viewtab active" data-view="platform">플랫폼별</button>
+        <button class="viewtab" data-view="category">카테고리별</button>
+      </div>
+    </div>
+    <datalist id="catList"></datalist>
+    <div id="accPanels"></div>
 
     <div class="card" id="securityCard">
       <h2>비밀번호 잠금</h2>
@@ -441,9 +460,10 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 <script>
 const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
 const PAGES = ['home','upload','accounts','history'];
+const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
 let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}};
+               duration:0, vertical:false, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -481,6 +501,7 @@ async function loadPlatforms(){
   const res = await raw.json();
   state.platforms = res.platforms;
   state.publicBase = res.public_base_url;
+  state.categories = res.categories || [];
   PUBLIC_BASE = res.public_base_url;
   $('#footBase').textContent = res.public_base_url;
 
@@ -537,10 +558,50 @@ function renderHome(){
     ['성공률', rate],
   ].map(([k, v]) => `<div class="stat"><div class="n">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('');
 
+  renderHomeSets();
+
   $('#homeRecent').innerHTML = state.jobs.length
     ? state.jobs.slice(0, 3).map(j => jobHtml(j, false)).join('')
     : `<div class="tile" style="text-align:center"><p>아직 업로드한 영상이 없습니다.
         <a href="#upload" style="color:#93c5fd">첫 영상 올리기 →</a></p></div>`;
+}
+
+
+/* 홈 상단 - 묶어둔 아이디(세트) */
+function renderHomeSets(){
+  const box = $('#homeSets');
+  if(!box) return;
+  if(!state.sets.length){
+    box.innerHTML = `<section class="block" style="margin-bottom:8px">
+      <div class="sec-head"><h2>묶어둔 아이디</h2>
+        <p>자주 같이 올리는 아이디들을 세트로 묶어두면 여기에서 바로 선택할 수 있습니다.</p></div>
+      <a class="home-set" href="#accounts"><span class="nm">+ 첫 세트 만들기</span>
+        <span class="small muted">계정 관리 → 채널 세트</span></a>
+    </section>`;
+    return;
+  }
+  const rows = state.sets.map(set => {
+    const members = set.account_ids.map(findAccount).filter(Boolean);
+    const cats = [...new Set(members.map(m => m.category).filter(Boolean))];
+    return `<a class="home-set" href="#upload" data-homeset="${set.id}">
+      <span class="nm">${esc(set.name)}</span>
+      <span class="set-members">${members.length ? members.slice(0, 8).map(m =>
+        `<span class="mem"><i style="background:${m.color}">${PICO[m.platform]}</i>${esc(m.display_name)}</span>`).join('')
+        : '<span class="small muted">계정이 모두 삭제된 세트입니다.</span>'}</span>
+      ${cats.map(c => `<span class="cat-tag">${esc(c)}</span>`).join('')}
+      <span class="small muted" style="margin-left:auto">${members.length}개 · 선택하고 업로드 →</span>
+    </a>`;
+  }).join('');
+  box.innerHTML = `<section class="block" style="margin-bottom:8px">
+    <div class="sec-head"><h2>묶어둔 아이디</h2>
+      <p>세트를 누르면 해당 아이디들이 선택된 채로 업로드 화면으로 이동합니다.</p></div>
+    ${rows}
+  </section>`;
+
+  $$('[data-homeset]').forEach(el => el.onclick = () => {
+    const set = state.sets.find(s => s.id === el.dataset.homeset);
+    if(set && !setApplied(set)) toggleSet(set.id);
+  });
 }
 
 /* ── 영상 업로드 ── */
@@ -852,7 +913,59 @@ const HANDLE_HINT = {
   facebook: '페이스북 페이지 이름',
 };
 
+function renderCategoryList(){
+  const names = [...new Set([...DEFAULT_CATEGORIES, ...state.categories])];
+  const list = $('#catList');
+  if(list) list.innerHTML = names.map(n => `<option value="${esc(n)}">`).join('');
+  return names;
+}
+
+function renderAccountsByCategory(){
+  const all = allAccounts();
+  const names = [...new Set([...DEFAULT_CATEGORIES, ...state.categories])];
+  const groups = names.map(name => [name, all.filter(a => a.category === name)])
+                      .filter(([, list]) => list.length);
+  const rest = all.filter(a => !a.category);
+  if(rest.length) groups.push(['미분류', rest]);
+
+  $('#accPanels').innerHTML = groups.length ? groups.map(([name, list]) => `
+    <div class="plat-panel">
+      <div class="panel-head">
+        <div class="pico" style="background:var(--purple)">#</div>
+        <div>
+          <div style="font-weight:650">${esc(name)}</div>
+          <div class="cnt">${list.length}개 아이디</div>
+        </div>
+      </div>
+      ${list.map(a => `
+        <div class="acc-row">
+          <div class="pico" style="background:${a.color};width:26px;height:26px;border-radius:8px;font-size:12px">${PICO[a.platform]}</div>
+          <div class="acc-info">
+            <div class="nm">${esc(a.display_name)}</div>
+            <div class="id mono">${esc(a.plabel)} · ${esc(a.external_id)}</div>
+          </div>
+          ${a.linked ? '<span class="tagbadge on">연결됨</span>' : '<span class="tagbadge need">로그인 연결 필요</span>'}
+          <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
+          <button class="btn danger sm" data-del="${a.id}">삭제</button>
+        </div>`).join('')}
+    </div>`).join('')
+    : '<div class="acc-empty">연결된 아이디가 없습니다.</div>';
+}
+
 function renderAccountPanels(){
+  renderCategoryList();
+  $$('.viewtab').forEach(b => b.onclick = () => {
+    state.accView = b.dataset.view;
+    renderAccountPanels();
+  });
+  $$('.viewtab').forEach(b => b.classList.toggle('active', b.dataset.view === state.accView));
+
+  if(state.accView === 'category'){
+    renderAccountsByCategory();
+    bindAccountRowHandlers();
+    renderRedirectList();
+    return;
+  }
   $('#accPanels').innerHTML = state.platforms.map(p => `
     <div class="plat-panel">
       <div class="panel-head">
@@ -940,6 +1053,7 @@ function renderAccountPanels(){
             ? '<span class="tagbadge on">연결됨</span>'
             : `<a class="tagbadge need" href="/api/oauth/${p.key}/start" title="로그인해서 게시 권한을 붙입니다">로그인 연결 필요</a>`}
           <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (선택)">
+          <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>
         </div>`).join('')
       : `<div class="acc-empty">아직 등록된 아이디가 없습니다. 오른쪽 위 <b>+ 내 아이디 추가</b>로 시작하세요.</div>`}
@@ -1012,12 +1126,33 @@ function renderAccountPanels(){
     if(e.key === 'Enter') saveHandle(input.dataset.handle);
   });
 
+  bindAccountRowHandlers();
+  renderRedirectList();
+}
+
+/* 아이디 행 공통 핸들러 (플랫폼별 / 카테고리별 뷰 모두 사용) */
+function bindAccountRowHandlers(){
   $$('[data-del]').forEach(btn => btn.onclick = async () => {
     if(!confirm('이 아이디를 목록에서 삭제할까요? 저장된 세트에서도 함께 빠집니다.')) return;
     await fetch('/api/accounts/' + btn.dataset.del, {method:'DELETE'});
     loadPlatforms();
   });
+  $$('[data-cat]').forEach(input => {
+    const start = input.value;
+    const save = async () => {
+      if(input.value.trim() === start.trim()) return;
+      await fetch('/api/accounts/' + input.dataset.cat, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({category: input.value.trim()}),
+      });
+      loadPlatforms();
+    };
+    input.onchange = save;
+    input.onblur = save;
+    input.onkeydown = e => { if(e.key === 'Enter') input.blur(); };
+  });
   $$('[data-label]').forEach(input => {
+    const start = input.value;
     const save = async () => {
       await fetch('/api/accounts/' + input.dataset.label, {
         method:'PATCH', headers:{'Content-Type':'application/json'},
@@ -1025,12 +1160,16 @@ function renderAccountPanels(){
       });
       loadPlatforms();
     };
-    input.onblur = () => { if(input.value.trim() !== (input.defaultValue || '')) save(); };
+    input.onblur = () => { if(input.value.trim() !== start.trim()) save(); };
     input.onkeydown = e => { if(e.key === 'Enter') input.blur(); };
   });
+}
 
+function renderRedirectList(){
+  const box = $('#redirectList');
+  if(!box) return;
   const seen = new Set();
-  $('#redirectList').innerHTML = state.platforms
+  box.innerHTML = state.platforms
     .filter(p => !seen.has(p.provider) && seen.add(p.provider))
     .map(p => `<div class="meta-row"><span>${p.provider === 'meta' ? 'Meta (Instagram + Facebook 공용)' : esc(p.label)}</span>
       <span class="mono">${esc(p.redirect_uri)}</span></div>`).join('');

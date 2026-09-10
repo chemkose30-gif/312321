@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     external_id   TEXT NOT NULL,
     name          TEXT NOT NULL,
     label         TEXT,
+    category      TEXT,
     avatar        TEXT,
     access_token  TEXT,
     refresh_token TEXT,
@@ -105,6 +106,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
     if "label" not in columns:
         conn.execute("ALTER TABLE accounts ADD COLUMN label TEXT")
+    if "category" not in columns:
+        conn.execute("ALTER TABLE accounts ADD COLUMN category TEXT")
 
 
 def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -147,6 +150,7 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "name": row["name"],
         "label": row["label"],
         "display_name": row["label"] or row["name"],
+        "category": row["category"] or "",
         "linked": bool(row["access_token"]),
         "manual": bool(json.loads(row["meta"] or "{}").get("manual")),
         "avatar": row["avatar"],
@@ -220,6 +224,18 @@ def update_account_tokens(
 
 def set_account_label(account_id: str, label: str) -> None:
     _exec("UPDATE accounts SET label=? WHERE id=?", (label or None, account_id))
+
+
+def set_account_category(account_id: str, category: str) -> None:
+    _exec("UPDATE accounts SET category=? WHERE id=?", (category or None, account_id))
+
+
+def list_categories() -> list[str]:
+    rows = _rows(
+        "SELECT DISTINCT category FROM accounts WHERE category IS NOT NULL AND category <> ''"
+        " ORDER BY category"
+    )
+    return [r["category"] for r in rows]
 
 
 def count_accounts(platform: str) -> int:

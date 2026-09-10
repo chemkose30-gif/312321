@@ -415,6 +415,7 @@ async def get_platforms() -> dict:
         })
     return {
         "platforms": out,
+        "categories": db.list_categories(),
         "public_base_url": PUBLIC_BASE_URL,
         "auth_enabled": auth.password_configured(),
     }
@@ -517,7 +518,8 @@ async def add_manual_account(payload: ManualAccount) -> dict:
 
 
 class AccountPatch(BaseModel):
-    label: str = ""
+    label: str | None = None
+    category: str | None = None
 
 
 class PageById(BaseModel):
@@ -537,7 +539,10 @@ async def add_facebook_page(payload: PageById) -> dict:
 async def rename_account(account_id: str, payload: AccountPatch) -> dict:
     if not db.get_account(account_id, with_tokens=False):
         raise HTTPException(404, "계정을 찾을 수 없습니다.")
-    db.set_account_label(account_id, payload.label.strip()[:60])
+    if payload.label is not None:
+        db.set_account_label(account_id, payload.label.strip()[:60])
+    if payload.category is not None:
+        db.set_account_category(account_id, payload.category.strip()[:40])
     return {"ok": True}
 
 
