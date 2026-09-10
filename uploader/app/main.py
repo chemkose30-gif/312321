@@ -520,6 +520,19 @@ class AccountPatch(BaseModel):
     label: str = ""
 
 
+class PageById(BaseModel):
+    page_id: str
+
+
+@app.post("/api/accounts/facebook-page")
+async def add_facebook_page(payload: PageById) -> dict:
+    """페이지 ID를 직접 입력해 연결(자동 조회가 비어 올 때)."""
+    if not payload.page_id.strip().isdigit():
+        raise HTTPException(400, "페이지 ID는 숫자만 입력하세요.")
+    account_id = await meta.add_page_by_id(payload.page_id)
+    return {"ok": True, "id": account_id}
+
+
 @app.patch("/api/accounts/{account_id}")
 async def rename_account(account_id: str, payload: AccountPatch) -> dict:
     if not db.get_account(account_id, with_tokens=False):

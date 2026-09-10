@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 import httpx
 
 from .. import db
-from ..config import GRAPH, META_API_VERSION, PLATFORMS
+from ..config import GRAPH, META_API_VERSION, PLATFORMS, decrypt, encrypt
 from .base import PublishError
 
 # publish_video 와 business_management 는 이제 이 흐름에 필요 없거나 앱에서
@@ -132,6 +132,10 @@ async def exchange_code(code: str) -> list[str]:
             raise PublishError(f"Facebook 페이지 조회 실패: {pages.text}")
         items = pages.json().get("data") or []
 
+    # 자동 조회가 실패해도 페이지 ID로 직접 붙일 수 있도록 사용자 토큰을 보관한다.
+    db.set_setting("meta_user_token", encrypt(user_token))
+    db.set_setting("meta_user_token_expires", str(expires_at))
+
     # 비즈니스 포트폴리오가 소유한 페이지는 /me/accounts 에 안 나오는 경우가 있다.
     if not items:
         items = await _owned_pages(user_token)
@@ -175,3 +179,51 @@ async def exchange_code(code: str) -> list[str]:
                 )
             )
     return account_ids
+
+
+async def add_page_by_id(page_id: str) -> str:
+    """페이지 ID를 직접 받아 계정으로 등록한다.
+
+    비즈니스 포트폴리오 소유 등으로 목록 조회가 비어 올 때의 우회로.
+    직전 로그인에서 받은 사용자 토큰을 사용한다.
+    """
+    user_token = decrypt(db.get_setting("meta_user_token") or "")
+    if not user_token:
+        raise PublishError(
+            "먼저 Facebook '로그인으로 연결'을 한 번 실행해 주세요. "
+            "(그때 받은 권한으로 페이지를 붙입니다)"
+        )
+    page_id = page_id.strip()
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.get(
+            f"{GRAPH}/{page_id}",
+            params={"fields": PAGE_FIELDS, "access_token": user_token},
+        )
+    if res.status_code >= 400:
+        raise PublishError(f"페이지 정보를 가져오지 못했습니다: {res.text[:200]}")
+    page = res.json() or {}
+    page_token = page.get("access_token")
+    if not page_token:
+        raise PublishError(
+            "이 계정으로는 해당 페이지의 게시 권한을 받을 수 없습니다. "
+            "페이지 설정에서 이 계정에 '전체 액세스 권한'이 있는지 확인하세요."
+        )
+    account_id = db.upsert_account(
+        "facebook",
+        page["id"],
+        page.get("name") or "Facebook 페이지",
+        avatar=((page.get("picture") or {}).get("data") or {}).get("url"),
+        access_token=page_token,
+        meta={"kind": "page", "added": "by_id"},
+    )
+    ig = page.get("instagram_business_account")
+    if ig:
+        db.upsert_account(
+            "instagram",
+            ig["id"],
+            ig.get("username") or "Instagram 계정",
+            avatar=ig.get("profile_picture_url"),
+            access_token=page_token,
+            meta={"page_id": page["id"], "page_name": page.get("name")},
+        )
+    return account_id

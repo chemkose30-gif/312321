@@ -871,6 +871,7 @@ function renderAccountPanels(){
         </div>
         <div class="panel-actions">
           <button class="btn sm" data-keys="${p.key}">${p.configured ? 'API 키 변경' : 'API 키 입력'}</button>
+          ${p.key === 'facebook' ? '<button class="btn sm" data-pagebtn="facebook">페이지 ID로 추가</button>' : ''}
           <button class="btn primary sm" data-addid="${p.key}">+ 내 아이디 추가</button>
           <a class="btn sm" href="/api/oauth/${p.key}/start">${p.configured ? '로그인으로 연결' : '데모 계정 만들기'}</a>
         </div>
@@ -911,6 +912,16 @@ function renderAccountPanels(){
           <span class="hint">저장한 키는 암호화되어 이 서버에만 보관됩니다.</span>
         </div>
       </div>
+      ${p.key === 'facebook' ? `<div class="addbox hidden" data-pagebox="facebook" style="flex-direction:column;align-items:stretch;gap:9px">
+        <div class="small muted">자동으로 페이지가 안 잡힐 때 씁니다(비즈니스 포트폴리오 소유 등).
+          <b>먼저 '로그인으로 연결'을 한 번</b> 실행한 뒤, 페이지 ID를 넣으세요.<br>
+          페이지 ID는 비즈니스 설정의 페이지 목록에서 <span class="mono">ID: 1184461294747645</span> 형태로 보입니다.</div>
+        <input type="text" data-pageid="facebook" placeholder="페이지 ID (숫자만)">
+        <div class="row">
+          <button class="btn primary sm" data-savepage="facebook">페이지 추가</button>
+          <button class="btn ghost sm" data-cancelpage="facebook">취소</button>
+        </div>
+      </div>` : ''}
       <div class="addbox hidden" data-addbox="${p.key}">
         <input type="text" data-handle="${p.key}" placeholder="${esc(HANDLE_HINT[p.key])}">
         <input type="text" data-newlabel="${p.key}" placeholder="별칭 (선택)" style="max-width:160px">
@@ -938,6 +949,24 @@ function renderAccountPanels(){
     try { await navigator.clipboard.writeText(btn.dataset.copy); btn.textContent = '복사됨'; }
     catch(_) { btn.previousElementSibling.select(); btn.textContent = '직접 복사하세요'; }
     setTimeout(() => { btn.textContent = '복사'; }, 2000);
+  });
+  $$('[data-pagebtn]').forEach(btn => btn.onclick = () => {
+    const box = document.querySelector('[data-pagebox="facebook"]');
+    box.classList.toggle('hidden');
+    if(!box.classList.contains('hidden')) box.querySelector('[data-pageid]').focus();
+  });
+  $$('[data-cancelpage]').forEach(btn => btn.onclick = () =>
+    document.querySelector('[data-pagebox="facebook"]').classList.add('hidden'));
+  $$('[data-savepage]').forEach(btn => btn.onclick = async () => {
+    const page_id = document.querySelector('[data-pageid="facebook"]').value.trim();
+    const res = await fetch('/api/accounts/facebook-page', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({page_id}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){ flash('err', data.detail || '페이지를 추가하지 못했습니다.'); return; }
+    await loadPlatforms();
+    flash('ok', '페이지를 연결했습니다.');
   });
   $$('[data-keys]').forEach(btn => btn.onclick = () => {
     const box = document.querySelector(`[data-keybox="${btn.dataset.keys}"]`);
