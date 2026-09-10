@@ -675,9 +675,12 @@ function uploadFile(file){
     renderPlatforms();
   };
 
-  const fd = new FormData(); fd.append('file', file);
+  // 파일을 본문 그대로 보낸다(멀티파트 파싱·임시파일 복사가 없어 큰 영상일수록 훨씬 빠름)
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/media');
+  xhr.open('POST', '/api/media/raw');
+  xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+  xhr.setRequestHeader('X-File-Type', file.type || 'video/mp4');
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
   xhr.upload.onprogress = e => {
     if(!e.lengthComputable) return;
     const pct = Math.round(e.loaded / e.total * 100);
@@ -698,7 +701,7 @@ function uploadFile(file){
     refreshPublishButton();
   };
   xhr.onerror = () => flash('err', '네트워크 오류로 업로드에 실패했습니다.');
-  xhr.send(fd);
+  xhr.send(file);
 }
 
 /* ── 해시태그 ── */

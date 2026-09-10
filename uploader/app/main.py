@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from fastapi.responses import (
     FileResponse,
@@ -704,6 +704,65 @@ async def remove_set(set_id: str) -> dict:
 
 
 # ── 미디어 업로드 ────────────────────────────────────────────
+def _media_dest(filename: str, content_type: str) -> tuple[Path, str]:
+    if not content_type.startswith("video/"):
+        raise HTTPException(400, "영상 파일만 업로드할 수 있습니다.")
+    suffix = Path(filename).suffix[:10] or ".mp4"
+    return Path(UPLOAD_DIR) / f"{secrets.token_hex(12)}{suffix}", suffix
+
+
+def _media_response(media: dict) -> dict:
+    return {
+        "id": media["id"],
+        "name": media["name"],
+        "size": media["size"],
+        "content_type": media["content_type"],
+        "preview_url": f"/media/{media['token']}",
+    }
+
+
+@app.post("/api/media/raw")
+async def upload_media_raw(request: Request) -> dict:
+    """본문 그대로 받아 디스크에 한 번만 쓴다.
+
+    multipart 로 받으면 파싱 비용에 더해 임시 파일로 한 번, 최종 위치로 한 번
+    총 두 번을 쓰게 된다. 큰 영상일수록 이 차이가 그대로 대기 시간이 된다.
+    """
+    filename = unquote(request.headers.get("x-file-name") or "").strip() or "video.mp4"
+    if "/" in filename or "\\" in filename:
+        filename = Path(filename).name
+    content_type = (
+        request.headers.get("x-file-type")
+        or mimetypes.guess_type(filename)[0]
+        or "video/mp4"
+    )
+    dest, _ = _media_dest(filename, content_type)
+
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "파일이 너무 큽니다.")
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    if not size:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "빈 파일입니다.")
+
+    return _media_response(
+        db.create_media(path=str(dest), name=filename, size=size, content_type=content_type)
+    )
+
+
 @app.post("/api/media")
 async def upload_media(file: UploadFile) -> dict:
     if not file.filename:
@@ -712,8 +771,7 @@ async def upload_media(file: UploadFile) -> dict:
     if not content_type.startswith("video/"):
         raise HTTPException(400, "영상 파일만 업로드할 수 있습니다.")
 
-    suffix = Path(file.filename).suffix[:10] or ".mp4"
-    dest = Path(UPLOAD_DIR) / f"{secrets.token_hex(12)}{suffix}"
+    dest, _ = _media_dest(file.filename, content_type)
     size = 0
     try:
         with dest.open("wb") as out:
@@ -728,16 +786,9 @@ async def upload_media(file: UploadFile) -> dict:
     finally:
         await file.close()
 
-    media = db.create_media(
-        path=str(dest), name=file.filename, size=size, content_type=content_type
+    return _media_response(
+        db.create_media(path=str(dest), name=file.filename, size=size, content_type=content_type)
     )
-    return {
-        "id": media["id"],
-        "name": media["name"],
-        "size": media["size"],
-        "content_type": media["content_type"],
-        "preview_url": f"/media/{media['token']}",
-    }
 
 
 @app.post("/api/media/{media_id}/thumbnail")
@@ -941,6 +992,17 @@ async def preflight(payload: PreflightIn) -> dict:
 
     media = db.get_media(payload.media_id) if payload.media_id else None
     general: list[dict] = []
+    disk = jobs.disk_usage()
+    if disk["free"] < 2 * 1024**3:
+        general.append(checks.err(
+            f"서버 디스크 여유 공간이 {disk['free'] / 1024**3:.1f}GB뿐입니다. "
+            "영상 저장과 전송이 느려지거나 실패할 수 있습니다."
+        ))
+    elif disk["free"] < 5 * 1024**3:
+        general.append(checks.warn(
+            f"서버 디스크 여유 공간이 {disk['free'] / 1024**3:.1f}GB입니다 "
+            f"(업로드 보관 {disk['uploads'] / 1024**3:.1f}GB)."
+        ))
     if payload.media_id and (not media or not os.path.exists(media["path"])):
         general.append(checks.err("업로드된 영상을 찾을 수 없습니다. 영상을 다시 올려주세요."))
     elif not payload.media_id:
