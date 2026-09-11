@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS channel_sets (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
     accounts   TEXT NOT NULL DEFAULT '[]',
+    category   TEXT,
     created_at REAL NOT NULL
 );
 
@@ -108,6 +109,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE accounts ADD COLUMN label TEXT")
     if "category" not in columns:
         conn.execute("ALTER TABLE accounts ADD COLUMN category TEXT")
+
+    set_columns = {row["name"] for row in conn.execute("PRAGMA table_info(channel_sets)")}
+    if "category" not in set_columns:
+        conn.execute("ALTER TABLE channel_sets ADD COLUMN category TEXT")
 
 
 def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -398,7 +403,13 @@ def set_media_thumb(media_id: str, thumb_path: str) -> None:
 def _set_dict(row: sqlite3.Row, valid: set[str]) -> dict:
     """세트에 담긴 계정 중 이미 삭제된 것은 빼고 돌려준다."""
     ids = [i for i in json.loads(row["accounts"] or "[]") if i in valid]
-    return {"id": row["id"], "name": row["name"], "account_ids": ids, "created_at": row["created_at"]}
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "account_ids": ids,
+        "category": (row["category"] if "category" in row.keys() else None) or "",
+        "created_at": row["created_at"],
+    }
 
 
 def _valid_account_ids() -> set[str]:
@@ -415,20 +426,28 @@ def get_set(set_id: str) -> dict | None:
     return _set_dict(rows[0], _valid_account_ids()) if rows else None
 
 
-def create_set(name: str, account_ids: list[str]) -> str:
+def create_set(name: str, account_ids: list[str], category: str = "") -> str:
     set_id = new_id("set")
     _exec(
-        "INSERT INTO channel_sets (id, name, accounts, created_at) VALUES (?,?,?,?)",
-        (set_id, name, json.dumps(account_ids), time.time()),
+        "INSERT INTO channel_sets (id, name, accounts, category, created_at) VALUES (?,?,?,?,?)",
+        (set_id, name, json.dumps(account_ids), category or None, time.time()),
     )
     return set_id
 
 
-def update_set(set_id: str, *, name: str | None = None, account_ids: list[str] | None = None) -> None:
+def update_set(
+    set_id: str,
+    *,
+    name: str | None = None,
+    account_ids: list[str] | None = None,
+    category: str | None = None,
+) -> None:
     if name is not None:
         _exec("UPDATE channel_sets SET name=? WHERE id=?", (name, set_id))
     if account_ids is not None:
         _exec("UPDATE channel_sets SET accounts=? WHERE id=?", (json.dumps(account_ids), set_id))
+    if category is not None:
+        _exec("UPDATE channel_sets SET category=? WHERE id=?", (category or None, set_id))
 
 
 def delete_set(set_id: str) -> None:

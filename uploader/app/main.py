@@ -367,7 +367,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-자동삭제"
+APP_VERSION = "2026-09-11-세트카테고리"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -783,9 +783,10 @@ async def delete_verify_file(filename: str) -> dict:
 class SetIn(BaseModel):
     name: str = ""
     account_ids: list[str] = Field(default_factory=list)
+    category: str = ""
 
 
-def _clean_set(payload: SetIn) -> tuple[str, list[str]]:
+def _clean_set(payload: SetIn) -> tuple[str, list[str], str]:
     name = payload.name.strip()[:40]
     if not name:
         raise HTTPException(400, "세트 이름을 입력하세요.")
@@ -799,7 +800,7 @@ def _clean_set(payload: SetIn) -> tuple[str, list[str]]:
         ids.append(account_id)
     if not ids:
         raise HTTPException(400, "세트에 넣을 계정을 1개 이상 선택하세요.")
-    return name, ids
+    return name, ids, payload.category.strip()[:40]
 
 
 @app.get("/api/sets")
@@ -809,16 +810,16 @@ async def get_sets() -> dict:
 
 @app.post("/api/sets")
 async def create_set(payload: SetIn) -> dict:
-    name, ids = _clean_set(payload)
-    return {"id": db.create_set(name, ids)}
+    name, ids, category = _clean_set(payload)
+    return {"id": db.create_set(name, ids, category)}
 
 
 @app.patch("/api/sets/{set_id}")
 async def update_set(set_id: str, payload: SetIn) -> dict:
     if not db.get_set(set_id):
         raise HTTPException(404, "세트를 찾을 수 없습니다.")
-    name, ids = _clean_set(payload)
-    db.update_set(set_id, name=name, account_ids=ids)
+    name, ids, category = _clean_set(payload)
+    db.update_set(set_id, name=name, account_ids=ids, category=category)
     return {"ok": True}
 
 
