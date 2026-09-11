@@ -47,13 +47,15 @@ def _schedule_retry(target: dict, message: str) -> bool:
     if count >= len(RETRY_DELAYS_MIN):
         return False
     minutes = RETRY_DELAYS_MIN[count]
+    when = time.time() + minutes * 60
+    clock = time.strftime("%H:%M", time.localtime(when))
     db.update_target(
         target["id"],
         status="retry",
         progress=0,
-        message=f"{message[:400]} — {_retry_label(minutes)} 뒤 자동으로 다시 시도합니다"
-                f" ({count + 1}/{len(RETRY_DELAYS_MIN)})",
-        retry_at=time.time() + minutes * 60,
+        message=f"{message[:400]} — {clock}에 자동으로 다시 올립니다"
+                f" ({_retry_label(minutes)} 뒤 · 예약 {count + 1}/{len(RETRY_DELAYS_MIN)})",
+        retry_at=when,
         retry_count=count + 1,
     )
     return True

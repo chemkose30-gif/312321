@@ -388,7 +388,7 @@ async def ig_publish_with_retry(
             wait = 15 * attempt
             await progress(
                 4,
-                f"Instagram 일시 오류 — {wait}초 뒤 다시 시도합니다 "
+                f"Instagram 일시 오류 — {wait}초 뒤 바로 다시 시도합니다 "
                 f"({attempt + 1}/{IG_CONTAINER_TRIES})",
             )
             await asyncio.sleep(wait)
@@ -406,7 +406,7 @@ async def ig_publish_with_retry(
                 raise
             last = exc
     raise PublishError(
-        f"{last} (인스타그램 일시 오류가 {IG_CONTAINER_TRIES}번 반복됐습니다.)",
+        f"{last} (바로 {IG_CONTAINER_TRIES}번 다시 시도했지만 같은 오류였습니다.)",
         transient=True,
     )
 
@@ -472,7 +472,7 @@ async def ig_media_publish(
             wait = 10 * attempt
             await progress(
                 92,
-                f"Instagram 게시 재시도 중 ({attempt + 1}/{IG_PUBLISH_TRIES}) — {wait}초 대기",
+                f"Instagram 바로 다시 시도 중 ({attempt + 1}/{IG_PUBLISH_TRIES}) — {wait}초 대기",
             )
             await asyncio.sleep(wait)
         res = await client.post(
@@ -496,13 +496,12 @@ async def ig_media_publish(
         return found, "인스타그램이 오류를 냈지만 게시물은 정상적으로 올라갔습니다."
 
     tail = (
-        "계정에도 올라가지 않았습니다. 10~30분 뒤 다시 올려주세요."
+        "계정에도 올라가지 않은 것을 확인했습니다."
         if checked
-        else "실제로 올라갔는지는 확인하지 못했습니다. "
-             "인스타그램 앱에서 먼저 확인한 뒤 다시 올려주세요(중복 게시 주의)."
+        else "실제로 올라갔는지는 확인하지 못했습니다(중복 게시 주의)."
     )
     raise PublishError(
         f"Instagram 게시 실패: {last} "
-        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. {tail})",
+        f"(바로 {IG_PUBLISH_TRIES}번 다시 시도했지만 같은 오류였습니다. {tail})",
         transient=checked,   # 확인 결과 안 올라갔을 때만 자동 재시도한다
     )
