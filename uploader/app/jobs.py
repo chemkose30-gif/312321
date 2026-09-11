@@ -70,6 +70,13 @@ async def _run_target(job: dict, target: dict) -> str:
             raise PublishError("연결된 계정을 찾을 수 없습니다. 계정을 다시 연결하세요.")
         options = (job.get("options") or {}).get(platform, {}) or {}
 
+        # 이 계정에만 다른 제목을 쓰기로 했으면 그 제목으로 바꿔 게시한다.
+        # (build_caption 이 job["title"] 을 보므로 작업 자체를 복사해서 넘긴다)
+        override = (target.get("title") or "").strip()
+        if override:
+            job = {**job, "title": override}
+            options = {**options, "title": override}
+
         if demo_platform(platform):
             result = await _demo_publish(platform, job, progress)
         elif not account.get("access_token"):

@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS job_targets (
     job_id     TEXT NOT NULL,
     platform   TEXT NOT NULL,
     account_id TEXT NOT NULL,
+    title      TEXT,
     status     TEXT NOT NULL DEFAULT 'pending',
     progress   INTEGER NOT NULL DEFAULT 0,
     message    TEXT NOT NULL DEFAULT '',
@@ -73,11 +74,12 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE TABLE IF NOT EXISTS channel_sets (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    accounts   TEXT NOT NULL DEFAULT '[]',
-    category   TEXT,
-    created_at REAL NOT NULL
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    accounts       TEXT NOT NULL DEFAULT '[]',
+    category       TEXT,
+    title_template TEXT,
+    created_at     REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS oauth_states (
@@ -113,6 +115,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     set_columns = {row["name"] for row in conn.execute("PRAGMA table_info(channel_sets)")}
     if "category" not in set_columns:
         conn.execute("ALTER TABLE channel_sets ADD COLUMN category TEXT")
+    if "title_template" not in set_columns:
+        conn.execute("ALTER TABLE channel_sets ADD COLUMN title_template TEXT")
+
+    target_columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_targets)")}
+    if "title" not in target_columns:
+        conn.execute("ALTER TABLE job_targets ADD COLUMN title TEXT")
 
 
 def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -282,12 +290,13 @@ def create_job(
     return job_id
 
 
-def add_target(job_id: str, platform: str, account_id: str) -> str:
+def add_target(job_id: str, platform: str, account_id: str, title: str = "") -> str:
     target_id = new_id("tgt")
     _exec(
-        "INSERT INTO job_targets (id, job_id, platform, account_id, status, progress, message, updated_at)"
-        " VALUES (?,?,?,?,'pending',0,'대기 중',?)",
-        (target_id, job_id, platform, account_id, time.time()),
+        "INSERT INTO job_targets (id, job_id, platform, account_id, title,"
+        " status, progress, message, updated_at)"
+        " VALUES (?,?,?,?,?,'pending',0,'대기 중',?)",
+        (target_id, job_id, platform, account_id, title or None, time.time()),
     )
     return target_id
 
@@ -408,6 +417,7 @@ def _set_dict(row: sqlite3.Row, valid: set[str]) -> dict:
         "name": row["name"],
         "account_ids": ids,
         "category": (row["category"] if "category" in row.keys() else None) or "",
+        "title_template": (row["title_template"] if "title_template" in row.keys() else None) or "",
         "created_at": row["created_at"],
     }
 
@@ -426,11 +436,15 @@ def get_set(set_id: str) -> dict | None:
     return _set_dict(rows[0], _valid_account_ids()) if rows else None
 
 
-def create_set(name: str, account_ids: list[str], category: str = "") -> str:
+def create_set(
+    name: str, account_ids: list[str], category: str = "", title_template: str = ""
+) -> str:
     set_id = new_id("set")
     _exec(
-        "INSERT INTO channel_sets (id, name, accounts, category, created_at) VALUES (?,?,?,?,?)",
-        (set_id, name, json.dumps(account_ids), category or None, time.time()),
+        "INSERT INTO channel_sets (id, name, accounts, category, title_template, created_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (set_id, name, json.dumps(account_ids), category or None,
+         title_template or None, time.time()),
     )
     return set_id
 
@@ -441,6 +455,7 @@ def update_set(
     name: str | None = None,
     account_ids: list[str] | None = None,
     category: str | None = None,
+    title_template: str | None = None,
 ) -> None:
     if name is not None:
         _exec("UPDATE channel_sets SET name=? WHERE id=?", (name, set_id))
@@ -448,6 +463,11 @@ def update_set(
         _exec("UPDATE channel_sets SET accounts=? WHERE id=?", (json.dumps(account_ids), set_id))
     if category is not None:
         _exec("UPDATE channel_sets SET category=? WHERE id=?", (category or None, set_id))
+    if title_template is not None:
+        _exec(
+            "UPDATE channel_sets SET title_template=? WHERE id=?",
+            (title_template or None, set_id),
+        )
 
 
 def delete_set(set_id: str) -> None:
