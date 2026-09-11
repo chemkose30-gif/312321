@@ -11,7 +11,14 @@ Progress = Callable[[int, str], Awaitable[None]]
 
 
 class PublishError(Exception):
-    """플랫폼 API가 거부했거나 업로드가 실패했을 때."""
+    """플랫폼 API가 거부했거나 업로드가 실패했을 때.
+
+    transient=True 면 플랫폼 쪽 일시 오류라 다시 시도해 볼 가치가 있다.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 @dataclass
@@ -189,8 +196,9 @@ async def wait_for_ig_container(
         if last_code == "FINISHED":
             return
         if last_code in ("ERROR", "EXPIRED"):
+            detail = body.get("status") or last_code
             raise PublishError(
-                f"Instagram 영상 처리 실패: {body.get('status') or last_code}"
+                f"Instagram 영상 처리 실패: {detail}", transient=(last_code == "ERROR")
             )
 
 
@@ -269,7 +277,9 @@ async def ig_resumable_upload(
         ),
     )
     if res.status_code >= 400:
-        raise PublishError(f"Instagram 전송 실패: {res.text[:300]}")
+        raise PublishError(
+            f"Instagram 전송 실패: {res.text[:300]}", transient=ig_is_transient(res.text)
+        )
     body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
     if body and body.get("success") is False:
         raise PublishError(f"Instagram 전송 실패: {res.text[:300]}")
@@ -277,6 +287,18 @@ async def ig_resumable_upload(
 
 # 어떤 방식이 되는지 한 번 확인하면 기억해 둔다 ("resumable" | "pull").
 IG_MODE_KEY = "ig_upload_mode"
+
+# 인스타그램 쪽 일시 오류 — 같은 영상이라도 다시 하면 되는 경우가 많다.
+# 2207085 "내부 서버 오류가 발생했습니다. 나중에 다시 시도해주세요."
+IG_TRANSIENT_MARKERS = ("2207085", "2207001", "2207003", '"is_transient":true', "please retry")
+IG_PUBLISH_TRIES = 3
+# 컨테이너는 실패하면 영상을 다시 보내야 해서(대용량이면 비싸다) 한 번만 더 시도한다.
+IG_CONTAINER_TRIES = 2
+
+
+def ig_is_transient(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m.lower() in low for m in IG_TRANSIENT_MARKERS)
 
 
 async def ig_create_container(
@@ -333,8 +355,92 @@ async def ig_create_container(
         params={**params, "video_url": video_url, "access_token": token},
     )
     if res.status_code >= 400:
-        raise PublishError(f"Instagram 컨테이너 생성 실패: {res.text[:300]}")
+        raise PublishError(
+            f"Instagram 컨테이너 생성 실패: {res.text[:300]}",
+            transient=ig_is_transient(res.text),
+        )
     container_id = (res.json() or {}).get("id")
     if not container_id:
         raise PublishError("Instagram이 컨테이너 ID를 반환하지 않았습니다.")
     return container_id
+
+
+async def ig_publish_with_retry(
+    client,
+    base: str,
+    api_version: str,
+    ig_user_id: str,
+    token: str,
+    params: dict,
+    job: dict,
+    progress: Progress,
+    video_url: str,
+) -> str:
+    """컨테이너를 만들고 처리가 끝날 때까지 기다린다.
+
+    인스타그램 쪽 일시 오류(내부 서버 오류, 인코딩 실패)는 다시 하면 되는 경우가
+    많아서 몇 번 재시도한다. 거부 사유가 분명한 오류는 곧바로 알린다.
+    """
+    last: PublishError | None = None
+    for attempt in range(IG_CONTAINER_TRIES):
+        if attempt:
+            wait = 15 * attempt
+            await progress(
+                4,
+                f"Instagram 일시 오류 — {wait}초 뒤 다시 시도합니다 "
+                f"({attempt + 1}/{IG_CONTAINER_TRIES})",
+            )
+            await asyncio.sleep(wait)
+        try:
+            container_id = await ig_create_container(
+                client, base, api_version, ig_user_id, token, params, job, progress, video_url,
+            )
+            await wait_for_ig_container(
+                client, base, container_id, token, progress,
+                size_bytes=job.get("video_size") or 0,
+            )
+            return container_id
+        except PublishError as exc:
+            if not getattr(exc, "transient", False):
+                raise
+            last = exc
+    raise PublishError(
+        f"{last} (인스타그램 일시 오류가 {IG_CONTAINER_TRIES}번 반복됐습니다. "
+        "잠시 뒤 다시 올려주세요.)"
+    )
+
+
+async def ig_media_publish(
+    client, base: str, ig_user_id: str, container_id: str, token: str, progress: Progress
+) -> str:
+    """처리가 끝난 컨테이너를 실제로 게시한다.
+
+    영상은 이미 인스타그램에 올라가 있으므로 재시도 비용이 없다.
+    일시 오류로 여기서 실패하는 경우가 잦아 여러 번 시도한다.
+    """
+    last = ""
+    for attempt in range(IG_PUBLISH_TRIES):
+        if attempt:
+            wait = 10 * attempt
+            await progress(
+                92,
+                f"Instagram 게시 재시도 중 ({attempt + 1}/{IG_PUBLISH_TRIES}) — {wait}초 대기",
+            )
+            await asyncio.sleep(wait)
+        res = await client.post(
+            f"{base}/{ig_user_id}/media_publish",
+            params={"creation_id": container_id, "access_token": token},
+        )
+        if res.status_code < 400:
+            media_id = (res.json() or {}).get("id")
+            if media_id:
+                return media_id
+            last = "인스타그램이 게시물 ID를 돌려주지 않았습니다."
+            continue
+        last = res.text[:300]
+        if not ig_is_transient(res.text):
+            raise PublishError(f"Instagram 게시 실패: {last}")
+    raise PublishError(
+        f"Instagram 게시 실패: {last} "
+        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. 잠시 뒤 다시 올려주세요.)"
+    )

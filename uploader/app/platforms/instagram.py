@@ -15,8 +15,8 @@ from .base import (
     PublishError,
     PublishResult,
     build_caption,
-    ig_create_container,
-    wait_for_ig_container,
+    ig_media_publish,
+    ig_publish_with_retry,
 )
 
 
@@ -36,23 +36,14 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
     }
 
     async with httpx.AsyncClient(timeout=None) as client:
-        container_id = await ig_create_container(
+        container_id = await ig_publish_with_retry(
             client, GRAPH, META_API_VERSION, ig_user_id, token, params, job, progress, video_url,
         )
 
-        await wait_for_ig_container(
-            client, GRAPH, container_id, token, progress,
-            size_bytes=job.get("video_size") or 0,
-        )
-
         await progress(92, "게시 중")
-        publish_res = await client.post(
-            f"{GRAPH}/{ig_user_id}/media_publish",
-            params={"creation_id": container_id, "access_token": token},
+        media_id = await ig_media_publish(
+            client, GRAPH, ig_user_id, container_id, token, progress,
         )
-        if publish_res.status_code >= 400:
-            raise PublishError(f"Instagram 게시 실패: {publish_res.text}")
-        media_id = (publish_res.json() or {}).get("id")
 
         url = None
         if media_id:
