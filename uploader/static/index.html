@@ -1489,9 +1489,11 @@ function renderAccountPanels(){
             ? '<span class="tagbadge on">연결됨</span>'
             : `<a class="tagbadge need" href="/api/oauth/${p.key}/start" title="로그인해서 게시 권한을 붙입니다">로그인 연결 필요</a>`}
           ${p.key === 'instagram' && a.linked
-            ? `<span class="tagbadge ${a.auth === 'instagram_login' ? 'on' : 'need'}"
-                title="이 계정이 어떤 방식으로 연결됐는지">${
-                a.auth === 'instagram_login' ? '인스타 직접' : '페북 페이지 경유'}</span>` : ''}
+            ? (a.auth === 'instagram_login'
+                ? '<span class="tagbadge on" title="인스타그램에 직접 로그인해 연결된 계정">인스타 직접</span>'
+                : `<a class="tagbadge need" href="/api/oauth/instagram/start"
+                     title="이 계정만 예전 방식으로 연결돼 있습니다. 눌러서 인스타 직접 로그인으로 다시 연결하세요">페북 페이지 경유 · 다시 연결 ↻</a>`)
+            : ''}
           <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (선택)">
           <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>

@@ -187,6 +187,14 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
             else "아직 판별 전 (첫 게시 때 정해집니다)"
         )
     ))
+
+    # 앱은 인스타 직접 로그인을 쓰는데 이 계정만 예전 방식(페북 페이지 경유)이면
+    # 그 계정만 게시가 실패하는 일이 잦다.
+    if instagram_login.enabled() and not login_mode:
+        out.append(warn(
+            "이 계정만 '페이스북 페이지 경유'로 연결돼 있습니다(다른 계정은 인스타 직접 로그인). "
+            "이 계정에서만 게시가 실패한다면 계정을 삭제하고 '로그인으로 연결'로 다시 연결하세요."
+        ))
     if pull_mode and not PUBLIC_BASE_URL.startswith("https://"):
         out.append(err(
             "인스타그램이 이 서버에서 영상을 내려받는 방식인데 공개 https 주소가 아닙니다 "
