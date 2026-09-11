@@ -255,29 +255,31 @@ async def facebook(account: dict, job: dict, options: dict) -> list[Issue]:
     if len(description) > 5000:
         out.append(warn(f"설명이 {len(description)}자입니다. 5000자까지만 올라갑니다."))
 
+    # 페이지 노드에는 tasks 필드가 없다(그건 /me/accounts 목록에만 있음).
+    # 페이지 토큰으로 페이지가 조회되면 토큰이 살아 있다는 뜻이다.
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             res = await client.get(
                 f"{GRAPH}/{page_id}",
-                params={"fields": "id,name,tasks", "access_token": token},
+                params={"fields": "id,name", "access_token": token},
             )
     except httpx.HTTPError as exc:
         out.append(warn(f"페이스북 상태를 확인하지 못했습니다: {exc}"))
         return out
 
     if res.status_code >= 400:
-        message = ((res.json() or {}).get("error") or {}).get("message") or res.text[:200]
-        out.append(err(f"페이스북이 페이지 조회를 거부했습니다(로그인 만료일 수 있습니다): {message}"))
+        error = (res.json() or {}).get("error") or {}
+        message = error.get("message") or res.text[:200]
+        if error.get("code") in (190, 102):
+            out.append(err(
+                f"페이스북 로그인이 만료됐습니다. 계정 관리에서 다시 연결하세요. ({message})"
+            ))
+        else:
+            out.append(err(f"페이스북이 페이지 조회를 거부했습니다: {message}"))
         return out
 
     data = res.json() or {}
-    tasks = data.get("tasks") or []
-    if tasks and "CREATE_CONTENT" not in tasks:
-        out.append(err(
-            f"'{data.get('name')}' 페이지에 글을 쓸 권한이 없습니다. "
-            "페이지 관리자 권한(콘텐츠 만들기)이 필요합니다."
-        ))
-    elif not _has_error(out):
+    if not _has_error(out):
         out.append(ok(f"페이지 '{data.get('name') or account['name']}' 게시 가능"))
     return out
 
