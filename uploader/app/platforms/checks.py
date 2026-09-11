@@ -228,6 +228,37 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
         out.append(err(f"인스타그램이 계정 조회를 거부했습니다(로그인 만료일 수 있습니다): {message}"))
         return out
 
+    # 계정 자체 정보도 같이 보여준다 — 한 계정만 실패할 때 구분하기 위해서.
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            info = await client.get(
+                f"{base}/{ig_user_id}",
+                params={
+                    "fields": "username,media_count" + (",account_type" if login_mode else ""),
+                    "access_token": token,
+                },
+            )
+        if info.status_code < 400:
+            data = info.json() or {}
+            bits = [f"@{data.get('username')}" if data.get("username") else ""]
+            if data.get("account_type"):
+                bits.append(f"유형 {data['account_type']}")
+            if data.get("media_count") is not None:
+                bits.append(f"게시물 {data['media_count']}개")
+            detail = " · ".join(b for b in bits if b)
+            if detail:
+                out.append(ok(f"계정 확인: {detail}"))
+            if login_mode and data.get("account_type") not in (None, "BUSINESS", "MEDIA_CREATOR"):
+                out.append(err(
+                    f"이 계정은 '{data.get('account_type')}' 유형이라 API 게시가 안 됩니다. "
+                    "인스타 앱에서 프로페셔널(비즈니스/크리에이터) 계정으로 바꾸세요."
+                ))
+        else:
+            reason = ((info.json() or {}).get("error") or {}).get("message") or info.text[:150]
+            out.append(warn(f"계정 정보를 읽지 못했습니다: {reason}"))
+    except httpx.HTTPError:
+        pass
+
     rows = (res.json() or {}).get("data") or [{}]
     row = rows[0] if rows else {}
     used = row.get("quota_usage")
