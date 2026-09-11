@@ -1,7 +1,7 @@
 """Facebook 페이지 영상 게시 (Graph API)."""
 import httpx
 
-from ..config import GRAPH, GRAPH_VIDEO
+from ..config import GRAPH, GRAPH_VIDEO, PUBLIC_BASE_URL
 from .base import Progress, PublishError, PublishResult, build_caption, multipart_body
 
 # 다시 하면 되는 페이스북 오류들.
@@ -10,6 +10,15 @@ from .base import Progress, PublishError, PublishResult, build_caption, multipar
 TRANSIENT_CODES = {1, 2, 4, 17, 32, 613}
 TRANSIENT_SUBCODES = {1363030, 1363019, 1363037}
 AUTH_CODES = {102, 190, 463, 467}
+
+
+def _log_failure(how: str, res) -> None:
+    """원인 추적용 — 서버 로그에 상태와 응답을 남긴다."""
+    body = (res.text or "")[:500].replace("\n", " ")
+    print(
+        f"[facebook] {how} 실패 HTTP {res.status_code} "
+        f"content-type={res.headers.get('content-type')!r} body={body!r}"
+    )
 
 
 def _explain(res) -> PublishError:
@@ -85,9 +94,30 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             },
             content=factory(progress),
         )
-        if res.status_code >= 400:
-            raise _explain(res)
-        video_id = (res.json() or {}).get("id")
+        video_id = (res.json() or {}).get("id") if res.status_code < 400 else None
+
+        if not video_id:
+            _log_failure("파일 직접 전송", res)
+            first = _explain(res)
+            # 파일을 직접 밀어넣는 방식이 막히면, 페이스북이 우리 서버에서
+            # 내려받게 하는 방식(file_url)으로 한 번 더 시도한다.
+            media_url = f"{PUBLIC_BASE_URL}/media/{job.get('media_token') or ''}"
+            if not PUBLIC_BASE_URL.startswith("https://") or not job.get("media_token"):
+                raise first
+            await progress(10, "다른 방식으로 다시 시도 중 (페이스북이 영상을 가져감)")
+            res = await client.post(
+                f"{GRAPH}/{page_id}/videos",
+                params={**fields, "file_url": media_url},
+            )
+            if res.status_code >= 400:
+                _log_failure("file_url", res)
+                second = _explain(res)
+                raise PublishError(
+                    f"{first} / 다른 방식도 실패: {second}",
+                    transient=getattr(first, "transient", False)
+                    or getattr(second, "transient", False),
+                )
+            video_id = (res.json() or {}).get("id")
 
         url = f"https://www.facebook.com/{video_id}" if video_id else None
         if video_id:
