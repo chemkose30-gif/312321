@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
+from starlette.requests import ClientDisconnect
 from urllib.parse import unquote, urlparse
 
 from fastapi.responses import (
@@ -382,7 +383,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-인스타계정점검"
+APP_VERSION = "2026-09-11-실패로그"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -897,6 +898,11 @@ async def upload_media_raw(request: Request) -> dict:
     except HTTPException:
         dest.unlink(missing_ok=True)
         raise
+    except ClientDisconnect:
+        # 사용자가 업로드 중 창을 닫거나 취소한 경우 — 오류가 아니다.
+        dest.unlink(missing_ok=True)
+        print(f"[upload] 업로드가 중단되었습니다 ({size / 1024 / 1024:.0f}MB 수신 후)")
+        raise HTTPException(499, "업로드가 중단되었습니다.")
     except Exception:
         dest.unlink(missing_ok=True)
         raise

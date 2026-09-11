@@ -178,7 +178,15 @@ async def instagram(account: dict, job: dict, options: dict) -> list[Issue]:
     base = instagram_login.GRAPH if login_mode else GRAPH
 
     from .. import db
-    pull_mode = (db.get_setting(IG_MODE_KEY) or "") == "pull"
+    mode = db.get_setting(IG_MODE_KEY) or ""
+    pull_mode = mode == "pull"
+    out.append(ok(
+        "전송 방식: " + (
+            "이 서버에서 인스타그램이 내려받음" if pull_mode
+            else "메타로 직접 전송" if mode == "resumable"
+            else "아직 판별 전 (첫 게시 때 정해집니다)"
+        )
+    ))
     if pull_mode and not PUBLIC_BASE_URL.startswith("https://"):
         out.append(err(
             "인스타그램이 이 서버에서 영상을 내려받는 방식인데 공개 https 주소가 아닙니다 "

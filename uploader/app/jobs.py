@@ -61,6 +61,15 @@ def _schedule_retry(target: dict, message: str) -> bool:
     return True
 
 
+def _log_target_failure(platform: str, target: dict, message: str, *, transient: bool) -> None:
+    """게시 실패를 서버 로그에도 남긴다 — 어느 계정이 왜 막히는지 추적하려면 필요하다."""
+    account = db.get_account(target["account_id"], with_tokens=False) or {}
+    print(
+        f"[publish] {platform} 실패 · 계정={account.get('display_name') or target['account_id']}"
+        f" · 재시도대상={transient} · {message[:400]}"
+    )
+
+
 def _progress_for(target_id: str) -> Progress:
     async def report(pct: int, message: str) -> None:
         db.update_target(target_id, status="running", progress=max(0, min(pct, 99)), message=message)
@@ -122,12 +131,14 @@ async def _run_target(job: dict, target: dict) -> str:
         )
         return "success"
     except PublishError as exc:
+        _log_target_failure(platform, target, str(exc), transient=getattr(exc, "transient", False))
         if getattr(exc, "transient", False) and _schedule_retry(target, str(exc)):
             return "retry"
         db.update_target(target_id, status="failed", message=str(exc)[:800])
         return "failed"
     except Exception as exc:  # 네트워크/예상 못한 오류 — 일시적일 수 있어 다시 시도한다
         message = f"{type(exc).__name__}: {exc}"[:800]
+        _log_target_failure(platform, target, message, transient=True)
         if _schedule_retry(target, message):
             return "retry"
         db.update_target(target_id, status="failed", message=message)
