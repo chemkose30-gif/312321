@@ -819,16 +819,16 @@ function updateCounters(){
 }
 
 /* ── 세트별 제목 ── */
-const TITLE_EMOJI = ['🔥','✨','💫','⭐','🎬','💥','🌟','🎯','💎','🚀'];
-
 function applyTemplate(tpl, {title, set, index}){
   if(!tpl) return title;
+  const d = new Date();
+  const date = `${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
   return tpl
     .replaceAll('{제목}', title)
     .replaceAll('{세트}', set.name || '')
     .replaceAll('{카테고리}', set.category || '')
     .replaceAll('{번호}', String(index + 1))
-    .replaceAll('{이모지}', TITLE_EMOJI[(index + state.tags.length) % TITLE_EMOJI.length])
+    .replaceAll('{날짜}', date)
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -1709,13 +1709,13 @@ function openSetEditor(setId){
       <input type="text" id="setTemplate" placeholder="비우면 공통 제목 그대로"
              value="${esc(set ? (set.title_template || '') : '')}" maxlength="200">
       <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-        ${['{제목}', '{제목} | {세트}', '[{카테고리}] {제목}', '{제목} {이모지}']
+        ${['{제목}', '{제목} | {세트}', '[{카테고리}] {제목}', '{제목} ({날짜})']
           .map(t => `<button type="button" class="btn sm" data-tpl="${esc(t)}">${esc(t)}</button>`).join('')}
       </div>
       <div class="small muted" style="margin-top:7px">
         쓸 수 있는 것 — <span class="mono">{제목}</span> 업로드 화면에 적은 제목 ·
         <span class="mono">{세트}</span> 세트 이름 · <span class="mono">{카테고리}</span> 세트 카테고리 ·
-        <span class="mono">{번호}</span> 세트 순번 · <span class="mono">{이모지}</span> 매번 달라지는 이모지
+        <span class="mono">{번호}</span> 세트 순번 · <span class="mono">{날짜}</span> 오늘 날짜(09.11)
       </div>
       <label class="f">포함할 채널</label>
       ${columns || '<div class="small muted">연결된 계정이 없습니다. 먼저 계정을 추가하세요.</div>'}
