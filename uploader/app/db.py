@@ -354,6 +354,12 @@ def list_jobs(limit: int = 30) -> list[dict]:
     return jobs
 
 
+def active_video_paths() -> set[str]:
+    """아직 게시 중인 작업이 쓰고 있는 영상 파일 경로 — 정리에서 제외해야 한다."""
+    rows = _rows("SELECT video_path FROM jobs WHERE status IN ('running','pending')")
+    return {r["video_path"] for r in rows if r["video_path"]}
+
+
 def find_job_by_media_token(token: str) -> dict | None:
     rows = _rows("SELECT * FROM jobs WHERE media_token=?", (token,))
     return _job_dict(rows[0]) if rows else None

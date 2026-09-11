@@ -432,6 +432,27 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <datalist id="catList"></datalist>
     <div id="accPanels"></div>
 
+    <div class="card" id="storageCard">
+      <h2>저장 공간</h2>
+      <p class="sub">업로드한 영상 원본은 서버 디스크에 보관됩니다. 꽉 차면 업로드와 게시가 느려지거나 실패합니다.
+        게시가 끝난 영상은 지워도 기록(제목·링크)은 그대로 남습니다.</p>
+      <div id="storageBox"></div>
+      <div class="row" style="margin-top:14px;align-items:center">
+        <label class="f" style="margin:0">보관 기간</label>
+        <select id="retention" style="max-width:150px">
+          <option value="1">1일</option>
+          <option value="3">3일</option>
+          <option value="7">7일</option>
+          <option value="14">14일</option>
+          <option value="30">30일</option>
+        </select>
+        <button class="btn" id="btnCleanup">지금 정리</button>
+        <button class="btn danger" id="btnCleanupAll">전부 비우기</button>
+      </div>
+      <div class="warn">보관 기간이 지난 원본은 자동으로 지워집니다. 여유 공간이 3GB 미만이면
+        기간과 상관없이 오래된 것부터 지웁니다. <b>게시가 진행 중인 영상은 지우지 않습니다.</b></div>
+    </div>
+
     <div class="card" id="speedCard">
       <h2>속도 진단</h2>
       <p class="sub">어디가 느린지 실제로 재봅니다. 내 인터넷 → 서버 구간, 서버 디스크·CPU, 각 플랫폼까지의 응답 시간을
@@ -558,6 +579,7 @@ async function loadPlatforms(){
   renderSets();
   renderHome();
   loadVersion();
+  loadStorage();
 }
 
 async function loadSets(){
@@ -888,6 +910,63 @@ function refreshPublishButton(){
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
     : `${n}개 채널에 한 번에 올리기`;
 }
+
+/* ── 저장 공간 ── */
+function storageHtml(d){
+  const pct = d.total ? Math.round((d.total - d.free) / d.total * 100) : 0;
+  const low = d.free < 3 * 1024**3;
+  return `<div class="meta-list" style="margin-top:12px">
+      <div class="meta-row"><span>남은 공간</span>
+        <span style="color:${low ? 'var(--red)' : 'var(--green)'}"><b>${fmtSize(d.free)}</b>
+          <span class="small muted">/ 전체 ${fmtSize(d.total)}</span></span></div>
+      <div class="meta-row"><span>영상 원본 보관</span>
+        <span><b>${fmtSize(d.uploads)}</b> <span class="small muted">${d.file_count ?? '-'}개 파일</span></span></div>
+      <div class="bar" style="margin-top:10px"><i style="width:${pct}%;background:${low ? 'var(--red)' : 'var(--blue)'}"></i></div>
+      <div class="small muted" style="margin-top:6px">${pct}% 사용 중</div>
+    </div>`;
+}
+
+async function loadStorage(){
+  const box = $('#storageBox');
+  if(!box) return;
+  try{
+    const d = await fetch('/api/storage').then(r => r.json());
+    box.innerHTML = storageHtml(d);
+    const sel = $('#retention');
+    if(sel) sel.value = String(d.retention_days);
+  }catch(_){
+    box.innerHTML = '<div class="small muted" style="margin-top:12px">저장 공간 정보를 불러오지 못했습니다.</div>';
+  }
+}
+
+async function cleanupStorage(days){
+  const box = $('#storageBox');
+  box.innerHTML = '<div class="small muted" style="margin-top:12px">정리하는 중입니다...</div>';
+  const res = await fetch('/api/storage/cleanup', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(days === null ? {days: 0} : {days}),
+  });
+  const d = await res.json().catch(() => ({}));
+  if(!res.ok){ flash('err', '정리하지 못했습니다.'); loadStorage(); return; }
+  flash(d.removed ? 'ok' : 'err',
+    d.removed ? `${d.removed}개 파일을 지워 ${fmtSize(d.freed)}를 확보했습니다.`
+              : '지울 수 있는 파일이 없습니다. (보관 기간 안이거나 게시 중인 영상입니다)');
+  loadStorage();
+}
+
+if($('#btnCleanup')) $('#btnCleanup').onclick = () => cleanupStorage(Number($('#retention').value));
+if($('#btnCleanupAll')) $('#btnCleanupAll').onclick = () => {
+  if(!confirm('보관 중인 영상 원본을 전부 지울까요?\n게시 중인 영상은 남고, 지난 업로드 기록도 그대로 남습니다.')) return;
+  cleanupStorage(null);
+};
+if($('#retention')) $('#retention').onchange = async e => {
+  await fetch('/api/storage/retention', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({days: Number(e.target.value)}),
+  });
+  flash('ok', `보관 기간을 ${e.target.value}일로 바꿨습니다.`);
+  loadStorage();
+};
 
 /* ── 속도 진단 ── */
 async function loadVersion(){

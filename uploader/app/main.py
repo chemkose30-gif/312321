@@ -367,7 +367,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-10-속도진단"
+APP_VERSION = "2026-09-11-저장공간"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -385,6 +385,37 @@ async def version() -> dict:
         "started_at": BUILD_STARTED,
         "uptime_sec": int(time.time() - BUILD_STARTED),
     }
+
+
+class RetentionIn(BaseModel):
+    days: int
+
+
+@app.get("/api/storage")
+async def get_storage() -> dict:
+    disk = jobs.disk_usage()
+    files = [p for p in Path(UPLOAD_DIR).glob("*") if p.is_file()]
+    return {
+        **disk,
+        "file_count": len(files),
+        "retention_days": jobs.retention_days(),
+        "min_free_bytes": jobs.MIN_FREE_BYTES,
+    }
+
+
+@app.post("/api/storage/cleanup")
+async def run_cleanup(payload: RetentionIn | None = None) -> dict:
+    """지금 바로 오래된 영상 원본을 지운다. 게시 중인 영상은 남긴다."""
+    days = payload.days if payload else None
+    result = jobs.cleanup_old_files(days)
+    return {**result, **jobs.disk_usage()}
+
+
+@app.post("/api/storage/retention")
+async def set_retention(payload: RetentionIn) -> dict:
+    days = max(1, min(payload.days, 90))
+    db.set_setting(jobs.RETENTION_KEY, str(days))
+    return {"retention_days": days}
 
 
 @app.post("/api/speedtest/upload")

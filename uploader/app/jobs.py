@@ -111,6 +111,16 @@ async def run_job(job_id: str) -> None:
 
 # 디스크가 이만큼도 안 남으면 오래된 것부터 지운다. 여유가 없으면 쓰기가 급격히 느려진다.
 MIN_FREE_BYTES = 3 * 1024**3
+RETENTION_KEY = "media_retention_days"
+DEFAULT_RETENTION_DAYS = 7
+
+
+def retention_days() -> int:
+    try:
+        value = int(db.get_setting(RETENTION_KEY) or DEFAULT_RETENTION_DAYS)
+    except ValueError:
+        return DEFAULT_RETENTION_DAYS
+    return max(1, min(value, 90))
 
 
 def disk_usage() -> dict:
@@ -124,30 +134,38 @@ def disk_usage() -> dict:
     return {"total": total, "used": used, "free": free, "uploads": uploads}
 
 
-def cleanup_old_files(max_age_days: int = 7) -> int:
-    """오래된 업로드 원본을 정리한다. 그래도 여유가 없으면 오래된 순으로 더 지운다."""
-    removed = 0
-    cutoff = time.time() - max_age_days * 86400
+def cleanup_old_files(max_age_days: int | None = None) -> dict:
+    """오래된 업로드 원본을 정리한다. 그래도 여유가 없으면 오래된 순으로 더 지운다.
+
+    게시가 진행 중인 영상은 건드리지 않는다.
+    """
+    days = retention_days() if max_age_days is None else max(0, max_age_days)
+    protected = db.active_video_paths()
+    removed, freed = 0, 0
+    cutoff = time.time() - days * 86400
     files = []
     for path in Path(UPLOAD_DIR).glob("*"):
         try:
-            if not path.is_file():
+            if not path.is_file() or str(path) in protected:
                 continue
             stat = path.stat()
         except OSError:
             continue
         if stat.st_mtime < cutoff:
             with contextlib.suppress(OSError):
+                size = stat.st_size
                 path.unlink()
                 removed += 1
+                freed += size
             continue
         files.append((stat.st_mtime, stat.st_size, path))
 
     # 보존 기간 안이어도 디스크가 부족하면 오래된 것부터 비운다.
     files.sort()
     while files and shutil.disk_usage(UPLOAD_DIR).free < MIN_FREE_BYTES:
-        _, _, path = files.pop(0)
+        _, size, path = files.pop(0)
         with contextlib.suppress(OSError):
             path.unlink()
             removed += 1
-    return removed
+            freed += size
+    return {"removed": removed, "freed": freed, "retention_days": days}
