@@ -108,11 +108,38 @@ async def run_job(job_id: str) -> None:
         status = "failed"
     db.set_job_status(job_id, status)
 
+    if delete_after_publish():
+        freed = drop_job_video(job)
+        if freed:
+            print(f"[cleanup] 게시 완료 후 원본 삭제 ({freed / 1024 / 1024:.0f}MB)")
+
 
 # 디스크가 이만큼도 안 남으면 오래된 것부터 지운다. 여유가 없으면 쓰기가 급격히 느려진다.
 MIN_FREE_BYTES = 3 * 1024**3
 RETENTION_KEY = "media_retention_days"
 DEFAULT_RETENTION_DAYS = 7
+# 게시가 끝나면 원본을 바로 지울지 ("on" 기본 / "off" 면 보관 기간까지 남긴다)
+DELETE_AFTER_KEY = "delete_after_publish"
+
+
+def delete_after_publish() -> bool:
+    return (db.get_setting(DELETE_AFTER_KEY) or "on") != "off"
+
+
+def drop_job_video(job: dict) -> int:
+    """게시가 끝난 작업의 영상 원본을 지운다. 지운 바이트 수를 돌려준다."""
+    path = Path(job.get("video_path") or "")
+    if not path.name or not path.exists():
+        return 0
+    # 같은 파일을 쓰는 다른 작업이 아직 돌고 있으면 건드리지 않는다.
+    if str(path) in db.active_video_paths():
+        return 0
+    try:
+        size = path.stat().st_size
+        path.unlink()
+        return size
+    except OSError:
+        return 0
 
 
 def retention_days() -> int:

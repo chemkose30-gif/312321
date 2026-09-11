@@ -437,8 +437,13 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <p class="sub">업로드한 영상 원본은 서버 디스크에 보관됩니다. 꽉 차면 업로드와 게시가 느려지거나 실패합니다.
         게시가 끝난 영상은 지워도 기록(제목·링크)은 그대로 남습니다.</p>
       <div id="storageBox"></div>
+      <label class="check" style="margin-top:14px;align-items:flex-start;line-height:1.6">
+        <input type="checkbox" id="autoDelete">
+        <span>게시가 끝나면 영상 원본을 <b>바로 삭제</b> — 디스크가 차지 않습니다.
+          (성공·실패와 관계없이 지우므로, 다시 올리려면 파일을 다시 업로드해야 합니다)</span>
+      </label>
       <div class="row" style="margin-top:14px;align-items:center">
-        <label class="f" style="margin:0">보관 기간</label>
+        <label class="f" style="margin:0">남는 것의 보관 기간</label>
         <select id="retention" style="max-width:150px">
           <option value="1">1일</option>
           <option value="3">3일</option>
@@ -934,6 +939,8 @@ async function loadStorage(){
     box.innerHTML = storageHtml(d);
     const sel = $('#retention');
     if(sel) sel.value = String(d.retention_days);
+    const auto = $('#autoDelete');
+    if(auto) auto.checked = !!d.delete_after_publish;
   }catch(_){
     box.innerHTML = '<div class="small muted" style="margin-top:12px">저장 공간 정보를 불러오지 못했습니다.</div>';
   }
@@ -958,6 +965,15 @@ if($('#btnCleanup')) $('#btnCleanup').onclick = () => cleanupStorage(Number($('#
 if($('#btnCleanupAll')) $('#btnCleanupAll').onclick = () => {
   if(!confirm('보관 중인 영상 원본을 전부 지울까요?\n게시 중인 영상은 남고, 지난 업로드 기록도 그대로 남습니다.')) return;
   cleanupStorage(null);
+};
+if($('#autoDelete')) $('#autoDelete').onchange = async e => {
+  await fetch('/api/storage/auto-delete', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({enabled: e.target.checked}),
+  });
+  flash('ok', e.target.checked
+    ? '이제 게시가 끝나면 영상 원본을 바로 지웁니다.'
+    : '원본을 보관 기간까지 남깁니다.');
 };
 if($('#retention')) $('#retention').onchange = async e => {
   await fetch('/api/storage/retention', {

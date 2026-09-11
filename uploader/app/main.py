@@ -367,7 +367,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-저장공간"
+APP_VERSION = "2026-09-11-자동삭제"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -400,6 +400,7 @@ async def get_storage() -> dict:
         "file_count": len(files),
         "retention_days": jobs.retention_days(),
         "min_free_bytes": jobs.MIN_FREE_BYTES,
+        "delete_after_publish": jobs.delete_after_publish(),
     }
 
 
@@ -409,6 +410,16 @@ async def run_cleanup(payload: RetentionIn | None = None) -> dict:
     days = payload.days if payload else None
     result = jobs.cleanup_old_files(days)
     return {**result, **jobs.disk_usage()}
+
+
+class AutoDeleteIn(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/storage/auto-delete")
+async def set_auto_delete(payload: AutoDeleteIn) -> dict:
+    db.set_setting(jobs.DELETE_AFTER_KEY, "on" if payload.enabled else "off")
+    return {"delete_after_publish": payload.enabled}
 
 
 @app.post("/api/storage/retention")
