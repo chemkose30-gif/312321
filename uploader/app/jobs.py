@@ -36,6 +36,35 @@ DEMO_URLS = {
 # 플랫폼 쪽 일시 오류로 실패하면 이 간격으로 자동 재시도한다.
 RETRY_DELAYS_MIN = (15, 60, 180)
 
+# 한 플랫폼에 동시에 몇 개까지 올릴지.
+# 인스타그램은 우리 서버에서 영상을 직접 내려받는 방식이라, 여러 계정에
+# 동시에 올리면 같은 파일을 동시에 여러 번 내려받게 된다. 대역폭이 갈리면
+# 늦게 받는 쪽이 인스타 내부 타임아웃에 걸려 'Fatal / 내부 오류' 로 실패한다.
+# 그래서 인스타는 한 번에 하나씩 순서대로 올린다.
+PLATFORM_CONCURRENCY = {"instagram": 1}
+DEFAULT_CONCURRENCY = 4
+
+
+def _limits() -> dict[str, asyncio.Semaphore]:
+    return {
+        platform: asyncio.Semaphore(PLATFORM_CONCURRENCY.get(platform, DEFAULT_CONCURRENCY))
+        for platform in PUBLISHERS
+    }
+
+
+async def _run_targets(job: dict, targets: list[dict]) -> list[str]:
+    """플랫폼별 동시 실행 개수를 제한하면서 게시한다."""
+    limits = _limits()
+
+    async def guarded(target: dict) -> str:
+        limit = limits.get(target["platform"])
+        if limit is None:
+            return await _run_target(job, target)
+        async with limit:
+            return await _run_target(job, target)
+
+    return list(await asyncio.gather(*(guarded(t) for t in targets)))
+
 
 def _retry_label(minutes: int) -> str:
     return f"{minutes}분" if minutes < 60 else f"{minutes // 60}시간"
@@ -178,7 +207,7 @@ async def retry_due_targets() -> int:
                 )
             continue
         db.set_job_status(job_id, "running")
-        results = await asyncio.gather(*(_run_target(job, t) for t in targets))
+        results = await _run_targets(job, targets)
         handled += len(results)
         # 이 작업의 모든 대상을 기준으로 상태를 다시 계산한다.
         fresh = db.get_job(job_id)
@@ -195,7 +224,7 @@ async def run_job(job_id: str) -> None:
     if not job:
         return
     db.set_job_status(job_id, "running")
-    results = await asyncio.gather(*(_run_target(job, t) for t in job["targets"]))
+    results = await _run_targets(job, job["targets"])
     db.set_job_status(job_id, _job_status(results))
 
     # 재시도가 남아 있으면 원본을 지우지 않는다(다시 보낼 때 필요).
