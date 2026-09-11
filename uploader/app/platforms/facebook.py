@@ -4,6 +4,40 @@ import httpx
 from ..config import GRAPH, GRAPH_VIDEO
 from .base import Progress, PublishError, PublishResult, build_caption, multipart_body
 
+# 다시 하면 되는 페이스북 오류들.
+#  1 = An unknown error occurred / 2 = Service temporarily unavailable
+#  4, 17, 32, 613 = 요청량 제한 / 1363030, 1363019 = 영상 처리 일시 실패
+TRANSIENT_CODES = {1, 2, 4, 17, 32, 613}
+TRANSIENT_SUBCODES = {1363030, 1363019, 1363037}
+AUTH_CODES = {102, 190, 463, 467}
+
+
+def _explain(res) -> PublishError:
+    """페이스북 응답을 읽을 수 있는 메시지로 바꾼다."""
+    try:
+        error = (res.json() or {}).get("error") or {}
+    except ValueError:
+        error = {}
+    code = error.get("code")
+    subcode = error.get("error_subcode")
+    message = (
+        error.get("error_user_msg")
+        or error.get("message")
+        or res.text[:300]
+    )
+    transient = code in TRANSIENT_CODES or subcode in TRANSIENT_SUBCODES
+
+    if code in AUTH_CODES:
+        return PublishError(
+            f"페이스북 로그인이 만료됐습니다. 계정 관리에서 다시 연결하세요. ({message})"
+        )
+    if code == 200 or subcode == 1363047:
+        return PublishError(
+            f"이 페이지에 영상을 올릴 권한이 없습니다. 페이지 관리자 권한을 확인하세요. ({message})"
+        )
+    tail = f" [code {code}" + (f"/{subcode}" if subcode else "") + "]" if code else ""
+    return PublishError(f"Facebook 업로드 실패: {message}{tail}", transient=transient)
+
 
 async def publish(account: dict, job: dict, options: dict, progress: Progress) -> PublishResult:
     token = account["access_token"]
@@ -32,7 +66,7 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             content=factory(progress),
         )
         if res.status_code >= 400:
-            raise PublishError(f"Facebook 업로드 실패: {res.text}")
+            raise _explain(res)
         video_id = (res.json() or {}).get("id")
 
         url = f"https://www.facebook.com/{video_id}" if video_id else None
