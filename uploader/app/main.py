@@ -367,7 +367,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-세트별제목"
+APP_VERSION = "2026-09-11-제목중복차단"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -1003,6 +1003,7 @@ class TargetIn(BaseModel):
     platform: str
     account_id: str
     title: str = ""      # 이 계정에만 쓸 제목 (비우면 공통 제목)
+    set_id: str = ""     # 어느 세트에서 온 계정인지 (제목 중복 검사용)
 
 
 class JobIn(BaseModel):
@@ -1014,6 +1015,33 @@ class JobIn(BaseModel):
     options: dict = Field(default_factory=dict)
 
 
+def _norm_title(text: str) -> str:
+    """공백·대소문자·문장부호 차이는 같은 제목으로 본다."""
+    text = re.sub(r"\s+", " ", (text or "").strip().lower())
+    return re.sub(r"[.,!?~\-_|/\\]+", "", text)
+
+
+def _reject_duplicate_titles(payload: JobIn) -> None:
+    """서로 다른 세트에 같은 제목으로 올리는 것을 막는다."""
+    by_set: dict[str, str] = {}
+    for target in payload.targets:
+        if not target.set_id:
+            continue
+        by_set.setdefault(target.set_id, _norm_title(target.title or payload.title))
+
+    seen: dict[str, str] = {}
+    for set_id, title in by_set.items():
+        if not title:
+            continue
+        if title in seen:
+            raise HTTPException(
+                400,
+                "세트마다 제목이 서로 달라야 합니다. "
+                "같은 제목으로 여러 세트에 올리면 중복 게시물로 잡히기 쉽습니다.",
+            )
+        seen[title] = set_id
+
+
 @app.post("/api/jobs")
 async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
     media = db.get_media(payload.media_id)
@@ -1021,6 +1049,7 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
         raise HTTPException(404, "업로드된 영상을 찾을 수 없습니다. 영상을 다시 올려주세요.")
     if not payload.targets:
         raise HTTPException(400, "게시할 플랫폼을 1개 이상 선택하세요.")
+    _reject_duplicate_titles(payload)
 
     for target in payload.targets:
         if target.platform not in PLATFORMS:
@@ -1049,6 +1078,21 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
 
     background.add_task(_launch, job_id)
     return {"job_id": job_id}
+
+
+def _previous_titles(account_id: str) -> dict[str, str]:
+    """이 계정에 예전에 올린 제목들 — 정규화한 제목 → 올린 날짜."""
+    out: dict[str, str] = {}
+    for job in db.list_jobs(200):
+        if not any(t["account_id"] == account_id for t in job["targets"]):
+            continue
+        for t in job["targets"]:
+            if t["account_id"] != account_id:
+                continue
+            title = _norm_title(t.get("title") or job.get("title") or "")
+            if title:
+                out.setdefault(title, time.strftime("%m/%d", time.localtime(job["created_at"])))
+    return out
 
 
 class PreflightIn(BaseModel):
@@ -1085,6 +1129,14 @@ async def _preflight_one(payload: PreflightIn, target: TargetIn, media: dict | N
         return {**base, "items": [checks.err("계정을 찾을 수 없습니다. 계정 관리에서 다시 연결하세요.")]}
 
     items: list[dict] = []
+    used = _previous_titles(target.account_id)
+    mine = _norm_title(target.title or payload.title)
+    if mine and mine in used:
+        items.append(checks.warn(
+            f"이 계정에 같은 제목으로 이미 올린 적이 있습니다 ({used[mine]}). "
+            "제목을 조금 바꾸는 편이 안전합니다."
+        ))
+
     size = (media or {}).get("size") or 0
     cap = MAX_VIDEO_BYTES.get(target.platform)
     if size and cap and size > cap:

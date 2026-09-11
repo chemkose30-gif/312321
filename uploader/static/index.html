@@ -200,6 +200,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .set-title-row{display:flex;align-items:center;gap:10px;padding:7px 0;flex-wrap:wrap}
 .set-title-row .nm{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;min-width:150px}
 .set-title-row input{flex:1;min-width:220px;margin:0}
+.set-title-row.dup input{border-color:var(--red)}
+.set-title-row.dup .nm{color:var(--red)}
 .pf-group{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-top:12px;background:var(--bg2)}
 .pf-head{display:flex;align-items:center;gap:9px;font-weight:650;font-size:13.5px;margin-bottom:8px}
 .pf-item{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.6;padding:3px 0;color:var(--text2)}
@@ -819,20 +821,6 @@ function updateCounters(){
 }
 
 /* ── 세트별 제목 ── */
-function applyTemplate(tpl, {title, set, index}){
-  if(!tpl) return title;
-  const d = new Date();
-  const date = `${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
-  return tpl
-    .replaceAll('{제목}', title)
-    .replaceAll('{세트}', set.name || '')
-    .replaceAll('{카테고리}', set.category || '')
-    .replaceAll('{번호}', String(index + 1))
-    .replaceAll('{날짜}', date)
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
 /* 지금 선택된 계정들이 어느 세트에서 온 것인지 — 전부 선택된 세트만 인정한다 */
 function appliedSets(){
   return state.sets.filter(setApplied);
@@ -843,11 +831,30 @@ function setForAccount(accountId, sets){
   return sets.find(s => s.account_ids.includes(accountId)) || null;
 }
 
-function titleForSet(set, index){
+function titleForSet(set){
   const base = $('#title').value.trim();
   if(set === null) return base;
-  if(state.titleEdits[set.id] !== undefined) return state.titleEdits[set.id];
-  return applyTemplate(set.title_template, {title: base, set, index});
+  return state.titleEdits[set.id] !== undefined ? state.titleEdits[set.id] : base;
+}
+
+/* 제목 정규화 — 공백·대소문자·문장부호 차이는 같은 제목으로 본다 */
+function normTitle(t){
+  return (t || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.,!?~\-_|/\\]+/g, '');
+}
+
+/* 세트별 제목이 겹치는지 — 겹치면 그 세트 id 들을 돌려준다 */
+function duplicateSetIds(){
+  const sets = appliedSets();
+  if(sets.length < 2) return [];
+  const seen = new Map();
+  const dup = new Set();
+  sets.forEach(set => {
+    const key = normTitle(titleForSet(set));
+    if(!key) return;
+    if(seen.has(key)){ dup.add(seen.get(key)); dup.add(set.id); }
+    else seen.set(key, set.id);
+  });
+  return [...dup];
 }
 
 function renderSetTitles(){
@@ -858,17 +865,18 @@ function renderSetTitles(){
   const picked = Object.values(state.selected).flat();
   const loose = picked.filter(id => !setForAccount(id, sets));
 
-  if(sets.length < 2 && !sets.some(s => s.title_template)){
-    box.innerHTML = '';   // 세트를 2개 이상 쓰거나 템플릿이 있을 때만 보여준다
+  if(sets.length < 2){
+    box.innerHTML = '';   // 세트를 2개 이상 쓸 때만 의미가 있다
     return;
   }
 
-  const rows = sets.map((set, i) => `
-    <div class="set-title-row">
+  const dups = duplicateSetIds();
+  const rows = sets.map(set => `
+    <div class="set-title-row${dups.includes(set.id) ? ' dup' : ''}">
       <div class="nm">${esc(set.name)}
         ${set.category ? `<span class="cat-tag">${esc(set.category)}</span>` : ''}
         <span class="small muted">${set.account_ids.length}개 채널</span></div>
-      <input type="text" data-settitle="${set.id}" value="${esc(titleForSet(set, i))}"
+      <input type="text" data-settitle="${set.id}" value="${esc(titleForSet(set))}"
              placeholder="${esc(base || '제목을 먼저 입력하세요')}">
       ${state.titleEdits[set.id] !== undefined
         ? `<button class="btn ghost sm" data-resettitle="${set.id}">되돌리기</button>` : ''}
@@ -885,12 +893,18 @@ function renderSetTitles(){
         <div class="nm">그 외 채널 <span class="small muted">${loose.length}개</span></div>
         <input type="text" value="${esc(base)}" disabled>
       </div>` : ''}
-      <div class="small muted" style="margin-top:8px">세트 템플릿은 계정 관리 → 채널 세트 → 수정에서 바꿉니다.</div>
+      ${dups.length
+        ? `<div class="warn">세트 ${dups.length}개가 <b>같은 제목</b>입니다. 같은 제목으로는 올릴 수 없으니
+            서로 다르게 고쳐주세요. (같은 영상에 같은 제목이면 중복으로 잡히기 쉽습니다)</div>`
+        : '<div class="small muted" style="margin-top:8px">세트마다 제목이 서로 달라야 올릴 수 있습니다.</div>'}
     </div>`;
 
   $$('[data-settitle]').forEach(input => {
-    input.oninput = () => { state.titleEdits[input.dataset.settitle] = input.value; };
-    input.onblur = () => renderSetTitles();
+    input.oninput = () => {
+      state.titleEdits[input.dataset.settitle] = input.value;
+      refreshPublishButton();
+    };
+    input.onblur = () => { renderSetTitles(); refreshPublishButton(); };
   });
   $$('[data-resettitle]').forEach(btn => btn.onclick = () => {
     delete state.titleEdits[btn.dataset.resettitle];
@@ -906,7 +920,8 @@ function buildTargets(){
     const set = setForAccount(account_id, sets);
     return {
       platform, account_id,
-      title: set ? titleForSet(set, index.get(set.id)) : $('#title').value.trim(),
+      title: set ? titleForSet(set) : $('#title').value.trim(),
+      set_id: set ? set.id : '',
     };
   }));
 }
@@ -1021,9 +1036,11 @@ function refreshPublishButton(){
   const n = totalPicked();
   const btn = $('#btnPublish');
   state.pfSkip = false;   // 내용이 바뀌면 점검을 다시 받는다
-  btn.disabled = !state.media || n === 0;
+  const dups = duplicateSetIds();
+  btn.disabled = !state.media || n === 0 || dups.length > 0;
   btn.textContent = !n ? '올릴 채널을 먼저 선택하세요'
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
+    : dups.length ? '세트별 제목을 서로 다르게 고쳐주세요'
     : `${n}개 채널에 한 번에 올리기`;
 }
 
@@ -1705,18 +1722,6 @@ function openSetEditor(setId){
       <label class="f">카테고리 <span class="counter muted">선택 · 목록에서 고르거나 직접 입력</span></label>
       <input type="text" id="setCategory" list="catList" placeholder="예) 여자"
              value="${esc(set ? (set.category || '') : '')}" maxlength="40">
-      <label class="f">제목 템플릿 <span class="counter muted">선택 · 이 세트에만 쓸 제목 형식</span></label>
-      <input type="text" id="setTemplate" placeholder="비우면 공통 제목 그대로"
-             value="${esc(set ? (set.title_template || '') : '')}" maxlength="200">
-      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-        ${['{제목}', '{제목} | {세트}', '[{카테고리}] {제목}', '{제목} ({날짜})']
-          .map(t => `<button type="button" class="btn sm" data-tpl="${esc(t)}">${esc(t)}</button>`).join('')}
-      </div>
-      <div class="small muted" style="margin-top:7px">
-        쓸 수 있는 것 — <span class="mono">{제목}</span> 업로드 화면에 적은 제목 ·
-        <span class="mono">{세트}</span> 세트 이름 · <span class="mono">{카테고리}</span> 세트 카테고리 ·
-        <span class="mono">{번호}</span> 세트 순번 · <span class="mono">{날짜}</span> 오늘 날짜(09.11)
-      </div>
       <label class="f">포함할 채널</label>
       ${columns || '<div class="small muted">연결된 계정이 없습니다. 먼저 계정을 추가하세요.</div>'}
       <div class="row" style="margin-top:16px">
@@ -1726,15 +1731,11 @@ function openSetEditor(setId){
       <div id="setErr"></div>
     </div>`;
 
-  $$('[data-tpl]').forEach(b => b.onclick = () => {
-    $('#setTemplate').value = b.dataset.tpl;
-  });
   $('#setCancel').onclick = closeSetEditor;
   $('#setSave').onclick = async () => {
     const account_ids = $$('[data-setpick]').filter(el => el.checked).map(el => el.value);
     const body = JSON.stringify({
       name: $('#setName').value, account_ids, category: $('#setCategory').value.trim(),
-      title_template: $('#setTemplate').value.trim(),
     });
     const res = await fetch(setId ? '/api/sets/' + setId : '/api/sets', {
       method: setId ? 'PATCH' : 'POST', headers:{'Content-Type':'application/json'}, body,
