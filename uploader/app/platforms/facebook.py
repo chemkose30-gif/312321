@@ -20,12 +20,27 @@ def _explain(res) -> PublishError:
         error = {}
     code = error.get("code")
     subcode = error.get("error_subcode")
-    message = (
-        error.get("error_user_msg")
-        or error.get("message")
-        or res.text[:300]
+    status = res.status_code
+    message = error.get("error_user_msg") or error.get("message") or (res.text or "").strip()[:300]
+
+    # 본문 없이 실패하는 경우가 있어(프록시 거절, 서버 오류) 상태 코드로 설명한다.
+    if not message:
+        message = {
+            408: "요청 시간이 초과됐습니다.",
+            413: "영상 용량이 너무 커서 거부됐습니다.",
+            429: "요청이 너무 잦아 잠시 막혔습니다.",
+            500: "페이스북 서버 오류입니다.",
+            502: "페이스북 게이트웨이 오류입니다.",
+            503: "페이스북이 일시적으로 응답하지 않습니다.",
+            504: "페이스북 응답이 시간 초과됐습니다.",
+        }.get(status, "페이스북이 내용 없이 거부했습니다.")
+        message = f"{message} (HTTP {status}, 응답 본문 없음)"
+
+    transient = (
+        code in TRANSIENT_CODES
+        or subcode in TRANSIENT_SUBCODES
+        or status in (408, 429, 500, 502, 503, 504)
     )
-    transient = code in TRANSIENT_CODES or subcode in TRANSIENT_SUBCODES
 
     if code in AUTH_CODES:
         return PublishError(
@@ -35,7 +50,12 @@ def _explain(res) -> PublishError:
         return PublishError(
             f"이 페이지에 영상을 올릴 권한이 없습니다. 페이지 관리자 권한을 확인하세요. ({message})"
         )
-    tail = f" [code {code}" + (f"/{subcode}" if subcode else "") + "]" if code else ""
+    if code:
+        tail = f" [code {code}" + (f"/{subcode}" if subcode else "") + f", HTTP {status}]"
+    elif "HTTP" in message:
+        tail = ""          # 이미 상태 코드를 문구에 넣었다
+    else:
+        tail = f" [HTTP {status}]"
     return PublishError(f"Facebook 업로드 실패: {message}{tail}", transient=transient)
 
 
