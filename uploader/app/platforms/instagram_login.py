@@ -165,8 +165,8 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
         )
 
         await progress(92, "게시 중")
-        media_id = await ig_media_publish(
-            client, GRAPH, ig_user_id, container_id, token, progress,
+        media_id, note = await ig_media_publish(
+            client, GRAPH, ig_user_id, container_id, token, progress, params["caption"],
         )
 
         url = None
@@ -177,4 +177,5 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             if link.status_code < 400:
                 url = (link.json() or {}).get("permalink")
 
-    return PublishResult(remote_id=media_id, url=url, message=f"@{account['name']} 릴스 게시 완료")
+    message = f"@{account['name']} 릴스 게시 완료"
+    return PublishResult(remote_id=media_id, url=url, message=f"{message} — {note}" if note else message)

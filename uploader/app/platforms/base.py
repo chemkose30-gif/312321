@@ -410,13 +410,60 @@ async def ig_publish_with_retry(
     )
 
 
+async def ig_recent_media(
+    client, base: str, ig_user_id: str, token: str, caption: str
+) -> tuple[str | None, bool]:
+    """방금 올린 릴스가 실제로는 게시됐는지 최근 게시물에서 찾는다.
+
+    2207085 같은 오류는 게시가 끝난 뒤 응답만 실패하는 경우가 있어서,
+    그대로 실패 처리하면 사용자가 다시 올려 같은 영상이 두 번 올라간다.
+
+    (찾은 게시물 id, 확인에 성공했는지) 를 돌려준다.
+    """
+    head = re.sub(r"\s+", " ", (caption or "").strip())[:40]
+    try:
+        res = await client.get(
+            f"{base}/{ig_user_id}/media",
+            params={
+                "fields": "id,caption,timestamp,media_type",
+                "limit": 5,
+                "access_token": token,
+            },
+        )
+    except Exception:
+        return None, False
+    if res.status_code >= 400:
+        return None, False
+
+    cutoff = time.time() - 30 * 60
+    for item in (res.json() or {}).get("data") or []:
+        item_caption = re.sub(r"\s+", " ", (item.get("caption") or "").strip())
+        if head and item_caption.startswith(head):
+            return item.get("id"), True
+        stamp = item.get("timestamp") or ""
+        try:  # 2026-09-11T09:00:00+0000
+            posted = time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            continue
+        if posted > cutoff and not head:
+            return item.get("id"), True
+    return None, True
+
+
 async def ig_media_publish(
-    client, base: str, ig_user_id: str, container_id: str, token: str, progress: Progress
-) -> str:
-    """처리가 끝난 컨테이너를 실제로 게시한다.
+    client,
+    base: str,
+    ig_user_id: str,
+    container_id: str,
+    token: str,
+    progress: Progress,
+    caption: str = "",
+) -> tuple[str, str]:
+    """처리가 끝난 컨테이너를 실제로 게시한다. (게시물 id, 안내 메시지) 반환.
 
     영상은 이미 인스타그램에 올라가 있으므로 재시도 비용이 없다.
-    일시 오류로 여기서 실패하는 경우가 잦아 여러 번 시도한다.
+    일시 오류로 여기서 실패하는 경우가 잦아 여러 번 시도하고,
+    그래도 안 되면 실제로 올라갔는지 계정의 최근 게시물에서 확인한다.
     """
     last = ""
     for attempt in range(IG_PUBLISH_TRIES):
@@ -434,13 +481,26 @@ async def ig_media_publish(
         if res.status_code < 400:
             media_id = (res.json() or {}).get("id")
             if media_id:
-                return media_id
+                return media_id, ""
             last = "인스타그램이 게시물 ID를 돌려주지 않았습니다."
             continue
         last = res.text[:300]
         if not ig_is_transient(res.text):
             raise PublishError(f"Instagram 게시 실패: {last}")
+
+    # 오류는 났지만 실제로 올라갔을 수 있다 — 확인하고 성공 처리한다.
+    await progress(95, "게시됐는지 확인하는 중")
+    found, checked = await ig_recent_media(client, base, ig_user_id, token, caption)
+    if found:
+        return found, "인스타그램이 오류를 냈지만 게시물은 정상적으로 올라갔습니다."
+
+    tail = (
+        "계정에도 올라가지 않았습니다. 10~30분 뒤 다시 올려주세요."
+        if checked
+        else "실제로 올라갔는지는 확인하지 못했습니다. "
+             "인스타그램 앱에서 먼저 확인한 뒤 다시 올려주세요(중복 게시 주의)."
+    )
     raise PublishError(
         f"Instagram 게시 실패: {last} "
-        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. 잠시 뒤 다시 올려주세요.)"
+        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. {tail})"
     )

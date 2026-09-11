@@ -367,7 +367,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-인스타재시도"
+APP_VERSION = "2026-09-11-게시확인"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
