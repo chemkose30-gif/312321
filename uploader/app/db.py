@@ -172,6 +172,8 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "category": row["category"] or "",
         "linked": bool(row["access_token"]),
         "manual": bool(json.loads(row["meta"] or "{}").get("manual")),
+        # 인스타는 연결 방식이 두 가지라 계정마다 다를 수 있다
+        "auth": json.loads(row["meta"] or "{}").get("auth") or "",
         "avatar": row["avatar"],
         "expires_at": row["expires_at"],
         "meta": json.loads(row["meta"] or "{}"),

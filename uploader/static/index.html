@@ -1378,6 +1378,9 @@ function renderAccountsByCategory(){
             <div class="id mono">${esc(a.plabel)} · ${esc(a.external_id)}</div>
           </div>
           ${a.linked ? '<span class="tagbadge on">연결됨</span>' : '<span class="tagbadge need">로그인 연결 필요</span>'}
+          ${a.platform === 'instagram' && a.linked
+            ? `<span class="tagbadge ${a.auth === 'instagram_login' ? 'on' : 'need'}">${
+                a.auth === 'instagram_login' ? '인스타 직접' : '페북 페이지 경유'}</span>` : ''}
           <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>
         </div>`).join('')}
@@ -1485,6 +1488,10 @@ function renderAccountPanels(){
           ${a.linked
             ? '<span class="tagbadge on">연결됨</span>'
             : `<a class="tagbadge need" href="/api/oauth/${p.key}/start" title="로그인해서 게시 권한을 붙입니다">로그인 연결 필요</a>`}
+          ${p.key === 'instagram' && a.linked
+            ? `<span class="tagbadge ${a.auth === 'instagram_login' ? 'on' : 'need'}"
+                title="이 계정이 어떤 방식으로 연결됐는지">${
+                a.auth === 'instagram_login' ? '인스타 직접' : '페북 페이지 경유'}</span>` : ''}
           <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (선택)">
           <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>
