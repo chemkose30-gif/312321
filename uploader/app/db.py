@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS job_targets (
     platform   TEXT NOT NULL,
     account_id TEXT NOT NULL,
     title      TEXT,
+    retry_at   REAL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
     status     TEXT NOT NULL DEFAULT 'pending',
     progress   INTEGER NOT NULL DEFAULT 0,
     message    TEXT NOT NULL DEFAULT '',
@@ -121,6 +123,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     target_columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_targets)")}
     if "title" not in target_columns:
         conn.execute("ALTER TABLE job_targets ADD COLUMN title TEXT")
+    if "retry_at" not in target_columns:
+        conn.execute("ALTER TABLE job_targets ADD COLUMN retry_at REAL")
+    if "retry_count" not in target_columns:
+        conn.execute("ALTER TABLE job_targets ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
 
 
 def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -309,11 +315,14 @@ def update_target(
     message: str | None = None,
     remote_id: str | None = None,
     url: str | None = None,
+    retry_at: float | None = None,
+    retry_count: int | None = None,
 ) -> None:
     sets, params = ["updated_at=?"], [time.time()]
     for column, value in (
         ("status", status), ("progress", progress), ("message", message),
-        ("remote_id", remote_id), ("url", url),
+        ("remote_id", remote_id), ("url", url), ("retry_at", retry_at),
+        ("retry_count", retry_count),
     ):
         if value is not None:
             sets.append(f"{column}=?")
@@ -369,9 +378,28 @@ def list_jobs(limit: int = 30) -> list[dict]:
 
 
 def active_video_paths() -> set[str]:
-    """아직 게시 중인 작업이 쓰고 있는 영상 파일 경로 — 정리에서 제외해야 한다."""
-    rows = _rows("SELECT video_path FROM jobs WHERE status IN ('running','pending')")
+    """아직 게시 중이거나 재시도를 기다리는 작업의 영상 — 정리에서 제외해야 한다."""
+    rows = _rows(
+        "SELECT video_path FROM jobs WHERE status IN ('running','pending','retrying')"
+        " OR id IN (SELECT job_id FROM job_targets WHERE status='retry')"
+    )
     return {r["video_path"] for r in rows if r["video_path"]}
+
+
+def targets_due_for_retry(now: float) -> list[dict]:
+    """다시 시도할 때가 된 대상들."""
+    rows = _rows(
+        "SELECT * FROM job_targets WHERE status='retry' AND retry_at IS NOT NULL"
+        " AND retry_at <= ? ORDER BY retry_at",
+        (now,),
+    )
+    return [dict(r) for r in rows]
+
+
+def has_pending_retry(job_id: str) -> bool:
+    return bool(_rows(
+        "SELECT 1 FROM job_targets WHERE job_id=? AND status='retry' LIMIT 1", (job_id,)
+    ))
 
 
 def find_job_by_media_token(token: str) -> dict | None:
@@ -503,5 +531,13 @@ def fail_interrupted_jobs() -> int:
         (time.time(),),
     )
     changed = cur.rowcount or 0
-    _exec("UPDATE jobs SET status='failed' WHERE status IN ('running','pending')")
+    # 재시도 대기(retry)는 서버가 다시 떠도 그대로 유지한다.
+    _exec(
+        "UPDATE jobs SET status='failed' WHERE status IN ('running','pending')"
+        " AND id NOT IN (SELECT job_id FROM job_targets WHERE status='retry')"
+    )
+    _exec(
+        "UPDATE jobs SET status='retrying' WHERE status IN ('running','pending')"
+        " AND id IN (SELECT job_id FROM job_targets WHERE status='retry')"
+    )
     return changed

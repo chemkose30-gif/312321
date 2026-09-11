@@ -227,6 +227,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .pill.success{background:rgba(16,185,129,.15);color:#6ee7b7}
 .pill.partial{background:rgba(245,158,11,.15);color:#fcd34d}
 .pill.failed{background:rgba(239,68,68,.15);color:#fca5a5}
+.pill.retry,.pill.retrying{background:rgba(139,92,246,.15);color:#c4b5fd}
 .tgt{display:flex;align-items:center;gap:11px;padding:10px 0;border-top:1px solid var(--border)}
 .tgt .pico{width:26px;height:26px;border-radius:8px;font-size:12px}
 .tgt-main{flex:1;min-width:0}
@@ -1282,12 +1283,14 @@ async function pollJob(){
   const tick = async () => {
     const job = await fetch(`/api/jobs/${state.jobId}`).then(r => r.json());
     $('#liveJob').innerHTML = `<div class="card"><h2>진행 상황</h2>${jobHtml(job, true)}</div>`;
-    if(['success','partial','failed'].includes(job.status)){
+    if(['success','partial','failed','retrying'].includes(job.status)){
       clearInterval(state.poll);
       refreshPublishButton();
       const done = job.targets.filter(t => t.status === 'success').length;
-      flash(job.status === 'success' ? 'ok' : 'err',
-        `업로드 종료 — 성공 ${done}건 / 전체 ${job.targets.length}건`);
+      const waiting = job.targets.filter(t => t.status === 'retry').length;
+      flash(job.status === 'success' ? 'ok' : waiting ? 'ok' : 'err',
+        `업로드 종료 — 성공 ${done}건 / 전체 ${job.targets.length}건`
+        + (waiting ? ` · ${waiting}건은 나중에 자동으로 다시 시도합니다 (창을 닫아도 됩니다)` : ''));
       loadJobs();
     }
   };
@@ -1296,7 +1299,8 @@ async function pollJob(){
   state.poll = setInterval(tick, 1500);
 }
 
-const STATUS_KO = {pending:'대기', running:'진행 중', success:'성공', failed:'실패', partial:'일부 성공'};
+const STATUS_KO = {pending:'대기', running:'진행 중', success:'성공', failed:'실패',
+                   partial:'일부 성공', retry:'재시도 대기', retrying:'재시도 대기'};
 
 function jobHtml(job, live){
   const accName = t => {

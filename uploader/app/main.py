@@ -53,6 +53,18 @@ async def _periodic_cleanup() -> None:
             pass
 
 
+async def _retry_loop() -> None:
+    """일시 오류로 실패한 채널을 때가 되면 자동으로 다시 올린다."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            done = await jobs.retry_due_targets()
+            if done:
+                print(f"[retry] {done}개 채널을 다시 시도했습니다.")
+        except Exception as exc:
+            print(f"[retry] 재시도 중 오류: {type(exc).__name__}: {exc}")
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_: FastAPI):
     db.connect()
@@ -61,12 +73,15 @@ async def lifespan(_: FastAPI):
         print(f"[startup] 재시작으로 중단된 게시 {interrupted}건을 실패 처리했습니다.")
     jobs.cleanup_old_files()
     cleaner = asyncio.create_task(_periodic_cleanup())
+    retrier = asyncio.create_task(_retry_loop())
     try:
         yield
     finally:
-        cleaner.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await cleaner
+        for task in (cleaner, retrier):
+            task.cancel()
+        for task in (cleaner, retrier):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="멀티 플랫폼 업로더", version="1.0.0", lifespan=lifespan)
@@ -367,7 +382,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-게시확인"
+APP_VERSION = "2026-09-11-자동재시도"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 

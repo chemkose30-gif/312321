@@ -173,7 +173,8 @@ async def wait_for_ig_container(
             raise PublishError(
                 f"Instagram이 {int(budget_sec) // 60}분 안에 영상 처리를 끝내지 못했습니다"
                 f"(마지막 상태: {last_code or '응답 없음'})."
-                + (_size_hint(size_bytes) or " 잠시 후 다시 시도해 보세요.")
+                + (_size_hint(size_bytes) or " 잠시 후 다시 시도해 보세요."),
+                transient=True,
             )
         await asyncio.sleep(delay)
         # 처음에는 자주, 이후에는 뜸하게 확인한다.
@@ -405,8 +406,8 @@ async def ig_publish_with_retry(
                 raise
             last = exc
     raise PublishError(
-        f"{last} (인스타그램 일시 오류가 {IG_CONTAINER_TRIES}번 반복됐습니다. "
-        "잠시 뒤 다시 올려주세요.)"
+        f"{last} (인스타그램 일시 오류가 {IG_CONTAINER_TRIES}번 반복됐습니다.)",
+        transient=True,
     )
 
 
@@ -502,5 +503,6 @@ async def ig_media_publish(
     )
     raise PublishError(
         f"Instagram 게시 실패: {last} "
-        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. {tail})"
+        f"(일시 오류가 {IG_PUBLISH_TRIES}번 반복됐습니다. {tail})",
+        transient=checked,   # 확인 결과 안 올라갔을 때만 자동 재시도한다
     )
