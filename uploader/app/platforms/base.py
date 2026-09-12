@@ -366,6 +366,19 @@ async def ig_create_container(
     return container_id
 
 
+async def _ig_container_once(
+    client, base, api_version, ig_user_id, token, params, job, progress, video_url,
+) -> str:
+    container_id = await ig_create_container(
+        client, base, api_version, ig_user_id, token, params, job, progress, video_url,
+    )
+    await wait_for_ig_container(
+        client, base, container_id, token, progress,
+        size_bytes=job.get("video_size") or 0,
+    )
+    return container_id
+
+
 async def ig_publish_with_retry(
     client,
     base: str,
@@ -382,6 +395,20 @@ async def ig_publish_with_retry(
     인스타그램 쪽 일시 오류(내부 서버 오류, 인코딩 실패)는 다시 하면 되는 경우가
     많아서 몇 번 재시도한다. 거부 사유가 분명한 오류는 곧바로 알린다.
     """
+    # 표지(cover_url)가 거부되면 게시 자체가 막힌다. 그럴 땐 표지를 빼고 올린다.
+    if params.get("cover_url"):
+        try:
+            return await _ig_container_once(
+                client, base, api_version, ig_user_id, token, params, job, progress, video_url,
+            )
+        except PublishError as exc:
+            if getattr(exc, "transient", False):
+                pass          # 일시 오류면 아래 재시도 흐름에 맡긴다
+            else:
+                await progress(4, "썸네일이 거부돼 썸네일 없이 올립니다")
+                print(f"[instagram] 썸네일 거부 — 썸네일 없이 재시도: {str(exc)[:200]}")
+                params = {k: v for k, v in params.items() if k != "cover_url"}
+
     last: PublishError | None = None
     for attempt in range(IG_CONTAINER_TRIES):
         if attempt:
@@ -393,14 +420,9 @@ async def ig_publish_with_retry(
             )
             await asyncio.sleep(wait)
         try:
-            container_id = await ig_create_container(
+            return await _ig_container_once(
                 client, base, api_version, ig_user_id, token, params, job, progress, video_url,
             )
-            await wait_for_ig_container(
-                client, base, container_id, token, progress,
-                size_bytes=job.get("video_size") or 0,
-            )
-            return container_id
         except PublishError as exc:
             if not getattr(exc, "transient", False):
                 raise
