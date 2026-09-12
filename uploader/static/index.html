@@ -196,6 +196,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .plat-body label.f{margin-top:12px}
 .check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text2);margin-top:9px;cursor:pointer}
 .check input{accent-color:var(--blue);width:15px;height:15px}
+.thumb-pick{display:flex;align-items:center;gap:11px;margin-top:11px}
+.thumb-pick img{width:74px;height:74px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--border)}
 .set-titles{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
 .set-title-row{display:flex;align-items:center;gap:10px;padding:7px 0;flex-wrap:wrap}
 .set-title-row .nm{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;min-width:150px}
@@ -377,9 +379,14 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
           <div class="bar"><i id="upBar"></i></div>
           <div class="small muted" id="upMsg" style="margin-top:7px"></div>
           <div class="row" style="margin-top:12px">
-            <button class="btn ghost sm" id="btnThumb">썸네일 지정</button>
+            <button class="btn ghost sm" id="btnGrab">지금 이 장면을 썸네일로</button>
+            <button class="btn ghost sm" id="btnThumb">이미지 파일로 지정</button>
+            <button class="btn ghost sm" id="btnThumbClear">썸네일 해제</button>
             <button class="btn ghost sm" id="btnReset">다른 영상 선택</button>
           </div>
+          <div class="small muted" style="margin-top:7px">위 영상을 원하는 장면까지 움직인 뒤
+            <b>지금 이 장면을 썸네일로</b>를 누르세요.</div>
+          <div id="thumbPreview"></div>
           <input type="file" id="thumbInput" accept="image/*" class="hidden">
         </div>
       </div>
@@ -703,19 +710,59 @@ $('#btnReset').onclick = () => {
   $('#fileInput').value = ''; $('#upBar').style.width = '0'; $('#upMsg').textContent = '';
   refreshPublishButton();
 };
+/* ── 썸네일 ── */
+async function saveThumb(blob, label){
+  if(!state.media){ flash('err', '영상을 먼저 올려주세요.'); return; }
+  const fd = new FormData();
+  fd.append('file', blob, label.endsWith('.jpg') ? label : label);
+  const res = await fetch(`/api/media/${state.media.id}/thumbnail`, {method:'POST', body:fd});
+  if(!res.ok){ flash('err', '썸네일 업로드에 실패했습니다.'); return; }
+  state.thumb = label;
+  $('#mThumb').textContent = label;
+  // 서버에 저장된 주소로 보여준다 (CSP 가 blob: 이미지를 막는다)
+  const src = `${state.media.preview_url}/thumb?t=${Date.now()}`;
+  $('#thumbPreview').innerHTML = `<div class="thumb-pick">
+    <img src="${src}" alt="썸네일 미리보기">
+    <div class="small muted">이 이미지가 유튜브·인스타·페이스북 썸네일로 올라갑니다.<br>
+      틱톡은 지정을 지원하지 않아 영상에서 자동 선택됩니다.</div></div>`;
+  flash('ok', `썸네일을 등록했습니다 (${label}).`);
+}
+
+/* 미리보기 영상의 현재 장면을 그대로 떠서 썸네일로 쓴다 */
+$('#btnGrab').onclick = async () => {
+  const video = $('#preview');
+  if(!video || !video.videoWidth){ flash('err', '영상이 아직 준비되지 않았습니다.'); return; }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const toBlob = q => new Promise(r => canvas.toBlob(r, 'image/jpeg', q));
+  let blob = await toBlob(0.92);
+  // 유튜브 썸네일 상한이 2MB라 넘으면 화질을 낮춰 다시 만든다
+  for(const q of [0.8, 0.65, 0.5]){ if(!blob || blob.size <= 2*1024*1024) break; blob = await toBlob(q); }
+  if(!blob){ flash('err', '장면을 가져오지 못했습니다.'); return; }
+
+  const t = video.currentTime;
+  const label = `${String(Math.floor(t/60)).padStart(2,'0')}분${String(Math.floor(t%60)).padStart(2,'0')}초 장면`;
+  await saveThumb(blob, label);
+};
+
 $('#btnThumb').onclick = () => $('#thumbInput').click();
 $('#thumbInput').onchange = async e => {
   const file = e.target.files[0];
-  if(!file || !state.media) return;
-  const fd = new FormData(); fd.append('file', file);
-  const res = await fetch(`/api/media/${state.media.id}/thumbnail`, {method:'POST', body:fd});
-  if(res.ok){
-    state.thumb = file.name;
-    $('#mThumb').textContent = file.name;
-    flash('ok', '썸네일을 등록했습니다. 유튜브·인스타·페이스북에 적용됩니다. (틱톡은 지원 안 함)');
-  } else {
-    flash('err', '썸네일 업로드에 실패했습니다.');
-  }
+  if(file) await saveThumb(file, file.name);
+  e.target.value = '';
+};
+
+$('#btnThumbClear').onclick = async () => {
+  if(!state.media) return;
+  const res = await fetch(`/api/media/${state.media.id}/thumbnail`, {method:'DELETE'});
+  if(!res.ok){ flash('err', '해제하지 못했습니다.'); return; }
+  state.thumb = null;
+  $('#mThumb').textContent = '지정 안 함 (영상에서 자동 선택)';
+  $('#thumbPreview').innerHTML = '';
+  flash('ok', '썸네일을 해제했습니다. 각 플랫폼이 영상에서 자동으로 고릅니다.');
 };
 
 function uploadFile(file){
@@ -726,6 +773,7 @@ function uploadFile(file){
   $('#mSize').textContent = fmtSize(file.size);
   $('#mDim').textContent = '-'; $('#mRatio').textContent = '-'; $('#mBitrate').textContent = '-';
   state.thumb = null; $('#mThumb').textContent = '지정 안 함 (영상에서 자동 선택)';
+  $('#thumbPreview').innerHTML = '';
   const video = $('#preview');
   video.src = URL.createObjectURL(file);
   video.onloadedmetadata = () => {

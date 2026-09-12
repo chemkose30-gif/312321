@@ -383,7 +383,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-12-썸네일"
+APP_VERSION = "2026-09-12-장면썸네일"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -943,6 +943,18 @@ async def upload_media(file: UploadFile) -> dict:
     )
 
 
+@app.delete("/api/media/{media_id}/thumbnail")
+async def clear_thumbnail(media_id: str) -> dict:
+    media = db.get_media(media_id)
+    if not media:
+        raise HTTPException(404, "미디어를 찾을 수 없습니다.")
+    old = media.get("thumb_path")
+    if old:
+        Path(old).unlink(missing_ok=True)
+    db.set_media_thumb(media_id, "")
+    return {"ok": True}
+
+
 @app.post("/api/media/{media_id}/thumbnail")
 async def upload_thumbnail(media_id: str, file: UploadFile) -> dict:
     media = db.get_media(media_id)
@@ -951,7 +963,12 @@ async def upload_thumbnail(media_id: str, file: UploadFile) -> dict:
     content_type = file.content_type or ""
     if not content_type.startswith("image/"):
         raise HTTPException(400, "이미지 파일만 업로드할 수 있습니다.")
+    old = media.get("thumb_path")
+    if old:
+        Path(old).unlink(missing_ok=True)
     suffix = Path(file.filename or "thumb.jpg").suffix[:10] or ".jpg"
+    if suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+        suffix = ".jpg"
     dest = Path(UPLOAD_DIR) / f"{media_id}_thumb{suffix}"
     with dest.open("wb") as out:
         shutil.copyfileobj(file.file, out)

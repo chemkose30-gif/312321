@@ -435,7 +435,7 @@ def get_media_by_token(token: str) -> dict | None:
 
 
 def set_media_thumb(media_id: str, thumb_path: str) -> None:
-    _exec("UPDATE media SET thumb_path=? WHERE id=?", (thumb_path, media_id))
+    _exec("UPDATE media SET thumb_path=? WHERE id=?", (thumb_path or None, media_id))
 
 
 # ── 채널 세트 ────────────────────────────────────────────────
