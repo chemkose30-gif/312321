@@ -373,10 +373,11 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
           <div class="meta-row"><span>길이 / 해상도</span><span id="mDim">-</span></div>
           <div class="meta-row"><span>비율</span><span id="mRatio">-</span></div>
           <div class="meta-row"><span>비트레이트</span><span id="mBitrate">-</span></div>
+          <div class="meta-row"><span>썸네일</span><span id="mThumb">지정 안 함 (영상에서 자동 선택)</span></div>
           <div class="bar"><i id="upBar"></i></div>
           <div class="small muted" id="upMsg" style="margin-top:7px"></div>
           <div class="row" style="margin-top:12px">
-            <button class="btn ghost sm" id="btnThumb">썸네일 지정 (YouTube)</button>
+            <button class="btn ghost sm" id="btnThumb">썸네일 지정</button>
             <button class="btn ghost sm" id="btnReset">다른 영상 선택</button>
           </div>
           <input type="file" id="thumbInput" accept="image/*" class="hidden">
@@ -708,7 +709,13 @@ $('#thumbInput').onchange = async e => {
   if(!file || !state.media) return;
   const fd = new FormData(); fd.append('file', file);
   const res = await fetch(`/api/media/${state.media.id}/thumbnail`, {method:'POST', body:fd});
-  flash(res.ok ? 'ok' : 'err', res.ok ? '썸네일이 등록되었습니다. (YouTube에 적용)' : '썸네일 업로드에 실패했습니다.');
+  if(res.ok){
+    state.thumb = file.name;
+    $('#mThumb').textContent = file.name;
+    flash('ok', '썸네일을 등록했습니다. 유튜브·인스타·페이스북에 적용됩니다. (틱톡은 지원 안 함)');
+  } else {
+    flash('err', '썸네일 업로드에 실패했습니다.');
+  }
 };
 
 function uploadFile(file){
@@ -718,6 +725,7 @@ function uploadFile(file){
   $('#mName').textContent = file.name;
   $('#mSize').textContent = fmtSize(file.size);
   $('#mDim').textContent = '-'; $('#mRatio').textContent = '-'; $('#mBitrate').textContent = '-';
+  state.thumb = null; $('#mThumb').textContent = '지정 안 함 (영상에서 자동 선택)';
   const video = $('#preview');
   video.src = URL.createObjectURL(file);
   video.onloadedmetadata = () => {

@@ -383,7 +383,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-11-연결방식경고"
+APP_VERSION = "2026-09-12-썸네일"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -960,6 +960,23 @@ async def upload_thumbnail(media_id: str, file: UploadFile) -> dict:
 
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+@app.get("/media/{token}/thumb")
+async def serve_thumbnail(token: str):
+    """썸네일 이미지를 공개 제공한다(인스타그램이 이 주소로 표지를 가져간다)."""
+    media = db.get_media_by_token(token)
+    thumb = (media or {}).get("thumb_path")
+    if not thumb:
+        job = db.find_job_by_media_token(token)
+        thumb = (job or {}).get("thumb_path")
+    if not thumb or not os.path.exists(thumb):
+        raise HTTPException(404, "썸네일이 없습니다.")
+    return FileResponse(
+        thumb,
+        media_type=mimetypes.guess_type(thumb)[0] or "image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/media/{token}")

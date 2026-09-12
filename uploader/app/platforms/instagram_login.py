@@ -147,7 +147,7 @@ async def _fresh_token(account: dict) -> str:
 
 
 async def publish(account: dict, job: dict, options: dict, progress: Progress) -> PublishResult:
-    from .instagram import media_url  # 공개 영상 주소 생성은 동일하게 사용
+    from .instagram import media_url, thumb_url  # 공개 주소 생성은 동일하게 사용
 
     token = await _fresh_token(account)
     ig_user_id = account["external_id"]
@@ -158,6 +158,10 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
         "caption": build_caption(job, limit=2200, max_tags=IG_MAX_HASHTAGS),
         "share_to_feed": "true" if options.get("share_to_feed", True) else "false",
     }
+    # 썸네일을 지정했으면 릴스 표지로 쓴다(인스타가 이 주소에서 이미지를 가져간다).
+    cover = thumb_url(job)
+    if cover:
+        params["cover_url"] = cover
 
     async with httpx.AsyncClient(timeout=None) as client:
         container_id = await ig_publish_with_retry(

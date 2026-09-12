@@ -1,4 +1,7 @@
 """Facebook 페이지 영상 게시 (Graph API)."""
+import os
+from pathlib import Path
+
 import httpx
 
 from ..config import GRAPH, GRAPH_VIDEO, PUBLIC_BASE_URL
@@ -118,6 +121,21 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
                     or getattr(second, "transient", False),
                 )
             video_id = (res.json() or {}).get("id")
+
+        # 썸네일을 지정했으면 게시 후 대표 이미지로 올린다.
+        if video_id and job.get("thumb_path") and os.path.exists(job["thumb_path"]):
+            await progress(93, "썸네일 적용 중")
+            try:
+                with open(job["thumb_path"], "rb") as fh:
+                    thumb = await client.post(
+                        f"{GRAPH}/{video_id}/thumbnails",
+                        params={"access_token": token, "is_preferred": "true"},
+                        files={"source": (Path(job["thumb_path"]).name, fh, "image/jpeg")},
+                    )
+                if thumb.status_code >= 400:
+                    print(f"[facebook] 썸네일 적용 실패 HTTP {thumb.status_code} {thumb.text[:200]}")
+            except Exception as exc:   # 썸네일 실패로 게시 자체를 실패시키지는 않는다
+                print(f"[facebook] 썸네일 적용 실패: {type(exc).__name__}: {exc}")
 
         url = f"https://www.facebook.com/{video_id}" if video_id else None
         if video_id:
