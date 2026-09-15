@@ -198,6 +198,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .check input{accent-color:var(--blue);width:15px;height:15px}
 .thumb-pick{display:flex;align-items:center;gap:11px;margin-top:11px}
 .thumb-pick img{width:74px;height:74px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--border)}
+.en-box{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
+.en-box input,.en-box textarea{margin-top:9px}
 .set-titles{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
 .set-title-row{display:flex;align-items:center;gap:10px;padding:7px 0;flex-wrap:wrap}
 .set-title-row .nm{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;min-width:150px}
@@ -405,6 +407,20 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div class="small muted" style="margin-top:8px">Enter 또는 쉼표로 추가합니다. 설명에 직접 적은 <span class="mono">#태그</span>도 함께 계산됩니다.</div>
       <div id="tagWarn"></div>
       <div id="setTitles"></div>
+
+      <div class="en-box">
+        <div class="row" style="align-items:center;margin-bottom:6px">
+          <b style="font-size:13px">영어 (유튜브 현지화)</b>
+          <span class="small muted">영어권 시청자에게는 이 제목·설명이 보입니다. 같은 영상·같은 채널입니다.</span>
+          <button class="btn primary sm" id="btnTranslate" style="margin-left:auto">클로드로 번역</button>
+        </div>
+        <div id="enMsg"></div>
+        <input type="text" id="enTitle" placeholder="영어 제목 (비우면 현지화 안 함)" maxlength="100">
+        <textarea id="enDesc" placeholder="영어 설명" style="min-height:90px"></textarea>
+        <div class="tags" id="enTagBox"><input type="text" id="enTagInput" placeholder="영어 해시태그 (Enter 또는 쉼표)"></div>
+        <div class="small muted" style="margin-top:7px">인스타·틱톡·페북은 캡션이 하나뿐이라 이 값을 쓰지 않습니다.
+          그쪽은 세트를 나눠 운영하세요.</div>
+      </div>
     </div>
 
     <div class="card">
@@ -465,6 +481,23 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     </div>
     <datalist id="catList"></datalist>
     <div id="accPanels"></div>
+
+    <div class="card" id="aiCard">
+      <h2>영어 번역 (클로드)</h2>
+      <p class="sub">업로드 화면의 <b>클로드로 번역</b> 버튼으로 한국어 제목·설명·해시태그를 영어로 옮깁니다.
+        유튜브 현지화에 쓰입니다. 쓰려면 Anthropic API 키가 필요합니다.
+        (키는 암호화해 이 서버에만 보관됩니다)</p>
+      <div id="aiState"></div>
+      <div class="sec-form" style="margin-top:12px">
+        <div class="field"><label>Anthropic API 키</label>
+          <input type="password" id="aiKey" placeholder="sk-ant-..." autocomplete="off"></div>
+        <div class="field"><button class="btn primary block" id="aiSave">저장</button></div>
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        키는 <span class="mono">console.anthropic.com</span> → API Keys 에서 만듭니다.
+        제목·설명은 양이 적어 한 번 번역에 드는 비용은 몇 원 수준입니다. 지우려면 빈 칸으로 저장하세요.
+      </div>
+    </div>
 
     <div class="card" id="storageCard">
       <h2>저장 공간</h2>
@@ -564,7 +597,7 @@ const PAGES = ['home','upload','accounts','history'];
 const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
 let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, width:0, height:0, when:'now', scheduled:[], vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
+               duration:0, width:0, height:0, when:'now', scheduled:[], enTags:[], vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -625,6 +658,7 @@ async function loadPlatforms(){
   renderHome();
   loadVersion();
   loadStorage();
+  loadAiState();
 }
 
 async function loadSets(){
@@ -1128,6 +1162,32 @@ function refreshPublishButton(){
   if(state.when === 'later' && !scheduledAt()) btn.disabled = true;
 }
 
+/* ── 번역 API 키 ── */
+async function loadAiState(){
+  const box = $('#aiState');
+  if(!box) return;
+  try{
+    const d = await fetch('/api/ai/status').then(r => r.json());
+    box.innerHTML = d.enabled
+      ? `<div class="meta-row"><span>상태</span><span style="color:var(--green)"><b>사용 가능</b>
+          <span class="small muted">${esc(d.model)}</span></span></div>`
+      : '<div class="warn">API 키가 없어 번역을 쓸 수 없습니다. 아래에 키를 넣어주세요.</div>';
+  }catch(_){ box.innerHTML = ''; }
+}
+
+if($('#aiSave')) $('#aiSave').onclick = async () => {
+  const key = $('#aiKey').value.trim();
+  const res = await fetch('/api/ai/key', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key: key}),
+  });
+  const d = await res.json().catch(() => ({}));
+  $('#aiKey').value = '';
+  flash(res.ok ? 'ok' : 'err',
+    !res.ok ? '저장하지 못했습니다.' : d.enabled ? 'API 키를 저장했습니다.' : 'API 키를 지웠습니다.');
+  loadAiState();
+};
+
 /* ── 저장 공간 ── */
 function storageHtml(d){
   const pct = d.total ? Math.round((d.total - d.free) / d.total * 100) : 0;
@@ -1318,6 +1378,67 @@ async function runPreflight(){
 }
 $('#btnPrecheck').onclick = () => runPreflight();
 
+/* ── 영어 현지화 (유튜브) ── */
+$('#enTagInput').onkeydown = e => {
+  if(e.key === 'Enter' || e.key === ','){ e.preventDefault(); addEnTag(e.target.value); e.target.value = ''; }
+  else if(e.key === 'Backspace' && !e.target.value && state.enTags.length){ state.enTags.pop(); renderEnTags(); }
+};
+$('#enTagInput').onblur = e => { addEnTag(e.target.value); e.target.value = ''; };
+
+function addEnTag(raw){
+  raw.split(/[,#\s]+/).map(t => t.trim()).filter(Boolean).forEach(t => {
+    if(!state.enTags.includes(t) && state.enTags.length < 15) state.enTags.push(t);
+  });
+  renderEnTags();
+}
+
+function renderEnTags(){
+  const box = $('#enTagBox');
+  if(!box) return;
+  box.querySelectorAll('.tag').forEach(el => el.remove());
+  state.enTags.forEach((t, i) => {
+    const el = document.createElement('span');
+    el.className = 'tag';
+    el.innerHTML = `#${esc(t)}<button title="삭제">×</button>`;
+    el.querySelector('button').onclick = () => { state.enTags.splice(i,1); renderEnTags(); };
+    box.insertBefore(el, $('#enTagInput'));
+  });
+}
+
+function localizationEn(){
+  const title = $('#enTitle').value.trim();
+  if(!title) return null;
+  return {title, description: $('#enDesc').value.trim(), hashtags: state.enTags};
+}
+
+$('#btnTranslate').onclick = async () => {
+  const btn = $('#btnTranslate'), msg = $('#enMsg');
+  if(!$('#title').value.trim()){ flash('err', '먼저 한국어 제목을 입력하세요.'); return; }
+  btn.disabled = true; btn.textContent = '번역 중...';
+  msg.innerHTML = '';
+  try{
+    const res = await fetch('/api/translate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        title: $('#title').value.trim(),
+        description: $('#desc').value.trim(),
+        hashtags: state.tags,
+      }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if(!res.ok){ msg.innerHTML = `<div class="warn">${esc(d.detail || '번역하지 못했습니다.')}</div>`; return; }
+    $('#enTitle').value = d.title || '';
+    $('#enDesc').value = d.description || '';
+    state.enTags = d.hashtags || [];
+    renderEnTags();
+    flash('ok', '영어로 옮겼습니다. 어색한 부분은 직접 고치세요.');
+  }catch(err){
+    msg.innerHTML = `<div class="warn">${esc(String(err))}</div>`;
+  }finally{
+    btn.disabled = false; btn.textContent = '클로드로 번역';
+  }
+};
+
 /* ── 예약 게시 ── */
 const KST_OFFSET = 9 * 60;   // 서버·표시 모두 한국 시간 기준으로 다룬다
 
@@ -1457,7 +1578,8 @@ $('#btnPublish').onclick = async () => {
     body: JSON.stringify({
       media_id: state.media.id, title,
       description: $('#desc').value.trim(), hashtags: state.tags,
-      targets, options: state.options,
+      targets,
+      options: {...state.options, localization_en: localizationEn()},
       scheduled_at: scheduledAt(),
     }),
   });

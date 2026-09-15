@@ -27,7 +27,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, credentials, db, jobs
+from . import ai, auth, credentials, db, jobs
 from .config import (
     APP_PASSWORD,
     BASE_DIR,
@@ -387,7 +387,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-15-예약게시"
+APP_VERSION = "2026-09-15-영어현지화"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -1281,6 +1281,50 @@ async def preflight(payload: PreflightIn) -> dict:
 async def _launch(job_id: str) -> None:
     # 백그라운드에서 게시를 진행하고, 응답은 즉시 반환한다.
     await asyncio.shield(jobs.run_job(job_id))
+
+
+class TranslateIn(BaseModel):
+    title: str = ""
+    description: str = ""
+    hashtags: list[str] = Field(default_factory=list)
+
+
+class AiKeyIn(BaseModel):
+    api_key: str = ""
+
+
+@app.get("/api/ai/status")
+async def ai_status() -> dict:
+    return {"enabled": ai.enabled(), "model": ai.MODEL}
+
+
+@app.post("/api/ai/key")
+async def save_ai_key(payload: AiKeyIn) -> dict:
+    key = payload.api_key.strip()
+    if key:
+        ai.save_api_key(key)
+    else:
+        ai.clear_api_key()
+    return {"enabled": ai.enabled()}
+
+
+@app.post("/api/translate")
+async def translate_text(payload: TranslateIn) -> dict:
+    """한국어 제목·설명·해시태그를 영어로 옮긴다 (유튜브 현지화용)."""
+    if not ai.enabled():
+        raise HTTPException(
+            400, "번역을 쓰려면 계정 관리에서 Anthropic API 키를 먼저 넣어주세요."
+        )
+    if not payload.title.strip():
+        raise HTTPException(400, "먼저 제목을 입력하세요.")
+    try:
+        return await ai.translate(
+            payload.title.strip(),
+            payload.description.strip(),
+            [t.strip().lstrip("#") for t in payload.hashtags if t.strip()],
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"번역하지 못했습니다: {type(exc).__name__}: {exc}") from exc
 
 
 class ScheduleIn(BaseModel):

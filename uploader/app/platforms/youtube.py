@@ -109,11 +109,22 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
     headers = {"Authorization": f"Bearer {token}"}
     title = (options.get("title") or job["title"] or job["video_name"])[:100]
     description = build_caption(job, include_title=False, limit=5000, max_tags=15)
+    tags = [t.lstrip("#") for t in job.get("hashtags", [])]
+
+    # 영어 현지화 — 영어권 시청자에게는 영어 제목/설명이 보인다.
+    en = (job.get("options") or {}).get("localization_en") or {}
+    en_title = (en.get("title") or "").strip()[:100]
+    en_desc = (en.get("description") or "").strip()
+    en_tags = [t.lstrip("#").strip() for t in (en.get("hashtags") or []) if str(t).strip()]
+    if en_tags:
+        en_desc = (en_desc + "\n\n" + " ".join(f"#{t}" for t in en_tags)).strip()
+        tags = tags + en_tags       # 검색 태그는 언어 구분이 없어 함께 넣는다
+
     body = {
         "snippet": {
             "title": title,
             "description": description,
-            "tags": [t.lstrip("#") for t in job.get("hashtags", [])][:15],
+            "tags": tags[:15],
             "categoryId": str(options.get("category_id") or "22"),
         },
         "status": {
@@ -121,13 +132,18 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             "selfDeclaredMadeForKids": bool(options.get("made_for_kids")),
         },
     }
+    parts = "snippet,status"
+    if en_title:
+        body["snippet"]["defaultLanguage"] = "ko"     # 현지화를 쓰려면 원본 언어가 필요하다
+        body["localizations"] = {"en": {"title": en_title, "description": en_desc[:5000]}}
+        parts = "snippet,status,localizations"
     size = job["video_size"]
 
     await progress(5, "업로드 세션 생성 중")
     async with httpx.AsyncClient(timeout=None) as client:
         init = await client.post(
             f"{UPLOAD_API}/videos",
-            params={"uploadType": "resumable", "part": "snippet,status"},
+            params={"uploadType": "resumable", "part": parts},
             headers={
                 **headers,
                 "X-Upload-Content-Length": str(size),
