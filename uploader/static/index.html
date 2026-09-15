@@ -230,6 +230,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .pill.partial{background:rgba(245,158,11,.15);color:#fcd34d}
 .pill.failed{background:rgba(239,68,68,.15);color:#fca5a5}
 .pill.retry,.pill.retrying{background:rgba(139,92,246,.15);color:#c4b5fd}
+.pill.scheduled{background:rgba(59,130,246,.15);color:#93c5fd}
 .tgt{display:flex;align-items:center;gap:11px;padding:10px 0;border-top:1px solid var(--border)}
 .tgt .pico{width:26px;height:26px;border-radius:8px;font-size:12px}
 .tgt-main{flex:1;min-width:0}
@@ -414,6 +415,23 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <div id="preflightBox"></div>
     </div>
 
+    <div class="card">
+      <h2><span class="step">5</span>언제 올릴까요</h2>
+      <div class="viewtabs" id="whenTabs">
+        <button class="viewtab active" data-when="now">지금 올리기</button>
+        <button class="viewtab" data-when="later">예약하기</button>
+      </div>
+      <div id="whenBox" class="hidden" style="margin-top:14px">
+        <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
+          <input type="datetime-local" id="schedAt" style="max-width:250px;margin:0">
+          <span class="small muted" id="schedHint"></span>
+        </div>
+        <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap" id="schedQuick"></div>
+        <div class="warn">예약한 영상은 그때까지 서버에 보관됩니다. 창을 닫아도 되고,
+          예약 목록에서 시간을 바꾸거나 취소할 수 있습니다. 시간은 <b>한국 시간</b> 기준입니다.</div>
+      </div>
+    </div>
+
     <div id="publishErr"></div>
     <button class="btn primary lg block" id="btnPublish" style="margin-top:4px" disabled>올릴 채널을 먼저 선택하세요</button>
 
@@ -518,6 +536,12 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 <!-- ─────────── 기록 ─────────── -->
 <main id="page-history" class="page hidden">
   <div class="wrap">
+    <div class="card" id="schedCard">
+      <h2>예약된 게시</h2>
+      <p class="sub">예약 시각이 되면 자동으로 올라갑니다. 시간을 바꾸거나 취소할 수 있습니다.</p>
+      <div id="schedList"></div>
+    </div>
+
     <div class="page-head">
       <h1>업로드 기록</h1>
       <p>최근 30건의 업로드와 채널별 결과입니다.</p>
@@ -540,7 +564,7 @@ const PAGES = ['home','upload','accounts','history'];
 const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
 let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, width:0, height:0, vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
+               duration:0, width:0, height:0, when:'now', scheduled:[], vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -1098,7 +1122,10 @@ function refreshPublishButton(){
   btn.textContent = !n ? '올릴 채널을 먼저 선택하세요'
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
     : dups.length ? '세트별 제목을 서로 다르게 고쳐주세요'
-    : `${n}개 채널에 한 번에 올리기`;
+    : state.when === 'later'
+      ? (scheduledAt() ? `${fmtKst(scheduledAt())}에 ${n}개 채널로 예약` : '예약 시각을 골라주세요')
+      : `${n}개 채널에 한 번에 올리기`;
+  if(state.when === 'later' && !scheduledAt()) btn.disabled = true;
 }
 
 /* ── 저장 공간 ── */
@@ -1291,6 +1318,115 @@ async function runPreflight(){
 }
 $('#btnPrecheck').onclick = () => runPreflight();
 
+/* ── 예약 게시 ── */
+const KST_OFFSET = 9 * 60;   // 서버·표시 모두 한국 시간 기준으로 다룬다
+
+/* datetime-local 값(문자열) → epoch 초. 사용자가 적은 시각을 한국 시간으로 읽는다. */
+function kstInputToEpoch(value){
+  if(!value) return null;
+  const [d, t] = value.split('T');
+  const [y, mo, da] = d.split('-').map(Number);
+  const [h, mi] = t.split(':').map(Number);
+  return Date.UTC(y, mo - 1, da, h, mi) / 1000 - KST_OFFSET * 60;
+}
+
+/* epoch 초 → datetime-local 값 (한국 시간) */
+function epochToKstInput(sec){
+  const d = new Date((sec + KST_OFFSET * 60) * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())}`
+       + `T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+function fmtKst(sec){
+  const d = new Date((sec + KST_OFFSET * 60) * 1000);
+  const p = n => String(n).padStart(2, '0');
+  const days = ['일','월','화','수','목','금','토'];
+  return `${p(d.getUTCMonth()+1)}/${p(d.getUTCDate())}(${days[d.getUTCDay()]}) `
+       + `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+function scheduledAt(){
+  if(state.when !== 'later') return null;
+  return kstInputToEpoch($('#schedAt').value);
+}
+
+function renderWhen(){
+  $$('#whenTabs .viewtab').forEach(b => {
+    b.classList.toggle('active', b.dataset.when === state.when);
+    b.onclick = () => { state.when = b.dataset.when; renderWhen(); refreshPublishButton(); };
+  });
+  $('#whenBox').classList.toggle('hidden', state.when !== 'later');
+  const when = scheduledAt();
+  const hint = $('#schedHint');
+  if(state.when === 'later' && hint){
+    hint.textContent = !when ? '시각을 골라주세요'
+      : when < Date.now()/1000 + 30 ? '지금보다 뒤 시각이어야 합니다'
+      : `${fmtKst(when)}에 올립니다`;
+    hint.style.color = (!when || when < Date.now()/1000 + 30) ? 'var(--amber)' : 'var(--green)';
+  }
+  const quick = $('#schedQuick');
+  if(quick && !quick.dataset.ready){
+    quick.dataset.ready = '1';
+    quick.innerHTML = [['1시간 뒤',60],['3시간 뒤',180],['내일 이맘때',1440],['내일 오전 9시',-1]]
+      .map(([label, min]) => `<button class="btn sm" data-quick="${min}">${label}</button>`).join('');
+    $$('[data-quick]').forEach(b => b.onclick = () => {
+      const min = Number(b.dataset.quick);
+      let t;
+      if(min >= 0){ t = Date.now()/1000 + min*60; }
+      else {  // 내일 오전 9시 (한국 시간)
+        const d = new Date((Date.now()/1000 + KST_OFFSET*60) * 1000);
+        d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(9, 0, 0, 0);
+        t = d.getTime()/1000 - KST_OFFSET*60;
+      }
+      $('#schedAt').value = epochToKstInput(t);
+      renderWhen();
+      refreshPublishButton();
+    });
+  }
+}
+if($('#schedAt')) $('#schedAt').onchange = () => { renderWhen(); refreshPublishButton(); };
+
+async function loadScheduled(){
+  const box = $('#schedList');
+  if(!box) return;
+  const {jobs} = await fetch('/api/scheduled').then(r => r.json()).catch(() => ({jobs: []}));
+  state.scheduled = jobs || [];
+  if(!state.scheduled.length){
+    box.innerHTML = '<div class="acc-empty">예약된 게시가 없습니다.</div>';
+    return;
+  }
+  box.innerHTML = state.scheduled.map(j => `
+    <div class="set-row">
+      <div class="nm">${esc(j.title || j.video_name)}</div>
+      <div class="set-members">
+        <span class="cat-tag">${esc(fmtKst(j.scheduled_at))}</span>
+        <span class="small muted">${j.targets.length}개 채널 · ${fmtSize(j.video_size)}</span>
+      </div>
+      <input type="datetime-local" data-resched="${j.id}" value="${epochToKstInput(j.scheduled_at)}"
+             style="max-width:210px;margin:0">
+      <button class="btn danger sm" data-cancelsched="${j.id}">취소</button>
+    </div>`).join('');
+
+  $$('[data-resched]').forEach(input => input.onchange = async () => {
+    const when = kstInputToEpoch(input.value);
+    const res = await fetch(`/api/jobs/${input.dataset.resched}/schedule`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({scheduled_at: when}),
+    });
+    const d = await res.json().catch(() => ({}));
+    flash(res.ok ? 'ok' : 'err', res.ok ? `${fmtKst(when)}로 옮겼습니다.` : (d.detail || '바꾸지 못했습니다.'));
+    loadScheduled();
+  });
+  $$('[data-cancelsched]').forEach(b => b.onclick = async () => {
+    if(!confirm('이 예약을 취소할까요? 올려둔 영상도 함께 정리됩니다.')) return;
+    const res = await fetch('/api/jobs/' + b.dataset.cancelsched, {method:'DELETE'});
+    const d = await res.json().catch(() => ({}));
+    flash(res.ok ? 'ok' : 'err', res.ok ? '예약을 취소했습니다.' : (d.detail || '취소하지 못했습니다.'));
+    loadScheduled(); loadHistory();
+  });
+}
+
 /* ── 게시 ── */
 $('#btnPublish').onclick = async () => {
   const title = $('#title').value.trim();
@@ -1322,12 +1458,23 @@ $('#btnPublish').onclick = async () => {
       media_id: state.media.id, title,
       description: $('#desc').value.trim(), hashtags: state.tags,
       targets, options: state.options,
+      scheduled_at: scheduledAt(),
     }),
   });
   const data = await res.json().catch(() => ({}));
   if(!res.ok){
     $('#publishErr').innerHTML = `<div class="err">${esc(data.detail || '업로드 요청에 실패했습니다.')}</div>`;
     $('#btnPublish').disabled = false;
+    return;
+  }
+  if(data.scheduled_at){
+    flash('ok', `${fmtKst(data.scheduled_at)}에 올리도록 예약했습니다. 창을 닫아도 됩니다.`);
+    $('#liveJob').innerHTML = `<div class="card"><h2>예약 완료</h2>
+      <p class="sub">${esc(fmtKst(data.scheduled_at))}에 ${targets.length}개 채널로 올라갑니다.
+        <a href="#history" style="color:#93c5fd">예약 목록에서 시간을 바꾸거나 취소</a>할 수 있습니다.</p></div>`;
+    state.when = 'now'; renderWhen();
+    refreshPublishButton();
+    loadScheduled();
     return;
   }
   state.jobId = data.job_id;
@@ -1356,7 +1503,8 @@ async function pollJob(){
 }
 
 const STATUS_KO = {pending:'대기', running:'진행 중', success:'성공', failed:'실패',
-                   partial:'일부 성공', retry:'재시도 대기', retrying:'재시도 대기'};
+                   partial:'일부 성공', retry:'재시도 대기', retrying:'재시도 대기',
+                   scheduled:'예약됨'};
 
 function jobHtml(job, live){
   const accName = t => {
@@ -1892,6 +2040,7 @@ if($('#vfSave')) $('#vfSave').onclick = async () => {
 
 /* ── 기록 ── */
 async function loadHistory(){
+  loadScheduled();
   const jobs = await loadJobs();
   $('#histList').innerHTML = jobs.length
     ? jobs.map(j => jobHtml(j, false)).join('')
@@ -1923,7 +2072,9 @@ $('#btnLogout').onclick = async () => {
   await loadPlatforms();
   await loadSets();
   await loadVerifyFiles();
+  await loadScheduled();
   renderTags();
+  renderWhen();
   route();
 })();
 </script>

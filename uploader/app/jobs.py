@@ -4,6 +4,7 @@ import contextlib
 import random
 import shutil
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import db
@@ -66,6 +67,14 @@ async def _run_targets(job: dict, targets: list[dict]) -> list[str]:
     return list(await asyncio.gather(*(guarded(t) for t in targets)))
 
 
+# 서버는 UTC 로 돌지만 사용자는 한국 시간으로 본다. tzdata 없이도 되도록 고정 오프셋을 쓴다.
+KST = timezone(timedelta(hours=9))
+
+
+def kst(ts: float, fmt: str = "%m/%d %H:%M") -> str:
+    return datetime.fromtimestamp(ts, KST).strftime(fmt)
+
+
 def _retry_label(minutes: int) -> str:
     return f"{minutes}분" if minutes < 60 else f"{minutes // 60}시간"
 
@@ -77,7 +86,7 @@ def _schedule_retry(target: dict, message: str) -> bool:
         return False
     minutes = RETRY_DELAYS_MIN[count]
     when = time.time() + minutes * 60
-    clock = time.strftime("%H:%M", time.localtime(when))
+    clock = kst(when, "%H:%M")
     db.update_target(
         target["id"],
         status="retry",
@@ -217,6 +226,27 @@ async def retry_due_targets() -> int:
             if freed:
                 print(f"[cleanup] 재시도 완료 후 원본 삭제 ({freed / 1024 / 1024:.0f}MB)")
     return handled
+
+
+async def run_due_scheduled() -> int:
+    """예약 시각이 된 게시를 실행한다. 실행한 개수를 돌려준다."""
+    due = db.due_scheduled_jobs(time.time())
+    for job_id in due:
+        job = db.get_job(job_id)
+        if not job:
+            continue
+        if not Path(job["video_path"]).exists():
+            db.set_job_status(job_id, "failed")
+            for target in job["targets"]:
+                db.update_target(
+                    target["id"], status="failed",
+                    message="예약 시각 전에 영상 원본이 지워졌습니다. 다시 올려주세요.",
+                )
+            print(f"[schedule] {job_id} 원본이 없어 실패 처리")
+            continue
+        print(f"[schedule] 예약 게시 시작 ({kst(job['scheduled_at'])}) · {job['title'][:30]}")
+        await run_job(job_id)
+    return len(due)
 
 
 async def run_job(job_id: str) -> None:

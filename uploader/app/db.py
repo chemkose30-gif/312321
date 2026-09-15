@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     thumb_path  TEXT,
     media_token TEXT NOT NULL DEFAULT '',
     options     TEXT NOT NULL DEFAULT '{}',
-    status      TEXT NOT NULL DEFAULT 'pending'
+    status      TEXT NOT NULL DEFAULT 'pending',
+    scheduled_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS job_targets (
@@ -119,6 +120,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE channel_sets ADD COLUMN category TEXT")
     if "title_template" not in set_columns:
         conn.execute("ALTER TABLE channel_sets ADD COLUMN title_template TEXT")
+
+    job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    if "scheduled_at" not in job_columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN scheduled_at REAL")
 
     target_columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_targets)")}
     if "title" not in target_columns:
@@ -283,16 +288,19 @@ def create_job(
     thumb_path: str | None,
     media_token: str,
     options: dict,
+    scheduled_at: float | None = None,
 ) -> str:
     job_id = new_id("job")
     _exec(
         """INSERT INTO jobs (id, created_at, title, description, hashtags, video_path, video_name,
-                             video_size, thumb_path, media_token, options, status)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending')""",
+                             video_size, thumb_path, media_token, options, status, scheduled_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             job_id, time.time(), title, description, json.dumps(hashtags, ensure_ascii=False),
             video_path, video_name, video_size, thumb_path, media_token,
             json.dumps(options, ensure_ascii=False),
+            "scheduled" if scheduled_at else "pending",
+            scheduled_at,
         ),
     )
     return job_id
@@ -351,6 +359,7 @@ def _job_dict(row: sqlite3.Row) -> dict:
         "media_token": row["media_token"],
         "options": json.loads(row["options"] or "{}"),
         "status": row["status"],
+        "scheduled_at": (row["scheduled_at"] if "scheduled_at" in row.keys() else None),
     }
 
 
@@ -382,10 +391,41 @@ def list_jobs(limit: int = 30) -> list[dict]:
 def active_video_paths() -> set[str]:
     """아직 게시 중이거나 재시도를 기다리는 작업의 영상 — 정리에서 제외해야 한다."""
     rows = _rows(
-        "SELECT video_path FROM jobs WHERE status IN ('running','pending','retrying')"
+        "SELECT video_path FROM jobs WHERE status IN ('running','pending','retrying','scheduled')"
         " OR id IN (SELECT job_id FROM job_targets WHERE status='retry')"
     )
     return {r["video_path"] for r in rows if r["video_path"]}
+
+
+def list_scheduled_jobs() -> list[dict]:
+    """아직 실행되지 않은 예약 게시 목록(빠른 시각 순)."""
+    rows = _rows("SELECT * FROM jobs WHERE status='scheduled' ORDER BY scheduled_at")
+    jobs = []
+    for row in rows:
+        job = _job_dict(row)
+        job.pop("video_path", None)
+        job["targets"] = get_targets(job["id"])
+        jobs.append(job)
+    return jobs
+
+
+def due_scheduled_jobs(now: float) -> list[str]:
+    """실행할 때가 된 예약 게시의 id 목록."""
+    rows = _rows(
+        "SELECT id FROM jobs WHERE status='scheduled' AND scheduled_at IS NOT NULL"
+        " AND scheduled_at <= ? ORDER BY scheduled_at",
+        (now,),
+    )
+    return [r["id"] for r in rows]
+
+
+def set_job_schedule(job_id: str, when: float) -> None:
+    _exec("UPDATE jobs SET scheduled_at=? WHERE id=? AND status='scheduled'", (when, job_id))
+
+
+def delete_job(job_id: str) -> None:
+    _exec("DELETE FROM job_targets WHERE job_id=?", (job_id,))
+    _exec("DELETE FROM jobs WHERE id=?", (job_id,))
 
 
 def targets_due_for_retry(now: float) -> list[dict]:

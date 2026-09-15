@@ -64,6 +64,10 @@ async def _retry_loop() -> None:
                 print(f"[retry] {done}개 채널을 다시 시도했습니다.")
         except Exception as exc:
             print(f"[retry] 재시도 중 오류: {type(exc).__name__}: {exc}")
+        try:
+            await jobs.run_due_scheduled()
+        except Exception as exc:
+            print(f"[schedule] 예약 실행 중 오류: {type(exc).__name__}: {exc}")
 
 
 @contextlib.asynccontextmanager
@@ -383,7 +387,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-12-썸네일안전장치"
+APP_VERSION = "2026-09-15-예약게시"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -1063,6 +1067,7 @@ class TargetIn(BaseModel):
 
 class JobIn(BaseModel):
     media_id: str
+    scheduled_at: float | None = None   # 예약 시각(초). 없으면 바로 게시
     title: str = ""
     description: str = ""
     hashtags: list[str] = Field(default_factory=list)
@@ -1113,6 +1118,13 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
         if not account or account["platform"] != target.platform:
             raise HTTPException(400, f"{PLATFORMS[target.platform].label} 계정이 연결되어 있지 않습니다.")
 
+    when = payload.scheduled_at
+    if when is not None:
+        if when < time.time() + 30:
+            raise HTTPException(400, "예약 시각은 지금보다 최소 1분 뒤여야 합니다.")
+        if when > time.time() + 180 * 86400:
+            raise HTTPException(400, "예약은 6개월 이내로만 할 수 있습니다.")
+
     job_id = db.create_job(
         title=payload.title.strip(),
         description=payload.description.strip(),
@@ -1123,6 +1135,7 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
         thumb_path=media.get("thumb_path"),
         media_token=media["token"],
         options=payload.options,
+        scheduled_at=when,
     )
     for target in payload.targets:
         title = target.title.strip()
@@ -1130,6 +1143,9 @@ async def create_job(payload: JobIn, background: BackgroundTasks) -> dict:
             job_id, target.platform, target.account_id,
             title if title and title != payload.title.strip() else "",
         )
+
+    if when is not None:
+        return {"job_id": job_id, "scheduled_at": when}
 
     background.add_task(_launch, job_id)
     return {"job_id": job_id}
@@ -1265,6 +1281,38 @@ async def preflight(payload: PreflightIn) -> dict:
 async def _launch(job_id: str) -> None:
     # 백그라운드에서 게시를 진행하고, 응답은 즉시 반환한다.
     await asyncio.shield(jobs.run_job(job_id))
+
+
+class ScheduleIn(BaseModel):
+    scheduled_at: float
+
+
+@app.get("/api/scheduled")
+async def get_scheduled() -> dict:
+    return {"jobs": db.list_scheduled_jobs()}
+
+
+@app.patch("/api/jobs/{job_id}/schedule")
+async def change_schedule(job_id: str, payload: ScheduleIn) -> dict:
+    job = db.get_job(job_id)
+    if not job or job["status"] != "scheduled":
+        raise HTTPException(404, "예약된 게시를 찾을 수 없습니다.")
+    if payload.scheduled_at < time.time() + 30:
+        raise HTTPException(400, "예약 시각은 지금보다 최소 1분 뒤여야 합니다.")
+    db.set_job_schedule(job_id, payload.scheduled_at)
+    return {"ok": True, "scheduled_at": payload.scheduled_at}
+
+
+@app.delete("/api/jobs/{job_id}")
+async def cancel_job(job_id: str) -> dict:
+    """예약 게시를 취소한다. 이미 시작된 작업은 취소할 수 없다."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "게시를 찾을 수 없습니다.")
+    if job["status"] != "scheduled":
+        raise HTTPException(400, "이미 시작된 게시는 취소할 수 없습니다.")
+    db.delete_job(job_id)
+    return {"ok": True}
 
 
 @app.get("/api/jobs")
