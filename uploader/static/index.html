@@ -597,10 +597,7 @@ const PAGES = ['home','upload','accounts','history'];
 /* 유튜브가 정해둔 영상 카테고리 — 이 목록에서만 고를 수 있다.
    '드라마'는 유튜브에 따로 없어서 엔터테인먼트나 영화/애니메이션을 쓴다. */
 const YT_CATEGORIES = [
-  ['22', '인물/블로그'], ['24', '엔터테인먼트'], ['17', '스포츠'], ['20', '게임'],
-  ['1', '영화/애니메이션'], ['23', '코미디'], ['10', '음악'], ['26', '노하우/스타일'],
-  ['27', '교육'], ['28', '과학기술'], ['19', '여행/이벤트'], ['15', '동물'],
-  ['2', '자동차'], ['25', '뉴스/정치'],
+  ['24', '엔터테인먼트'], ['17', '스포츠'], ['20', '게임'], ['1', '영화/애니메이션'],
 ];
 
 const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
@@ -1131,7 +1128,7 @@ function optionsHtml(p){
       <label class="f">카테고리</label>
       <select data-opt="youtube:category_id">
         ${YT_CATEGORIES.map(([id, name]) =>
-          `<option value="${id}" ${(opt.category_id || '22') === id ? 'selected' : ''}>${name}</option>`
+          `<option value="${id}" ${(opt.category_id || '24') === id ? 'selected' : ''}>${name}</option>`
         ).join('')}
       </select>
       <label class="check"><input type="checkbox" data-opt="youtube:made_for_kids" ${opt.made_for_kids?'checked':''}>아동용 콘텐츠</label>`;

@@ -125,7 +125,7 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
             "title": title,
             "description": description,
             "tags": tags[:15],
-            "categoryId": str(options.get("category_id") or "22"),
+            "categoryId": str(options.get("category_id") or "24"),   # 기본: 엔터테인먼트
         },
         "status": {
             "privacyStatus": options.get("privacy") or "private",
