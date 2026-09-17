@@ -26,6 +26,19 @@ def ok(text: str) -> Issue:
     return {"level": "ok", "text": text}
 
 
+def token_note(account: dict) -> Issue | None:
+    """로그인 만료가 가까우면 알려준다."""
+    from .. import tokens
+
+    st = tokens.status(account)
+    if st["state"] == "expired":
+        return err("로그인이 만료됐습니다. 계정 관리에서 갱신하거나 다시 연결하세요.")
+    if st["state"] == "soon":
+        tail = "계정 관리에서 '지금 갱신'을 누르세요." if st["can_refresh"] else "다시 로그인해야 합니다."
+        return warn(f"로그인이 곧 만료됩니다({st['text']}). {tail}")
+    return None
+
+
 def _has_error(items: list[Issue]) -> bool:
     return any(i["level"] == "error" for i in items)
 

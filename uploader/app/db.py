@@ -176,6 +176,8 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "display_name": row["label"] or row["name"],
         "category": row["category"] or "",
         "linked": bool(row["access_token"]),
+        # 값은 내보내지 않고, 갱신용 토큰을 가지고 있는지만 알려준다
+        "has_refresh": bool(row["refresh_token"]),
         "manual": bool(json.loads(row["meta"] or "{}").get("manual")),
         # 인스타는 연결 방식이 두 가지라 계정마다 다를 수 있다
         "auth": json.loads(row["meta"] or "{}").get("auth") or "",

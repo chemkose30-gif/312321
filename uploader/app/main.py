@@ -27,7 +27,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, auth, credentials, db, jobs
+from . import ai, auth, credentials, db, jobs, tokens
 from .config import (
     APP_PASSWORD,
     BASE_DIR,
@@ -52,6 +52,10 @@ async def _periodic_cleanup() -> None:
             jobs.cleanup_old_files()
         except Exception:  # 정리 실패가 서버를 멈추게 하지는 않는다
             pass
+        try:
+            await tokens.refresh_expiring()
+        except Exception as exc:
+            print(f"[token] 자동 갱신 중 오류: {type(exc).__name__}: {exc}")
 
 
 async def _retry_loop() -> None:
@@ -77,6 +81,8 @@ async def lifespan(_: FastAPI):
     if interrupted:
         print(f"[startup] 재시작으로 중단된 게시 {interrupted}건을 실패 처리했습니다.")
     jobs.cleanup_old_files()
+    with contextlib.suppress(Exception):
+        await tokens.refresh_expiring()
     cleaner = asyncio.create_task(_periodic_cleanup())
     retrier = asyncio.create_task(_retry_loop())
     try:
@@ -387,7 +393,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-16-카테고리4개"
+APP_VERSION = "2026-09-17-토큰갱신"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -558,7 +564,9 @@ async def get_platforms() -> dict:
             ),
             "demo": demo_platform(key),
             "redirect_uri": redirect_uri_for(key),
-            "accounts": [a for a in accounts if a["platform"] == key],
+            "accounts": [
+                {**a, "token": tokens.status(a)} for a in accounts if a["platform"] == key
+            ],
         })
     return {
         "platforms": out,
@@ -1200,6 +1208,10 @@ async def _preflight_one(payload: PreflightIn, target: TargetIn, media: dict | N
         return {**base, "items": [checks.err("계정을 찾을 수 없습니다. 계정 관리에서 다시 연결하세요.")]}
 
     items: list[dict] = []
+    note = checks.token_note(account)
+    if note:
+        items.append(note)
+
     used = _previous_titles(target.account_id)
     mine = _norm_title(target.title or payload.title)
     if mine and mine in used:
@@ -1329,6 +1341,22 @@ async def translate_text(payload: TranslateIn) -> dict:
 
 class ScheduleIn(BaseModel):
     scheduled_at: float
+
+
+@app.post("/api/accounts/{account_id}/refresh")
+async def refresh_account_token(account_id: str) -> dict:
+    """이 계정의 토큰을 지금 갱신한다."""
+    result = await tokens.refresh(account_id)
+    if not result["ok"]:
+        raise HTTPException(400, result["message"])
+    return result
+
+
+@app.post("/api/tokens/refresh")
+async def refresh_all_tokens() -> dict:
+    """만료가 가까운 계정을 한꺼번에 갱신한다."""
+    done = await tokens.refresh_expiring()
+    return {"refreshed": done}
 
 
 @app.get("/api/scheduled")

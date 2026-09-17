@@ -1675,6 +1675,31 @@ const HANDLE_HINT = {
   facebook: '페이스북 페이지 이름',
 };
 
+/* 로그인(토큰) 상태 배지 — 만료가 가까우면 갱신 버튼도 같이 보여준다 */
+function tokenBadge(a, platform){
+  const t = a.token;
+  if(!t || !a.linked) return '';
+  if(t.state === 'ok') return `<span class="tagbadge on" title="로그인 유효">${esc(t.text)}</span>`;
+  const cls = t.state === 'expired' ? 'need' : 'need';
+  const label = t.state === 'expired' ? '로그인 만료' : `만료 임박 · ${t.text}`;
+  return `<span class="tagbadge ${cls}" title="${esc(t.expires_at ? fmtKst(t.expires_at) + ' 만료' : '')}">${esc(label)}</span>`
+    + (t.can_refresh
+        ? `<button class="btn sm" data-refreshtok="${a.id}">지금 갱신</button>`
+        : `<a class="btn sm" href="/api/oauth/${platform}/start">다시 로그인</a>`);
+}
+
+function bindTokenButtons(){
+  $$('[data-refreshtok]').forEach(b => b.onclick = async () => {
+    const before = b.textContent;
+    b.disabled = true; b.textContent = '갱신 중...';
+    const res = await fetch(`/api/accounts/${b.dataset.refreshtok}/refresh`, {method:'POST'});
+    const d = await res.json().catch(() => ({}));
+    flash(res.ok ? 'ok' : 'err', res.ok ? (d.message || '갱신했습니다.') : (d.detail || '갱신하지 못했습니다.'));
+    b.disabled = false; b.textContent = before;
+    loadPlatforms();
+  });
+}
+
 function renderCategoryList(){
   const names = [...new Set([...DEFAULT_CATEGORIES, ...state.categories])];
   const list = $('#catList');
@@ -1710,6 +1735,7 @@ function renderAccountsByCategory(){
           ${a.platform === 'instagram' && a.linked
             ? `<span class="tagbadge ${a.auth === 'instagram_login' ? 'on' : 'need'}">${
                 a.auth === 'instagram_login' ? '인스타 직접' : '페북 페이지 경유'}</span>` : ''}
+          ${tokenBadge(a, a.platform)}
           <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>
         </div>`).join('')}
@@ -1823,6 +1849,7 @@ function renderAccountPanels(){
                 : `<a class="tagbadge need" href="/api/oauth/instagram/start"
                      title="이 계정만 예전 방식으로 연결돼 있습니다. 눌러서 인스타 직접 로그인으로 다시 연결하세요">페북 페이지 경유 · 다시 연결 ↻</a>`)
             : ''}
+          ${tokenBadge(a, p.key)}
           <input type="text" class="lbl-input" data-label="${a.id}" value="${esc(a.label || '')}" placeholder="별칭 (선택)">
           <input type="text" class="cat-input" data-cat="${a.id}" list="catList" value="${esc(a.category || '')}" placeholder="카테고리">
           <button class="btn danger sm" data-del="${a.id}">삭제</button>
@@ -1903,6 +1930,7 @@ function renderAccountPanels(){
 
 /* 아이디 행 공통 핸들러 (플랫폼별 / 카테고리별 뷰 모두 사용) */
 function bindAccountRowHandlers(){
+  bindTokenButtons();
   $$('[data-del]').forEach(btn => btn.onclick = async () => {
     if(!confirm('이 아이디를 목록에서 삭제할까요? 저장된 세트에서도 함께 빠집니다.')) return;
     await fetch('/api/accounts/' + btn.dataset.del, {method:'DELETE'});
