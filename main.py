@@ -721,12 +721,15 @@ async def kbl_leaders():
     return await get_kbl_leaders()
 
 frontend_dir = Path(__file__).parent / "frontend"
+seoltoon_dir = Path(__file__).parent / "seoltoon"
 
 @app.get("/")
 async def root():
     return FileResponse(frontend_dir / "index.html")
 
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+# 썰툰 스튜디오 (대사 + 그림 -> 영상) : http://localhost:8765/seoltoon/
+app.mount("/seoltoon", StaticFiles(directory=str(seoltoon_dir), html=True), name="seoltoon")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8765)), reload=False)

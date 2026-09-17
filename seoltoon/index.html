@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>썰툰 스튜디오 — 대사·그림으로 영상 만들기</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="logo">썰툰 <span>스튜디오</span></div>
+  <input id="proj-title" class="title-input" type="text" placeholder="작품 제목" value="내 썰툰">
+  <select id="ratio" title="영상 비율"></select>
+  <button class="btn" id="btn-bulk">📝 대본 일괄 입력</button>
+  <div class="spacer"></div>
+  <span class="saved" id="saved">자동 저장됨</span>
+  <button class="btn" id="btn-preview">▶ 미리보기</button>
+  <button class="btn primary" id="btn-export">🎬 영상 만들기</button>
+  <button class="btn ghost" id="btn-menu">⋯</button>
+</header>
+
+<main class="layout">
+
+  <!-- 씬 목록 -->
+  <section class="panel scenes">
+    <h2>씬 목록 <span class="spacer"></span>
+      <button class="btn sm" id="btn-add">+ 씬 추가</button>
+    </h2>
+    <div class="body" id="scene-list"></div>
+  </section>
+
+  <!-- 그림판 -->
+  <section class="panel draw">
+    <h2>그림 <span class="spacer"></span>
+      <span class="hint" id="draw-size"></span>
+    </h2>
+    <div class="body">
+      <div class="toolbar">
+        <button class="tool on" data-tool="pen" title="펜">✏️</button>
+        <button class="tool" data-tool="marker" title="형광펜(반투명)">🖍️</button>
+        <button class="tool" data-tool="eraser" title="지우개">🧽</button>
+        <button class="tool" data-tool="stamp" title="이모지 스탬프">😀</button>
+        <input type="range" id="brush" min="2" max="80" value="10" style="width:90px" title="굵기">
+        <input type="color" id="color" value="#222222" title="색상">
+        <div class="swatches" id="swatches"></div>
+        <button class="tool" id="btn-undo" title="되돌리기 (Ctrl+Z)">↩️</button>
+        <button class="tool" id="btn-redo" title="다시 실행">↪️</button>
+        <button class="btn sm" id="btn-fill">배경 채우기</button>
+        <select id="preset" class="btn sm" title="배경 프리셋">
+          <option value="">배경 프리셋…</option>
+          <option value="gradient">그라데이션</option>
+          <option value="speed">집중선(만화 효과)</option>
+          <option value="night">밤하늘</option>
+          <option value="note">노트 줄무늬</option>
+          <option value="tone">스크린톤</option>
+        </select>
+        <button class="btn sm" id="btn-upload">🖼 사진 넣기</button>
+        <button class="btn sm danger" id="btn-clear">전체 지우기</button>
+        <input type="file" id="file-img" accept="image/*" hidden>
+      </div>
+      <div class="emoji-bar" id="emoji-bar" hidden></div>
+      <div class="canvas-wrap"><canvas id="draw-canvas"></canvas></div>
+      <div class="hint">그림은 자동 저장됩니다 · 마우스/손가락으로 그리세요</div>
+    </div>
+  </section>
+
+  <!-- 대사 편집 -->
+  <section class="panel edit">
+    <h2>대사 &amp; 음성 <span class="spacer"></span><span class="hint" id="scene-badge"></span></h2>
+    <div class="body">
+      <div class="field">
+        <label>화자 이름 (비우면 나레이션만)</label>
+        <div class="inline">
+          <input type="text" id="speaker" placeholder="예) 나, 친구 A, 엄마" style="flex:1">
+          <input type="color" id="speaker-color" value="#ff6b8b" title="이름 색상">
+        </div>
+      </div>
+      <div class="field">
+        <label>대사</label>
+        <textarea id="text" placeholder="여기에 대사를 적으세요"></textarea>
+      </div>
+      <div class="field">
+        <label>나레이션 / 상황 설명 (화면 위쪽에 표시)</label>
+        <textarea id="narration" placeholder="예) 그날 밤, 카톡이 하나 왔다" style="min-height:56px"></textarea>
+      </div>
+      <div class="field">
+        <label>자막 스타일 · 길이 · 배경색</label>
+        <div class="inline">
+          <select id="caption-style">
+            <option value="bubble">말풍선</option>
+            <option value="subtitle">하단 자막</option>
+            <option value="none">자막 없음</option>
+          </select>
+          <input type="number" id="duration" min="0.5" max="30" step="0.5" value="3" style="width:78px" title="길이(초)">
+          <span class="hint">초</span>
+          <input type="color" id="scene-bg" value="#ffffff" title="여백 배경색">
+        </div>
+      </div>
+      <div class="field">
+        <label>목소리 (녹음하면 영상에 함께 들어갑니다)</label>
+        <div class="inline">
+          <button class="btn sm" id="btn-rec">🎤 녹음</button>
+          <button class="btn sm" id="btn-audio-up">📁 파일</button>
+          <button class="btn sm" id="btn-audio-play">▶ 듣기</button>
+          <button class="btn sm danger" id="btn-audio-del">🗑</button>
+          <input type="file" id="file-audio" accept="audio/*" hidden>
+        </div>
+        <div class="hint" id="audio-info" style="text-align:left;margin-top:6px">녹음된 음성 없음</div>
+        <div class="inline" style="margin-top:6px">
+          <button class="btn sm" id="btn-tts">🔊 TTS로 대사 미리듣기</button>
+        </div>
+      </div>
+
+      <details class="settings">
+        <summary>작품 설정 (BGM · 효과)</summary>
+        <div class="field">
+          <label>배경 음악</label>
+          <div class="inline">
+            <button class="btn sm" id="btn-bgm">🎵 BGM 선택</button>
+            <button class="btn sm danger" id="btn-bgm-del">🗑</button>
+            <input type="file" id="file-bgm" accept="audio/*" hidden>
+          </div>
+          <div class="hint" id="bgm-info" style="text-align:left;margin-top:6px">없음</div>
+          <label style="margin-top:8px">BGM 볼륨 <span id="bgm-vol-label">35%</span></label>
+          <input type="range" id="bgm-volume" min="0" max="100" value="35">
+        </div>
+        <div class="field">
+          <label>효과</label>
+          <div class="inline">
+            <label class="hint"><input type="checkbox" id="opt-typing" checked> 타이핑 효과</label>
+            <label class="hint"><input type="checkbox" id="opt-fade" checked> 장면 전환 페이드</label>
+          </div>
+          <label style="margin-top:8px">자막 크기 <span id="font-label">100%</span></label>
+          <input type="range" id="font-scale" min="70" max="160" value="100">
+        </div>
+        <div class="field">
+          <label>내보내기 / 불러오기</label>
+          <div class="inline">
+            <button class="btn sm" id="btn-save-json">💾 프로젝트 저장</button>
+            <button class="btn sm" id="btn-load-json">📂 불러오기</button>
+            <button class="btn sm" id="btn-png">🖼 현재 씬 PNG</button>
+            <input type="file" id="file-json" accept="application/json,.seoltoon" hidden>
+          </div>
+        </div>
+        <div class="field">
+          <button class="btn sm danger" id="btn-reset">전체 초기화</button>
+        </div>
+      </details>
+    </div>
+  </section>
+</main>
+
+<!-- 재생 / 렌더링 모달 -->
+<div class="modal" id="modal-play" hidden>
+  <div class="box">
+    <h3 id="play-title">미리보기</h3>
+    <canvas id="stage"></canvas>
+    <div class="progress"><i id="play-bar"></i></div>
+    <div class="inline">
+      <span class="muted" id="play-status">준비 중…</span>
+      <div class="spacer" style="flex:1"></div>
+      <button class="btn" id="btn-stop">중지</button>
+      <button class="btn ghost" id="btn-close-play">닫기</button>
+    </div>
+    <div id="result" class="inline"></div>
+  </div>
+</div>
+
+<!-- 대본 일괄 입력 모달 -->
+<div class="modal" id="modal-bulk" hidden>
+  <div class="box">
+    <h3>대본 일괄 입력</h3>
+    <p class="muted">
+      한 줄에 한 컷씩 적으면 씬이 자동으로 만들어집니다.<br>
+      · <b>화자: 대사</b> 형식이면 화자가 자동 인식돼요 — 예) <code>친구A: 야 그거 봤어?</code><br>
+      · 앞에 <b>#</b> 를 붙이면 나레이션이 됩니다 — 예) <code># 그날 밤, 비가 왔다</code><br>
+      · 빈 줄은 무시됩니다.
+    </p>
+    <textarea id="bulk-text" placeholder="# 작년 여름이었다&#10;나: 야, 나 진짜 할 말 있어&#10;친구A: 뭔데 그렇게 뜸 들여&#10;나: 사실 나… 그거 봤어"></textarea>
+    <div class="inline">
+      <label class="hint"><input type="checkbox" id="bulk-replace"> 기존 씬 모두 지우고 새로 만들기</label>
+      <div class="spacer" style="flex:1"></div>
+      <button class="btn ghost" id="btn-bulk-cancel">취소</button>
+      <button class="btn primary" id="btn-bulk-ok">씬 만들기</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
