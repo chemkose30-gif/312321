@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
 from starlette.requests import ClientDisconnect
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from fastapi.responses import (
     FileResponse,
@@ -397,7 +397,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-18-휴대폰연결"
+APP_VERSION = "2026-09-18-계정추가연결"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -647,12 +647,19 @@ async def oauth_callback(provider: str, request: Request):
         return RedirectResponse("/?error=인가 코드가 없습니다.", status_code=303)
 
     try:
-        await PROVIDERS[provider][1](code)
+        account_ids = await PROVIDERS[provider][1](code) or []
     except PublishError as exc:
         return RedirectResponse(f"/?error={exc}", status_code=303)
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(f"/?error={type(exc).__name__}: {exc}", status_code=303)
-    done = RedirectResponse(f"/?connected={provider}", status_code=303)
+
+    # 어느 아이디가 붙었는지 이름으로 알려준다. 브라우저에 이미 로그인돼 있으면
+    # 다른 아이디를 연결하려다 같은 아이디가 또 붙는 일이 있어서, 그걸 눈으로
+    # 확인할 수 있어야 한다.
+    names = [a["name"] for a in (db.get_account(i) for i in account_ids) if a]
+    done = RedirectResponse(
+        f"/?connected={provider}&who={quote(', '.join(names))}", status_code=303
+    )
     done.delete_cookie(OAUTH_STATE_COOKIE, path="/")
     return done
 
