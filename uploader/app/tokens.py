@@ -21,27 +21,45 @@ RELOGIN_ONLY = "다시 로그인해야 합니다"
 
 
 def status(account: dict) -> dict:
-    """계정의 토큰 상태 — 화면에 그대로 뿌릴 수 있는 형태."""
+    """계정의 토큰 상태 — 화면에 그대로 뿌릴 수 있는 형태.
+
+    유튜브·틱톡의 액세스 토큰은 1시간짜리지만 refresh_token 으로 언제든
+    다시 받는다. 그 만료 시각은 사용자에게 의미가 없으므로 표시하지 않는다.
+    """
     expires_at = account.get("expires_at") or 0
     left = expires_at - time.time() if expires_at else None
 
     if not account.get("linked"):
-        state, text = "none", "로그인 연결 필요"
-    elif left is None:
-        state, text = "ok", "만료 없음"
-    elif left <= 0:
-        state, text = "expired", "만료됨"
-    elif left < WARN_WINDOW_SEC:
-        state, text = "soon", f"{int(left // 86400)}일 남음"
-    else:
-        state, text = "ok", f"{int(left // 86400)}일 남음"
+        return _row("none", "로그인 연결 필요", expires_at, account)
 
+    if _auto_renewing(account):
+        return _row("ok", "자동 갱신", expires_at, account)
+
+    if left is None:
+        return _row("ok", "만료 없음", expires_at, account)
+    if left <= 0:
+        return _row("expired", "만료됨", expires_at, account)
+    if left < WARN_WINDOW_SEC:
+        return _row("soon", f"{int(left // 86400)}일 남음", expires_at, account)
+    return _row("ok", f"{int(left // 86400)}일 남음", expires_at, account)
+
+
+def _row(state: str, text: str, expires_at: float, account: dict) -> dict:
     return {
         "state": state,
         "text": text,
+        "auto": _auto_renewing(account),
         "expires_at": expires_at or None,
         "can_refresh": _refresher(account) is not None,
     }
+
+
+def _auto_renewing(account: dict) -> bool:
+    """refresh_token 으로 언제든 다시 받을 수 있는 계정인지."""
+    return (
+        account.get("platform") in ("youtube", "tiktok")
+        and bool(account.get("refresh_token") or account.get("has_refresh"))
+    )
 
 
 def _refresher(account: dict):
@@ -91,6 +109,8 @@ async def refresh_expiring() -> list[str]:
     for account in db.list_accounts(with_tokens=True):
         if not account.get("access_token"):
             continue
+        if _auto_renewing(account):
+            continue      # 쓸 때 알아서 다시 받으므로 미리 갱신할 필요가 없다
         expires_at = account.get("expires_at") or 0
         if not expires_at or expires_at - time.time() > REFRESH_WINDOW_SEC:
             continue

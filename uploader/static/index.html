@@ -1729,7 +1729,15 @@ const HANDLE_HINT = {
 function tokenBadge(a, platform){
   const t = a.token;
   if(!t || !a.linked) return '';
-  if(t.state === 'ok') return `<span class="tagbadge on" title="로그인 유효">${esc(t.text)}</span>`;
+  if(t.state === 'ok'){
+    const tip = t.auto
+      ? '액세스 토큰은 1시간짜리지만 앱이 올릴 때마다 자동으로 다시 받습니다'
+      : '로그인 유효';
+    const badge = `<span class="tagbadge on" title="${esc(tip)}">${esc(t.text)}</span>`;
+    return t.auto && t.can_refresh
+      ? badge + `<button class="btn sm" data-refreshtok="${a.id}">지금 갱신</button>`
+      : badge;
+  }
   const cls = t.state === 'expired' ? 'need' : 'need';
   const label = t.state === 'expired' ? '로그인 만료' : `만료 임박 · ${t.text}`;
   return `<span class="tagbadge ${cls}" title="${esc(t.expires_at ? fmtKst(t.expires_at) + ' 만료' : '')}">${esc(label)}</span>`
