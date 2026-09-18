@@ -20,6 +20,17 @@ def today() -> str:
     return datetime.now(KST).strftime("%Y-%m-%d")
 
 
+def _unique(items: list[str]) -> list[str]:
+    """순서를 유지하면서 중복을 없앤다(같은 영상을 두 번 물어보지 않도록)."""
+    seen: set[str] = set()
+    return [i for i in items if i and not (i in seen or seen.add(i))]
+
+
+def _chunks(items: list[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 def _num(value) -> int:
     try:
         return int(float(value or 0))
@@ -28,14 +39,20 @@ def _num(value) -> int:
 
 
 # ── 유튜브 ──────────────────────────────────────────────────
+# 한 번에 보낼 수 있는 개수 — 유튜브가 정한 한도.
+YT_STATS_CHUNK = 50        # videos.list 의 id 파라미터
+YT_ANALYTICS_CHUNK = 200   # Analytics 의 video 필터
+
+
 async def youtube_stats(account: dict, video_ids: list[str]) -> dict[str, dict]:
     """조회수·좋아요·댓글은 videos.list, 시청시간은 Analytics API."""
     token = await youtube._access_token(account)
     headers = {"Authorization": f"Bearer {token}"}
     out: dict[str, dict] = {}
+    video_ids = _unique(video_ids)
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for chunk in (video_ids[i:i + 50] for i in range(0, len(video_ids), 50)):
+        for chunk in _chunks(video_ids, YT_STATS_CHUNK):
             res = await client.get(
                 f"{youtube.API}/videos",
                 params={"part": "statistics", "id": ",".join(chunk)},
@@ -54,29 +71,32 @@ async def youtube_stats(account: dict, video_ids: list[str]) -> dict[str, dict]:
 
         # 시청시간 — 채널 단위 Analytics. 권한이 없으면 조용히 건너뛴다.
         start = (datetime.now(KST) - timedelta(days=365)).strftime("%Y-%m-%d")
-        res = await client.get(
-            YT_ANALYTICS,
-            params={
-                "ids": "channel==MINE",
-                "startDate": start,
-                "endDate": today(),
-                "metrics": "estimatedMinutesWatched,views",
-                "dimensions": "video",
-                "filters": "video==" + ",".join(video_ids[:200]),
-                "maxResults": 200,
-            },
-            headers=headers,
-        )
-        if res.status_code >= 400:
-            print(f"[stats] 유튜브 시청시간 실패 {res.status_code} {res.text[:200]}")
-            return out
-        body = res.json() or {}
-        cols = [c["name"] for c in body.get("columnHeaders") or []]
-        for row in body.get("rows") or []:
-            data = dict(zip(cols, row))
-            vid = data.get("video")
-            if vid:
-                out.setdefault(vid, {})["watch_sec"] = _num(data.get("estimatedMinutesWatched")) * 60
+        for chunk in _chunks(video_ids, YT_ANALYTICS_CHUNK):
+            res = await client.get(
+                YT_ANALYTICS,
+                params={
+                    "ids": "channel==MINE",
+                    "startDate": start,
+                    "endDate": today(),
+                    "metrics": "estimatedMinutesWatched,views",
+                    "dimensions": "video",
+                    "filters": "video==" + ",".join(chunk),
+                    "maxResults": YT_ANALYTICS_CHUNK,
+                },
+                headers=headers,
+            )
+            if res.status_code >= 400:
+                print(f"[stats] 유튜브 시청시간 실패 {res.status_code} {res.text[:200]}")
+                break
+            body = res.json() or {}
+            cols = [c["name"] for c in body.get("columnHeaders") or []]
+            for row in body.get("rows") or []:
+                data = dict(zip(cols, row))
+                vid = data.get("video")
+                if vid:
+                    out.setdefault(vid, {})["watch_sec"] = (
+                        _num(data.get("estimatedMinutesWatched")) * 60
+                    )
     return out
 
 
@@ -93,7 +113,7 @@ async def instagram_stats(account: dict, media_ids: list[str]) -> dict[str, dict
     out: dict[str, dict] = {}
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for media_id in media_ids:
+        for media_id in _unique(media_ids):
             res = await client.get(
                 f"{base}/{media_id}/insights",
                 params={"metric": IG_METRICS, "access_token": token},
@@ -129,7 +149,7 @@ async def facebook_stats(account: dict, video_ids: list[str]) -> dict[str, dict]
     token = account["access_token"]
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=30) as client:
-        for video_id in video_ids:
+        for video_id in _unique(video_ids):
             res = await client.get(
                 f"{GRAPH}/{video_id}/video_insights",
                 params={"metric": FB_METRICS, "access_token": token},
@@ -157,9 +177,15 @@ COLLECTORS = {
 }
 
 
-async def collect() -> dict:
+# 이 기간 안에 올린 영상만 새로 받아온다.
+# 인스타·페북은 영상 1개당 요청 1번이라, 전체를 계속 다시 도는 것은 감당이 안 된다.
+# 기간이 지난 영상은 마지막으로 받아둔 값이 그대로 남는다.
+COLLECT_WINDOW_DAYS = 90
+
+
+async def collect(days: int | None = COLLECT_WINDOW_DAYS) -> dict:
     """게시된 영상들의 지표를 모아 저장한다."""
-    targets = db.published_targets()
+    targets = db.published_targets(time.time() - days * 86400 if days else None)
     if not targets:
         return {"targets": 0, "saved": 0}
 
