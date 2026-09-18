@@ -198,6 +198,11 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .check input{accent-color:var(--blue);width:15px;height:15px}
 .thumb-pick{display:flex;align-items:center;gap:11px;margin-top:11px}
 .thumb-pick img{width:74px;height:74px;object-fit:cover;border-radius:var(--radius-sm);border:1px solid var(--border)}
+.stat-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.stat-row:last-child{border-bottom:none}
+.stat-row .nm{min-width:130px;font-size:13px;font-weight:600}
+.stat-row .bar{flex:1;min-width:90px;margin:0}
+.stat-row .val{min-width:78px;text-align:right;font-size:12.5px}
 .en-box{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
 .en-box input,.en-box textarea{margin-top:9px}
 .set-titles{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
@@ -271,6 +276,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       <a href="#home" data-nav="home">홈</a>
       <a href="#upload" data-nav="upload">업로드</a>
       <a href="#accounts" data-nav="accounts">계정 관리</a>
+      <a href="#stats" data-nav="stats">성과</a>
       <a href="#history" data-nav="history">업로드 기록</a>
     </div>
     <div class="nav-right">
@@ -567,6 +573,49 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 </main>
 
 <!-- ─────────── 기록 ─────────── -->
+<main id="page-stats" class="page hidden">
+  <div class="wrap">
+    <div class="page-head">
+      <h1>성과</h1>
+      <p>올린 영상의 조회수와 시청시간입니다. 하루에 한 번 자동으로 받아오고, 지금 받아올 수도 있습니다.</p>
+    </div>
+
+    <div class="row" style="align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <div class="viewtabs" id="statDays">
+        <button class="viewtab" data-days="7">최근 7일</button>
+        <button class="viewtab active" data-days="30">최근 30일</button>
+        <button class="viewtab" data-days="0">전체</button>
+      </div>
+      <button class="btn" id="btnStatRefresh" style="margin-left:auto">지금 받아오기</button>
+      <span class="small muted" id="statFetched"></span>
+    </div>
+
+    <div class="grid4" id="statTotals"></div>
+    <div id="statMsg"></div>
+
+    <div class="card">
+      <h2>카테고리별</h2>
+      <div id="statByCategory"></div>
+    </div>
+
+    <div class="card">
+      <h2>아이디별</h2>
+      <div id="statByAccount"></div>
+    </div>
+
+    <div class="card">
+      <h2>플랫폼별</h2>
+      <div id="statByPlatform"></div>
+    </div>
+
+    <div class="card">
+      <h2>잘 된 영상</h2>
+      <p class="sub">조회수가 높은 순입니다.</p>
+      <div id="statVideos"></div>
+    </div>
+  </div>
+</main>
+
 <main id="page-history" class="page hidden">
   <div class="wrap">
     <div class="card" id="schedCard">
@@ -593,7 +642,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 
 <script>
 const PICO = {youtube:'▶', tiktok:'♪', instagram:'◎', facebook:'f'};
-const PAGES = ['home','upload','accounts','history'];
+const PAGES = ['home','upload','accounts','stats','history'];
 /* 유튜브가 정해둔 영상 카테고리 — 이 목록에서만 고를 수 있다.
    '드라마'는 유튜브에 따로 없어서 엔터테인먼트나 영화/애니메이션을 쓴다. */
 const YT_CATEGORIES = [
@@ -603,7 +652,7 @@ const YT_CATEGORIES = [
 const DEFAULT_CATEGORIES = ['여자', '영화/드라마', '스포츠'];
 let PUBLIC_BASE = '';
 const state = {platforms:[], media:null, tags:[], selected:{}, options:{}, jobId:null, poll:null,
-               duration:0, width:0, height:0, when:'now', scheduled:[], enTags:[], vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
+               duration:0, width:0, height:0, when:'now', scheduled:[], enTags:[], statDays:30, vertical:false, pfSkip:false, titleEdits:{}, publicBase:'', jobs:[], sets:[], editingSet:null, security:{}, categories:[], accView:'platform'};
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -629,6 +678,7 @@ function route(){
   PAGES.forEach(p => $('#page-'+p).classList.toggle('hidden', p !== active));
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === active));
   if(active === 'history') loadHistory();
+  if(active === 'stats') loadStats();
   if(active === 'home') renderHome();
   window.scrollTo({top:0});
 }
@@ -2189,6 +2239,93 @@ if($('#vfSave')) $('#vfSave').onclick = async () => {
   $('#vfName').value = ''; $('#vfContent').value = '';
   loadVerifyFiles();
   flash('ok', `확인 파일을 공개했습니다: ${data.url}`);
+};
+
+/* ── 성과 ── */
+function fmtNum(n){
+  n = Number(n) || 0;
+  if(n >= 100000000) return (n/100000000).toFixed(1) + '억';
+  if(n >= 10000) return (n/10000).toFixed(1) + '만';
+  if(n >= 1000) return n.toLocaleString('ko-KR');
+  return String(n);
+}
+
+function fmtWatch(sec){
+  sec = Number(sec) || 0;
+  if(!sec) return '-';
+  const h = Math.floor(sec / 3600);
+  if(h >= 1) return `${fmtNum(h)}시간`;
+  const m = Math.floor(sec / 60);
+  return m >= 1 ? `${m}분` : `${sec}초`;
+}
+
+function statRows(rows, label){
+  if(!rows.length) return `<div class="acc-empty">아직 ${label} 자료가 없습니다.</div>`;
+  const max = Math.max(...rows.map(r => r.views), 1);
+  return `<div class="meta-list">${rows.map(r => `
+    <div class="stat-row">
+      <div class="nm">${esc(r.name === 'youtube' ? 'YouTube' : r.name === 'instagram' ? 'Instagram'
+                          : r.name === 'facebook' ? 'Facebook' : r.name === 'tiktok' ? 'TikTok' : r.name)}</div>
+      <div class="bar"><i style="width:${Math.round(r.views / max * 100)}%"></i></div>
+      <div class="val"><b>${fmtNum(r.views)}</b> 회</div>
+      <div class="val small muted">${fmtWatch(r.watch_sec)} · 영상 ${r.videos}개</div>
+    </div>`).join('')}</div>`;
+}
+
+async function loadStats(){
+  $$('#statDays .viewtab').forEach(b => {
+    b.classList.toggle('active', String(state.statDays) === b.dataset.days);
+    b.onclick = () => { state.statDays = Number(b.dataset.days); loadStats(); };
+  });
+  const d = await fetch(`/api/stats?days=${state.statDays}`).then(r => r.json()).catch(() => null);
+  if(!d){ $('#statMsg').innerHTML = '<div class="warn">성과를 불러오지 못했습니다.</div>'; return; }
+
+  $('#statTotals').innerHTML = [
+    ['총 조회수', fmtNum(d.total.views) + '회'],
+    ['총 시청시간', fmtWatch(d.total.watch_sec)],
+    ['좋아요', fmtNum(d.total.likes)],
+    ['올린 영상', d.total.videos + '개'],
+  ].map(([k, v]) => `<div class="stat"><div class="n">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('');
+
+  $('#statFetched').textContent = d.fetched_at
+    ? `마지막 수집 ${fmtKst(d.fetched_at)}` : '아직 수집한 적이 없습니다';
+
+  const missing = d.total.videos - d.measured;
+  $('#statMsg').innerHTML = !d.total.videos
+    ? '<div class="warn">아직 게시한 영상이 없습니다.</div>'
+    : missing > 0
+      ? `<div class="warn">영상 ${d.total.videos}개 중 ${d.measured}개만 지표를 받았습니다.
+          나머지는 아직 집계 전이거나, 계정에 통계 권한이 없습니다.
+          계정 관리에서 <b>다시 로그인</b>하면 권한이 추가됩니다.</div>`
+      : '';
+
+  $('#statByCategory').innerHTML = statRows(d.by_category, '카테고리별');
+  $('#statByAccount').innerHTML = statRows(d.by_account, '아이디별');
+  $('#statByPlatform').innerHTML = statRows(d.by_platform, '플랫폼별');
+
+  $('#statVideos').innerHTML = d.videos.length ? d.videos.map(v => `
+    <div class="stat-row">
+      <div class="pico" style="background:${platMeta(v.platform).color};width:24px;height:24px;
+        border-radius:7px;font-size:11px">${PICO[v.platform] || '?'}</div>
+      <div class="nm" style="flex:1">${esc(v.title)}
+        <div class="small muted">${esc(v.account)}${v.category ? ' · ' + esc(v.category) : ''}
+          · ${v.created_at ? fmtKst(v.created_at) : ''}</div></div>
+      <div class="val"><b>${fmtNum(v.views)}</b> 회</div>
+      <div class="val small muted">${fmtWatch(v.watch_sec)}</div>
+      ${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">열기 ↗</a>` : ''}
+    </div>`).join('') : '<div class="acc-empty">아직 게시한 영상이 없습니다.</div>';
+}
+
+if($('#btnStatRefresh')) $('#btnStatRefresh').onclick = async () => {
+  const b = $('#btnStatRefresh');
+  b.disabled = true; b.textContent = '받아오는 중...';
+  const res = await fetch('/api/stats/refresh', {method:'POST'});
+  const d = await res.json().catch(() => ({}));
+  flash(res.ok ? 'ok' : 'err', res.ok
+    ? `영상 ${d.targets}개 중 ${d.saved}개의 지표를 받았습니다.`
+    : '받아오지 못했습니다.');
+  b.disabled = false; b.textContent = '지금 받아오기';
+  loadStats();
 };
 
 /* ── 기록 ── */

@@ -91,7 +91,20 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     created_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stats (
+    target_id  TEXT NOT NULL,
+    day        TEXT NOT NULL,          -- YYYY-MM-DD (한국 시간)
+    views      INTEGER NOT NULL DEFAULT 0,
+    watch_sec  INTEGER NOT NULL DEFAULT 0,
+    likes      INTEGER NOT NULL DEFAULT 0,
+    comments   INTEGER NOT NULL DEFAULT 0,
+    shares     INTEGER NOT NULL DEFAULT 0,
+    fetched_at REAL NOT NULL,
+    PRIMARY KEY (target_id, day)
+);
+
 CREATE INDEX IF NOT EXISTS idx_targets_job ON job_targets(job_id);
+CREATE INDEX IF NOT EXISTS idx_stats_day ON stats(day);
 """
 
 
@@ -428,6 +441,56 @@ def set_job_schedule(job_id: str, when: float) -> None:
 def delete_job(job_id: str) -> None:
     _exec("DELETE FROM job_targets WHERE job_id=?", (job_id,))
     _exec("DELETE FROM jobs WHERE id=?", (job_id,))
+
+
+# ── 성과(조회수·시청시간) ────────────────────────────────────
+def save_stats(target_id: str, day: str, data: dict) -> None:
+    _exec(
+        """INSERT INTO stats (target_id, day, views, watch_sec, likes, comments, shares, fetched_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(target_id, day) DO UPDATE SET
+             views=excluded.views, watch_sec=excluded.watch_sec, likes=excluded.likes,
+             comments=excluded.comments, shares=excluded.shares, fetched_at=excluded.fetched_at""",
+        (
+            target_id, day, int(data.get("views") or 0), int(data.get("watch_sec") or 0),
+            int(data.get("likes") or 0), int(data.get("comments") or 0),
+            int(data.get("shares") or 0), time.time(),
+        ),
+    )
+
+
+def published_targets(since: float | None = None) -> list[dict]:
+    """게시에 성공해 통계를 볼 수 있는 대상들 (작업 정보까지 붙여서)."""
+    sql = (
+        "SELECT t.*, j.title AS job_title, j.created_at AS job_created_at,"
+        "       j.video_name AS video_name"
+        "  FROM job_targets t JOIN jobs j ON j.id = t.job_id"
+        " WHERE t.status='success' AND t.remote_id IS NOT NULL AND t.remote_id <> ''"
+    )
+    params: tuple = ()
+    if since:
+        sql += " AND j.created_at >= ?"
+        params = (since,)
+    return [dict(r) for r in _rows(sql + " ORDER BY j.created_at DESC", params)]
+
+
+def latest_stats() -> dict[str, dict]:
+    """대상별 가장 최근 통계 한 줄씩."""
+    rows = _rows(
+        "SELECT s.* FROM stats s JOIN ("
+        "  SELECT target_id, MAX(day) AS day FROM stats GROUP BY target_id"
+        ") m ON m.target_id = s.target_id AND m.day = s.day"
+    )
+    return {r["target_id"]: dict(r) for r in rows}
+
+
+def stats_by_day(days: int = 30) -> list[dict]:
+    """최근 N일간 날짜별 합계 (추이 그래프용)."""
+    return [dict(r) for r in _rows(
+        "SELECT day, SUM(views) AS views, SUM(watch_sec) AS watch_sec"
+        "  FROM stats GROUP BY day ORDER BY day DESC LIMIT ?",
+        (days,),
+    )]
 
 
 def targets_due_for_retry(now: float) -> list[dict]:

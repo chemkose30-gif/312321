@@ -27,7 +27,10 @@ API_VERSION = "v23.0"
 GRAPH = f"https://graph.instagram.com/{API_VERSION}"
 LONG_LIVED_URL = "https://graph.instagram.com/access_token"
 REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
-SCOPES = "instagram_business_basic,instagram_business_content_publish"
+SCOPES = (
+    "instagram_business_basic,instagram_business_content_publish"
+    ",instagram_business_manage_insights"     # 조회수·시청시간
+)
 
 CRED_KEY = "instagram_login"  # 인스타 전용 앱 자격증명 보관 키
 MODE_KEY = "instagram_auth_mode"

@@ -18,6 +18,9 @@ DEFAULT_SCOPES = [
     "instagram_content_publish",
     # 비즈니스 포트폴리오가 소유한 페이지를 찾으려면 필요하다
     "business_management",
+    # 조회수·시청시간 통계
+    "instagram_manage_insights",
+    "read_insights",
 ]
 
 

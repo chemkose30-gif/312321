@@ -15,6 +15,8 @@ UPLOAD_API = "https://www.googleapis.com/upload/youtube/v3"
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # 조회수·시청시간 통계를 읽으려면 필요하다
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
 

@@ -27,7 +27,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, auth, credentials, db, jobs, tokens
+from . import ai, auth, credentials, db, jobs, stats, tokens
 from .config import (
     APP_PASSWORD,
     BASE_DIR,
@@ -56,6 +56,10 @@ async def _periodic_cleanup() -> None:
             await tokens.refresh_expiring()
         except Exception as exc:
             print(f"[token] 자동 갱신 중 오류: {type(exc).__name__}: {exc}")
+        try:
+            await stats.collect()
+        except Exception as exc:
+            print(f"[stats] 수집 중 오류: {type(exc).__name__}: {exc}")
 
 
 async def _retry_loop() -> None:
@@ -393,7 +397,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-17-토큰갱신"
+APP_VERSION = "2026-09-18-성과"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -1357,6 +1361,18 @@ async def refresh_all_tokens() -> dict:
     """만료가 가까운 계정을 한꺼번에 갱신한다."""
     done = await tokens.refresh_expiring()
     return {"refreshed": done}
+
+
+@app.get("/api/stats")
+async def get_stats(days: int = 30) -> dict:
+    """성과 요약 — 조회수·시청시간 집계."""
+    return stats.summary(days if days > 0 else None)
+
+
+@app.post("/api/stats/refresh")
+async def refresh_stats() -> dict:
+    """지금 각 플랫폼에서 지표를 새로 받아온다."""
+    return await stats.collect()
 
 
 @app.get("/api/scheduled")
