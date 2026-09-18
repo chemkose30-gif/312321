@@ -1,6 +1,7 @@
 """멀티 플랫폼 업로더 — YouTube / TikTok / Instagram / Facebook 동시 업로드."""
 import asyncio
 import contextlib
+import html
 import ipaddress
 import mimetypes
 import os
@@ -136,10 +137,16 @@ def verification_content(path: str) -> str | None:
         return None
     return db.get_setting(f"verify:{name}")
 PUBLIC_PREFIXES = ("/media/", "/static/")
+# OAuth 콜백은 로그인 없이 받아야 한다. 다른 아이디를 추가하려면 시크릿 창에서
+# 연결해야 하는데, 그 창에는 우리 앱 세션 쿠키가 없기 때문이다. 대신 추측할 수
+# 없는 일회용 state 값으로 보호한다 — state 는 로그인한 사람만 발급받을 수 있다.
+PUBLIC_CALLBACK = re.compile(r"^/api/oauth/[^/]+/callback$")
 PUBLIC_PATHS = {
     "/api/login", "/api/setup-state", "/healthz", "/favicon.ico",
     # 플랫폼 콘솔이 요구하는 문서·콜백 — 로그인 없이 열려야 한다
     "/privacy", "/terms",
+    # 시크릿 창에서 연결을 마쳤을 때 보여줄 결과 페이지 (세션이 없다)
+    "/connected",
     "/api/meta/deauthorize", "/api/meta/data-deletion",
 }
 
@@ -198,7 +205,9 @@ async def guard(request: Request, call_next):
         if content is not None:
             return PlainTextResponse(content, headers=SECURITY_HEADERS)
 
-    if blocked is None and not (path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)):
+    if blocked is None and not (path in PUBLIC_PATHS
+                                or path.startswith(PUBLIC_PREFIXES)
+                                or PUBLIC_CALLBACK.match(path)):
         if auth.needs_setup():
             setup_call = path == "/api/password" and method == "POST"
             if not setup_call:
@@ -220,6 +229,9 @@ async def guard(request: Request, call_next):
     response = blocked if blocked is not None else await call_next(request)
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
+    # 인코딩을 안 밝히면 사파리가 한글 오류 메시지를 깨뜨려 보여준다.
+    if response.headers.get("content-type") == "application/json":
+        response.headers["content-type"] = "application/json; charset=utf-8"
     return response
 
 
@@ -365,6 +377,59 @@ TERMS_BODY = """
 """
 
 
+CONNECT_RESULT_PAGE = """<!doctype html><html lang="ko"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>연결 결과 · 올원업로드</title>
+<style>
+ body{{margin:0;background:#0b0d10;color:#e6e9ee;font:15px/1.65 -apple-system,BlinkMacSystemFont,
+      'Apple SD Gothic Neo','Malgun Gothic',sans-serif;display:flex;justify-content:center;padding:32px 18px}}
+ .card{{max-width:460px;width:100%}}
+ h1{{font-size:20px;margin:0 0 14px}}
+ .box{{border-radius:12px;padding:14px 16px;margin-bottom:18px}}
+ .ok{{background:rgba(34,197,94,.10);border:1px solid rgba(34,197,94,.30);color:#86efac}}
+ .bad{{background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.30);color:#fca5a5}}
+ ol{{padding-left:20px;color:#aab2bf}} li{{margin-bottom:7px}}
+ b{{color:#e6e9ee}}
+</style>
+<div class="card">
+  <h1>{heading}</h1>
+  <div class="box {kind}">{message}</div>
+  <ol>{steps}</ol>
+</div></html>"""
+
+NEXT_STEPS_OK = (
+    "<li>이 <b>시크릿 창은 닫으세요.</b></li>"
+    "<li>원래 쓰던 창으로 돌아가 <b>새로고침</b>하면 방금 연결한 아이디가 보입니다.</li>"
+    "<li>아이디를 더 추가하려면 <b>새 시크릿 창</b>에서 다시 연결하세요. "
+    "같은 창에서 하면 방금 그 아이디가 또 연결됩니다.</li>"
+)
+NEXT_STEPS_BAD = (
+    "<li>이 창을 닫고 원래 창으로 돌아가세요.</li>"
+    "<li>계정 관리에서 <b>'로그인으로 연결'</b>을 다시 눌러 주소를 새로 받으세요. "
+    "(한 번 쓴 주소는 다시 쓸 수 없습니다)</li>"
+)
+
+
+@app.get("/connected")
+async def connect_result(who: str = "", error: str = "", connected: str = "") -> HTMLResponse:
+    """시크릿 창에서 연결을 마쳤을 때 보여주는 결과 페이지.
+
+    그 창에는 앱 세션이 없어서 '/' 로 보내면 로그인 화면만 뜬다.
+    """
+    if error:
+        body = CONNECT_RESULT_PAGE.format(
+            heading="연결하지 못했습니다", kind="bad",
+            message=html.escape(error), steps=NEXT_STEPS_BAD,
+        )
+    else:
+        name = html.escape(who) if who else "계정"
+        body = CONNECT_RESULT_PAGE.format(
+            heading="연결 완료", kind="ok",
+            message=f"<b>{name}</b> 이(가) 연결되었습니다.", steps=NEXT_STEPS_OK,
+        )
+    return HTMLResponse(body)
+
+
 @app.get("/privacy")
 async def privacy_page() -> HTMLResponse:
     return HTMLResponse(
@@ -397,7 +462,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-18-계정추가연결"
+APP_VERSION = "2026-09-18-시크릿창콜백"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -625,41 +690,45 @@ async def oauth_callback(provider: str, request: Request):
     if provider not in PROVIDERS:
         raise HTTPException(404, "알 수 없는 인증 공급자")
     params = request.query_params
+    # 시크릿 창에는 앱 세션이 없다. 그 경우 결과를 로그인 없이 볼 수 있는
+    # 페이지로 보낸다(그냥 '/' 로 보내면 로그인 화면만 뜨고 결과가 사라진다).
+    signed_in = auth.valid_token(request.cookies.get(auth.COOKIE))
+
+    def _done(**qs) -> RedirectResponse:
+        base = "/" if signed_in else "/connected"
+        query = "&".join(f"{k}={quote(str(v))}" for k, v in qs.items() if v)
+        return RedirectResponse(f"{base}?{query}", status_code=303)
+
     if params.get("error"):
         detail = params.get("error_description") or params.get("error")
-        return RedirectResponse(f"/?error={detail}", status_code=303)
+        return _done(error=detail)
 
     state = params.get("state") or ""
     cookie_ok = auth.verify_state(request.cookies.get(OAUTH_STATE_COOKIE), provider, state)
     if not cookie_ok and db.pop_state(state) != provider:
-        return RedirectResponse(
-            "/?error=" + (
-                "로그인 연결 정보가 만료되었거나 이미 사용되었습니다. "
-                "계정 관리에서 '로그인으로 연결'을 다시 눌러주세요. "
-                "(이 페이지를 새로고침하면 같은 오류가 납니다)"
-            ),
-            status_code=303,
-        )
+        return _done(error=(
+            "로그인 연결 정보가 만료되었거나 이미 사용되었습니다. "
+            "계정 관리에서 '로그인으로 연결'을 다시 눌러주세요. "
+            "(이 페이지를 새로고침하면 같은 오류가 납니다)"
+        ))
     db.pop_state(state)
 
     code = params.get("code")
     if not code:
-        return RedirectResponse("/?error=인가 코드가 없습니다.", status_code=303)
+        return _done(error="인가 코드가 없습니다.")
 
     try:
         account_ids = await PROVIDERS[provider][1](code) or []
     except PublishError as exc:
-        return RedirectResponse(f"/?error={exc}", status_code=303)
+        return _done(error=str(exc))
     except Exception as exc:  # noqa: BLE001
-        return RedirectResponse(f"/?error={type(exc).__name__}: {exc}", status_code=303)
+        return _done(error=f"{type(exc).__name__}: {exc}")
 
     # 어느 아이디가 붙었는지 이름으로 알려준다. 브라우저에 이미 로그인돼 있으면
     # 다른 아이디를 연결하려다 같은 아이디가 또 붙는 일이 있어서, 그걸 눈으로
     # 확인할 수 있어야 한다.
     names = [a["name"] for a in (db.get_account(i) for i in account_ids) if a]
-    done = RedirectResponse(
-        f"/?connected={provider}&who={quote(', '.join(names))}", status_code=303
-    )
+    done = _done(connected=provider, who=", ".join(names))
     done.delete_cookie(OAUTH_STATE_COOKIE, path="/")
     return done
 
