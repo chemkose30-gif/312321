@@ -594,18 +594,13 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <div id="statMsg"></div>
 
     <div class="card">
-      <h2>카테고리별</h2>
-      <div id="statByCategory"></div>
+      <h2>플랫폼별</h2>
+      <div id="statByPlatform"></div>
     </div>
 
     <div class="card">
       <h2>아이디별</h2>
       <div id="statByAccount"></div>
-    </div>
-
-    <div class="card">
-      <h2>플랫폼별</h2>
-      <div id="statByPlatform"></div>
     </div>
 
     <div class="card">
@@ -2376,9 +2371,8 @@ async function loadStats(){
           계정 관리에서 <b>다시 로그인</b>하면 권한이 추가됩니다.</div>`
       : '';
 
-  $('#statByCategory').innerHTML = statRows(d.by_category, '카테고리별');
-  $('#statByAccount').innerHTML = statRows(d.by_account, '아이디별');
   $('#statByPlatform').innerHTML = statRows(d.by_platform, '플랫폼별');
+  $('#statByAccount').innerHTML = statRows(d.by_account, '아이디별');
 
   $('#statVideos').innerHTML = d.videos.length ? d.videos.map(v => `
     <div class="stat-row">

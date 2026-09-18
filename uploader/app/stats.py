@@ -228,7 +228,6 @@ def summary(days: int | None = 30) -> dict:
 
     total = {"views": 0, "watch_sec": 0, "likes": 0, "comments": 0, "videos": 0}
     by_account: dict[str, dict] = {}
-    by_category: dict[str, dict] = {}
     by_platform: dict[str, dict] = {}
     videos: list[dict] = []
 
@@ -247,7 +246,6 @@ def summary(days: int | None = 30) -> dict:
 
         for bucket, key in (
             (by_account, name),
-            (by_category, category),
             (by_platform, target["platform"]),
         ):
             row = bucket.setdefault(key, {"views": 0, "watch_sec": 0, "videos": 0})
@@ -278,9 +276,8 @@ def summary(days: int | None = 30) -> dict:
     fetched = max((s.get("fetched_at") or 0 for s in latest.values()), default=0)
     return {
         "total": total,
-        "by_account": rows(by_account),
-        "by_category": rows(by_category),
         "by_platform": rows(by_platform),
+        "by_account": rows(by_account),
         "videos": videos[:50],
         "daily": list(reversed(db.stats_by_day(30))),
         "fetched_at": fetched or None,
