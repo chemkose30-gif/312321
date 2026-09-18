@@ -397,7 +397,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-18-토큰표시수정"
+APP_VERSION = "2026-09-18-휴대폰연결"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -581,7 +581,13 @@ async def get_platforms() -> dict:
 
 
 @app.get("/api/oauth/{platform}/start")
-async def oauth_start(platform: str):
+async def oauth_start(platform: str, json: int = 0):
+    """로그인 연결을 시작한다.
+
+    json=1 이면 이동시키지 않고 주소만 알려준다. 휴대폰에서 링크를 누르면
+    인스타·페북 앱이 주소를 가로채 로그인 화면 대신 앱이 열려버리기 때문에,
+    사용자가 주소를 복사해 브라우저 주소창에 직접 붙여넣을 수 있게 하려는 것이다.
+    """
     if platform not in PLATFORMS:
         raise HTTPException(404, "알 수 없는 플랫폼")
     cfg = PLATFORMS[platform]
@@ -591,12 +597,16 @@ async def oauth_start(platform: str):
             raise HTTPException(400, "Instagram 앱 ID와 시크릿을 먼저 입력하세요.")
     elif demo_platform(platform):
         _create_demo_accounts(platform)
+        if json:
+            return JSONResponse({"url": f"/?connected={platform}&demo=1", "demo": True})
         return RedirectResponse(f"/?connected={platform}&demo=1", status_code=303)
 
     provider = provider_for(platform)
     state = secrets.token_urlsafe(24)
     db.save_state(state, provider)  # 예비 확인용
-    response = RedirectResponse(PROVIDERS[provider][0](state), status_code=303)
+    target = PROVIDERS[provider][0](state)
+    response = (JSONResponse({"url": target, "demo": False}) if json
+                else RedirectResponse(target, status_code=303))
     # 서명 쿠키에도 담아둔다 — 서버가 재시작되거나 데이터가 초기화돼도 연결이 이어지도록.
     response.set_cookie(
         OAUTH_STATE_COOKIE,

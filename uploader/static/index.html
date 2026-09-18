@@ -671,6 +671,64 @@ function flash(kind, msg){
   if(kind === 'ok') setTimeout(() => { $('#flashHost').innerHTML = ''; }, 6000);
 }
 
+/* ── 휴대폰에서 인스타·페북 앱이 로그인 주소를 가로채는 문제 ──
+   iOS·안드로이드는 instagram.com / facebook.com 주소를 앱으로 넘겨버려서,
+   권한 승인 화면 대신 앱만 열리고 연결이 끝나버린다. 반대로 주소창에 직접
+   붙여넣어 이동하면 앱이 가로채지 않으므로, 휴대폰에서는 주소를 복사해
+   쓰도록 안내한다. (컴퓨터에서는 예전처럼 바로 이동한다.) */
+const APP_HIJACK = ['instagram', 'facebook'];
+const isPhone = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+async function showConnectLink(platform){
+  $('#flashHost').innerHTML = '<div class="warn">연결 주소를 준비하고 있습니다...</div>';
+  let url;
+  try{
+    const res = await fetch(`/api/oauth/${platform}/start?json=1`, {credentials:'same-origin'});
+    const d = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(d.detail || '연결 주소를 받지 못했습니다.');
+    if(d.demo){ location.href = d.url; return; }
+    url = d.url;
+  }catch(err){
+    flash('err', String(err.message || err));
+    return;
+  }
+  const label = platMeta(platform).label;
+  $('#flashHost').innerHTML = `
+    <div class="warn">
+      <b>휴대폰에서는 아래 주소를 복사해 브라우저 주소창에 붙여넣으세요.</b><br>
+      링크를 그냥 누르면 ${esc(label)} 앱이 주소를 가로채서, 권한 승인 화면 대신 앱만 열립니다.
+      주소창에 직접 붙여넣어 이동하면 앱이 가로채지 않습니다.
+      <textarea id="connUrl" readonly rows="3" style="margin-top:8px;min-height:72px;font-size:11.5px">${esc(url)}</textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="btn sm" id="connCopy">주소 복사</button>
+        <a class="btn sm" href="${esc(url)}">그래도 바로 열기</a>
+        <button class="btn sm" id="connClose">닫기</button>
+      </div>
+      <div style="margin-top:6px">컴퓨터에서 연결하면 이 과정 없이 한 번에 됩니다.</div>
+    </div>`;
+  $('#connCopy').onclick = async () => {
+    const box = $('#connUrl');
+    try{
+      await navigator.clipboard.writeText(box.value);
+    }catch(e){
+      box.focus(); box.select(); document.execCommand('copy');   // 구형 브라우저용
+    }
+    $('#connCopy').textContent = '복사했습니다 — 주소창에 붙여넣기';
+  };
+  $('#connClose').onclick = () => { $('#flashHost').innerHTML = ''; };
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+/* 연결 링크를 가로채 휴대폰에서는 주소 복사 안내를 띄운다. */
+document.addEventListener('click', ev => {
+  const a = ev.target.closest && ev.target.closest('a[href^="/api/oauth/"]');
+  if(!a || !isPhone()) return;
+  const platform = (a.getAttribute('href').match(/\/api\/oauth\/([^/]+)\/start/) || [])[1];
+  if(!APP_HIJACK.includes(platform)) return;
+  ev.preventDefault();
+  showConnectLink(platform);
+});
+
 /* ── 라우팅 ── */
 function route(){
   const page = (location.hash || '#home').slice(1).split('?')[0];
@@ -1965,7 +2023,10 @@ function renderAccountPanels(){
     if(modeInput && modeInput.value === 'instagram'){
       // 저장 직후 바로 인스타 로그인으로 넘어간다 (단계 줄이기)
       flash('ok', 'API 키를 저장했습니다. 인스타그램 로그인 화면으로 이동합니다…');
-      setTimeout(() => { location.href = '/api/oauth/instagram/start'; }, 700);
+      setTimeout(() => {
+        if(isPhone()) showConnectLink('instagram');
+        else location.href = '/api/oauth/instagram/start';
+      }, 700);
       return;
     }
     flash('ok', `${platMeta(platform).label} API 키를 저장했습니다. 이제 '로그인으로 연결'을 누르세요.`);
