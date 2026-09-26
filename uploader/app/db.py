@@ -632,9 +632,18 @@ def fail_interrupted_jobs() -> int:
 
     (재시작 뒤에도 영원히 진행 중으로 보이는 것을 막는다.)
     """
+    # 예약 게시는 아직 시작도 안 했으므로 건드리면 안 된다. 예약된 작업의 채널은
+    # 모두 '대기 중'이 정상이라, 재시작 때 실패로 바뀐 것이 있으면 되돌린다.
+    _exec(
+        "UPDATE job_targets SET status='pending', message='대기 중', progress=0, updated_at=?"
+        " WHERE status!='pending'"
+        " AND job_id IN (SELECT id FROM jobs WHERE status='scheduled')",
+        (time.time(),),
+    )
     cur = _exec(
         "UPDATE job_targets SET status='failed', message='서버가 재시작되어 중단되었습니다. 다시 올려주세요.',"
-        " updated_at=? WHERE status IN ('running','pending')",
+        " updated_at=? WHERE status IN ('running','pending')"
+        " AND job_id NOT IN (SELECT id FROM jobs WHERE status='scheduled')",
         (time.time(),),
     )
     changed = cur.rowcount or 0
