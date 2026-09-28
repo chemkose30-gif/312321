@@ -979,6 +979,7 @@ function uploadFile(file){
 
   // 파일을 본문 그대로 보낸다(멀티파트 파싱·임시파일 복사가 없어 큰 영상일수록 훨씬 빠름)
   const xhr = new XMLHttpRequest();
+  state.uploading = true; state.submitted = false;
   xhr.open('POST', '/api/media/raw');
   xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
   xhr.setRequestHeader('X-File-Type', file.type || 'video/mp4');
@@ -990,6 +991,7 @@ function uploadFile(file){
     $('#upMsg').textContent = `서버로 전송 중… ${pct}%`;
   };
   xhr.onload = () => {
+    state.uploading = false;
     if(xhr.status >= 400){
       $('#upMsg').textContent = '';
       let detail = xhr.status;
@@ -1002,9 +1004,21 @@ function uploadFile(file){
     $('#upMsg').innerHTML = '<span style="color:#6ee7b7">✓ 서버 업로드 완료 — 이제 올릴 채널을 고르세요</span>';
     refreshPublishButton();
   };
-  xhr.onerror = () => flash('err', '네트워크 오류로 업로드에 실패했습니다.');
+  xhr.onerror = () => { state.uploading = false; flash('err', '네트워크 오류로 업로드에 실패했습니다.'); };
+  xhr.onabort = () => { state.uploading = false; };
   xhr.send(file);
 }
+
+/* 창을 닫으려 하면, 아직 올리기·예약 버튼을 누르지 않았을 때 붙잡는다.
+   영상을 서버에 올린 것만으로는 아무것도 예약되지 않는다. 마지막 버튼을
+   눌러야 예약이 만들어지는데, 그걸 모르고 창을 닫는 일이 있었다. */
+window.addEventListener('beforeunload', ev => {
+  const midUpload = !!state.uploading;
+  const readyButUnsent = !!state.media && totalPicked() > 0 && !state.submitted;
+  if(!midUpload && !readyButUnsent) return;
+  ev.preventDefault();
+  ev.returnValue = '';    // 브라우저가 기본 경고창을 띄운다
+});
 
 /* ── 해시태그 ── */
 $('#tagInput').onkeydown = e => {
@@ -1706,8 +1720,11 @@ $('#btnPublish').onclick = async () => {
     if(pf && pf.errors){
       state.pfSkip = true;
       btn.textContent = '점검 결과를 무시하고 그대로 올리기';
+      $('#publishErr').innerHTML = `<div class="err"><b>아직 올리지도, 예약되지도 않았습니다.</b>
+        막힐 항목이 ${pf.errors}개 있어서 멈췄습니다. 위 점검 결과를 확인한 뒤
+        <b>버튼을 한 번 더 눌러야</b> 진행됩니다.</div>`;
       $('#preflightBox').scrollIntoView({behavior:'smooth', block:'center'});
-      flash('err', `막힐 항목이 ${pf.errors}개 있습니다. 점검 결과를 확인하세요.`);
+      flash('err', `막힐 항목이 ${pf.errors}개 있습니다. 아직 예약되지 않았습니다.`);
       return;
     }
     btn.textContent = before;
@@ -1733,6 +1750,7 @@ $('#btnPublish').onclick = async () => {
     $('#btnPublish').disabled = false;
     return;
   }
+  state.submitted = true;
   if(data.scheduled_at){
     flash('ok', `${fmtKst(data.scheduled_at)}에 올리도록 예약했습니다. 창을 닫아도 됩니다.`);
     $('#liveJob').innerHTML = `<div class="card"><h2>예약 완료</h2>
