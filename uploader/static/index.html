@@ -435,6 +435,18 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
         (로그인 만료, 길이·용량 제한, 해시태그 초과, 인스타 24시간 게시 한도, 틱톡 공개 범위 등)</p>
       <button class="btn" id="btnPrecheck">점검하기</button>
       <div id="preflightBox"></div>
+
+      <div class="warn" id="copyrightOpt" style="display:none">
+        <label class="check"><input type="checkbox" id="cbCopyright">
+          <b>유튜브 저작권 검사를 통과한 뒤에 나머지에 올리기</b></label>
+        <div style="margin-top:6px">
+          유튜브에만 <b>비공개</b>로 먼저 올려 유튜브가 검사하게 하고, 최대 5분까지 결과를 기다립니다.
+          걸리는 게 없으면 인스타·페북에 올리고 유튜브도 고르신 공개범위로 바꿉니다.
+          걸리면 <b>나머지를 올리지 않고</b> 유튜브 영상은 비공개로 남겨둡니다.<br>
+          유튜브가 거부했거나 저작권 신고로 국가 차단된 경우를 잡습니다.
+          <b>수익만 권리자에게 넘어가는 클레임은 API에 안 나와서</b>, 그건 스튜디오 링크로 안내만 드립니다.
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -1261,7 +1273,24 @@ function optionsHtml(p){
   return body + warn.map(w => `<div class="warn">${esc(w)}</div>`).join('');
 }
 
+/* 유튜브 저작권 선검사 — 유튜브와 다른 플랫폼을 같이 올릴 때만 의미가 있다. */
+function copyrightCheckAvailable(){
+  const picked = buildTargets();
+  return picked.some(t => t.platform === 'youtube') && picked.some(t => t.platform !== 'youtube');
+}
+
+function copyrightCheckOn(){
+  const cb = $('#cbCopyright');
+  return !!(cb && cb.checked && copyrightCheckAvailable());
+}
+
+function refreshCopyrightOpt(){
+  const box = $('#copyrightOpt');
+  if(box) box.style.display = copyrightCheckAvailable() ? '' : 'none';
+}
+
 function refreshPublishButton(){
+  refreshCopyrightOpt();
   const n = totalPicked();
   const btn = $('#btnPublish');
   state.pfSkip = false;   // 내용이 바뀌면 점검을 다시 받는다
@@ -1693,7 +1722,8 @@ $('#btnPublish').onclick = async () => {
       media_id: state.media.id, title,
       description: $('#desc').value.trim(), hashtags: state.tags,
       targets,
-      options: {...state.options, localization_en: localizationEn()},
+      options: {...state.options, localization_en: localizationEn(),
+                youtube_copyright_check: copyrightCheckOn()},
       scheduled_at: scheduledAt(),
     }),
   });

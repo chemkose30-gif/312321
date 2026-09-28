@@ -387,6 +387,11 @@ def get_job(job_id: str) -> dict | None:
     return job
 
 
+def get_target(target_id: str) -> dict | None:
+    rows = _rows("SELECT * FROM job_targets WHERE id=?", (target_id,))
+    return dict(rows[0]) if rows else None
+
+
 def get_targets(job_id: str) -> list[dict]:
     rows = _rows("SELECT * FROM job_targets WHERE job_id=? ORDER BY rowid", (job_id,))
     return [dict(r) for r in rows]

@@ -187,3 +187,98 @@ async def publish(account: dict, job: dict, options: dict, progress: Progress) -
         url=f"https://youtu.be/{video_id}" if video_id else None,
         message=f"게시 완료 · 공개범위 {body['status']['privacyStatus']}",
     )
+
+
+# ── 저작권 검사 ──────────────────────────────────────────────
+# 유튜브는 올라온 영상을 처리하면서 Content ID 로 검사한다. 그 결과 중
+# API 로 볼 수 있는 것만 읽어온다. '수익만 권리자에게 넘어가는 클레임'은
+# API 에 나오지 않으므로 스튜디오에서 봐야 한다.
+STUDIO_URL = "https://studio.youtube.com/video/{video_id}/copyright"
+
+# 유튜브가 돌려주는 거부 사유를 사람 말로 옮긴 것.
+REJECTION_KO = {
+    "copyright": "저작권 문제로 유튜브가 거부했습니다",
+    "claim": "권리자 신고로 유튜브가 거부했습니다",
+    "trademark": "상표권 문제로 유튜브가 거부했습니다",
+    "duplicate": "이미 올린 영상과 같다고 판단해 거부했습니다",
+    "inappropriate": "커뮤니티 가이드 위반으로 거부했습니다",
+    "legal": "법적 사유로 거부했습니다",
+    "length": "영상 길이 제한에 걸렸습니다",
+    "termsOfUse": "이용약관 위반으로 거부했습니다",
+}
+
+
+async def inspect(account: dict, video_id: str) -> dict:
+    """영상 하나의 처리·저작권 상태를 읽는다.
+
+    state 는 셋 중 하나다.
+      blocked — 거부됐거나 일부 국가에서 막혔다 (저작권 문제일 가능성이 높다)
+      clean   — 처리가 끝났고 걸린 게 없다
+      pending — 아직 처리 중이라 판단할 수 없다
+    """
+    token = await _access_token(account)
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.get(
+            f"{API}/videos",
+            params={"part": "status,contentDetails,processingDetails", "id": video_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if res.status_code >= 400:
+        return {"state": "pending", "reason": f"상태를 읽지 못했습니다 ({res.status_code})"}
+
+    items = (res.json() or {}).get("items") or []
+    if not items:
+        return {"state": "pending", "reason": "영상을 아직 찾을 수 없습니다"}
+
+    item = items[0]
+    status = item.get("status") or {}
+    content = item.get("contentDetails") or {}
+    processing = (item.get("processingDetails") or {}).get("processingStatus")
+
+    upload_status = status.get("uploadStatus")
+    if upload_status in ("rejected", "failed"):
+        code = status.get("rejectionReason") or status.get("failureReason") or ""
+        return {
+            "state": "blocked",
+            "reason": REJECTION_KO.get(code, f"유튜브가 거부했습니다 ({code or '사유 미상'})"),
+            "studio": STUDIO_URL.format(video_id=video_id),
+        }
+
+    blocked_regions = ((content.get("regionRestriction") or {}).get("blocked")) or []
+    if blocked_regions:
+        head = ", ".join(blocked_regions[:5])
+        more = f" 외 {len(blocked_regions) - 5}곳" if len(blocked_regions) > 5 else ""
+        return {
+            "state": "blocked",
+            "reason": f"저작권 신고로 {len(blocked_regions)}개 국가에서 차단됐습니다 ({head}{more})",
+            "studio": STUDIO_URL.format(video_id=video_id),
+        }
+
+    if upload_status == "processed" or processing == "succeeded":
+        return {"state": "clean", "reason": "유튜브 검사에서 걸린 것이 없습니다",
+                "studio": STUDIO_URL.format(video_id=video_id)}
+
+    return {"state": "pending", "reason": "유튜브가 아직 영상을 처리하는 중입니다",
+            "studio": STUDIO_URL.format(video_id=video_id)}
+
+
+async def set_privacy(account: dict, video_id: str, privacy: str,
+                      made_for_kids: bool = False) -> bool:
+    """검사를 통과한 뒤 공개범위를 바꾼다."""
+    token = await _access_token(account)
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.put(
+            f"{API}/videos",
+            params={"part": "status"},
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "id": video_id,
+                # part 에 status 만 넣었으므로 status 안의 값은 모두 다시 보내야 한다.
+                "status": {"privacyStatus": privacy,
+                           "selfDeclaredMadeForKids": bool(made_for_kids)},
+            },
+        )
+    if res.status_code >= 400:
+        print(f"[youtube] 공개범위 변경 실패 {res.status_code} {res.text[:200]}")
+        return False
+    return True

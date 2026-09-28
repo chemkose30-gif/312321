@@ -249,12 +249,94 @@ async def run_due_scheduled() -> int:
     return len(due)
 
 
+# ── 유튜브 저작권 선검사 ─────────────────────────────────────
+COPYRIGHT_CHECK_KEY = "youtube_copyright_check"   # 작업 옵션 키
+CHECK_WAIT_SEC = 5 * 60        # 이만큼까지 유튜브 검사 결과를 기다린다
+CHECK_POLL_SEC = 20            # 이 간격으로 다시 물어본다
+
+
+def _wants_copyright_check(job: dict) -> bool:
+    return bool((job.get("options") or {}).get(COPYRIGHT_CHECK_KEY))
+
+
+async def _wait_for_youtube_verdict(account: dict, video_id: str, progress: Progress) -> dict:
+    """유튜브가 영상을 처리·검사할 때까지 기다렸다가 결과를 돌려준다."""
+    deadline = time.time() + CHECK_WAIT_SEC
+    verdict = {"state": "pending", "reason": "유튜브가 아직 처리 중입니다"}
+    while time.time() < deadline:
+        verdict = await youtube.inspect(account, video_id)
+        if verdict["state"] != "pending":
+            return verdict
+        left = int(deadline - time.time())
+        await progress(97, f"유튜브 저작권 검사 대기 중 ({left // 60}분 {left % 60}초 남음)")
+        await asyncio.sleep(min(CHECK_POLL_SEC, max(1, deadline - time.time())))
+    # 시간 안에 결과가 안 나오면 막지 않는다 — 처리 지연일 뿐인 경우가 대부분이다.
+    verdict["timeout"] = True
+    return verdict
+
+
+async def _copyright_gate(job: dict, yt_targets: list[dict]) -> dict | None:
+    """유튜브에 올라간 영상을 검사한다. 문제가 있으면 그 결과를 돌려준다."""
+    for target in yt_targets:
+        fresh = db.get_target(target["id"])
+        if not fresh or fresh.get("status") != "success" or not fresh.get("remote_id"):
+            continue
+        account = db.get_account(target["account_id"])
+        if not account:
+            continue
+        progress = _progress_for(target["id"])
+        verdict = await _wait_for_youtube_verdict(account, fresh["remote_id"], progress)
+
+        if verdict["state"] == "blocked":
+            db.update_target(target["id"], status="success", progress=100,
+                             message=f"⚠ {verdict['reason']} · 비공개로 남겨뒀습니다")
+            return verdict
+
+        # 통과했으니 사용자가 고른 공개범위로 바꾼다.
+        options = (job.get("options") or {}).get("youtube", {}) or {}
+        wanted = options.get("privacy") or "private"
+        note = ("검사가 5분 안에 끝나지 않아 그대로 진행" if verdict.get("timeout")
+                else "저작권 검사 통과")
+        if wanted != "private":
+            ok = await youtube.set_privacy(account, fresh["remote_id"], wanted,
+                                           options.get("made_for_kids"))
+            note += f" · 공개범위 {wanted}" if ok else " · 공개범위 변경 실패(비공개로 남음)"
+
+        # progress() 는 상태를 '진행 중'으로 되돌리므로 직접 마무리한다.
+        db.update_target(target["id"], status="success", progress=100,
+                         message=f"게시 완료 · {note}")
+    return None
+
+
+def _block_remaining(targets: list[dict], reason: str) -> None:
+    for target in targets:
+        db.update_target(target["id"], status="failed", progress=0,
+                         message=f"유튜브 저작권 검사에 걸려 올리지 않았습니다 — {reason}")
+
+
 async def run_job(job_id: str) -> None:
     job = db.get_job(job_id)
     if not job:
         return
     db.set_job_status(job_id, "running")
-    results = await _run_targets(job, job["targets"])
+
+    targets = job["targets"]
+    yt = [t for t in targets if t["platform"] == "youtube"]
+    rest = [t for t in targets if t["platform"] != "youtube"]
+
+    if _wants_copyright_check(job) and yt and rest:
+        # 유튜브에 먼저 올려 검사를 받고, 통과해야 나머지에 올린다.
+        results = await _run_targets(job, yt)
+        blocked = await _copyright_gate(job, yt)
+        if blocked:
+            _block_remaining(rest, blocked["reason"])
+            print(f"[copyright] {job_id} 유튜브 검사에 걸려 {len(rest)}개 채널 중단: {blocked['reason']}")
+            results += ["failed"] * len(rest)
+        else:
+            results += await _run_targets(job, rest)
+    else:
+        results = await _run_targets(job, targets)
+
     db.set_job_status(job_id, _job_status(results))
 
     # 재시도가 남아 있으면 원본을 지우지 않는다(다시 보낼 때 필요).
