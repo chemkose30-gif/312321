@@ -327,7 +327,13 @@ async def run_job(job_id: str) -> None:
     if _wants_copyright_check(job) and yt and rest:
         # 유튜브에 먼저 올려 검사를 받고, 통과해야 나머지에 올린다.
         results = await _run_targets(job, yt)
-        blocked = await _copyright_gate(job, yt)
+        try:
+            blocked = await _copyright_gate(job, yt)
+        except Exception as exc:  # noqa: BLE001
+            # 검사에 실패했다고 게시를 막지는 않는다. 못 물어봤을 뿐이지
+            # 문제가 있다는 뜻이 아니고, 여기서 멈추면 작업이 영영 안 끝난다.
+            print(f"[copyright] 검사 중 오류 — 막지 않고 진행: {type(exc).__name__}: {exc}")
+            blocked = None
         if blocked:
             _block_remaining(rest, blocked["reason"])
             print(f"[copyright] {job_id} 유튜브 검사에 걸려 {len(rest)}개 채널 중단: {blocked['reason']}")
