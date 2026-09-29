@@ -1,0 +1,20 @@
+services:
+  video-converter:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - work:/data
+    # NVIDIA GPU 서버라면 아래 주석을 풀어주세요 (nvidia-container-toolkit 필요)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu, video]
+
+volumes:
+  work:

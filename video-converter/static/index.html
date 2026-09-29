@@ -62,6 +62,13 @@
     <section class="panel" id="conv">
       <input type="file" id="file" accept="video/*,.mkv,.avi,.mov,.wmv,.flv,.webm,.ts,.m4v,.3gp,.mpg,.mpeg" hidden>
       <div class="drop" id="drop">파일을 여기로 끌어다 놓거나 클릭해서 선택하세요<br><small>MKV, AVI, MOV, WMV, FLV, WEBM, TS 등</small></div>
+      <label for="preset">속도 / 화질</label>
+      <select id="preset">
+        <option value="fast">빠르게 (파일이 조금 커짐)</option>
+        <option value="balanced" selected>균형 (추천)</option>
+        <option value="quality">고화질 (느림)</option>
+      </select>
+      <div class="msg" id="serverInfo"></div>
       <button class="go" id="convGo" disabled>MP4로 변환</button>
     </section>
 
@@ -76,7 +83,14 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let busy = false, selectedFile = null;
+let busy = false, selectedFile = null, maxUploadMb = Infinity;
+
+fetch('/api/config').then(r => r.json()).then(c => {
+  maxUploadMb = c.max_upload_mb;
+  $('serverInfo').textContent = `최대 ${c.max_upload_mb >= 1024 ? (c.max_upload_mb / 1024).toFixed(1) + ' GB' : c.max_upload_mb + ' MB'}`
+    + ` · ${c.gpu ? 'GPU 가속 사용 중' : 'CPU 인코딩'} · 동시 ${c.max_concurrent}개 처리`
+    + ' · H.264 영상은 재인코딩 없이 즉시 변환';
+}).catch(() => {});
 
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   if (busy) return;
@@ -144,6 +158,10 @@ $('url').onkeydown = e => { if (e.key === 'Enter' && !busy) $('ytGo').click(); }
 
 function pickFile(f) {
   if (!f) return;
+  if (f.size > maxUploadMb * 1048576) {
+    setStatus(0, `파일이 너무 큽니다 (최대 ${maxUploadMb} MB)`, 'err');
+    return;
+  }
   selectedFile = f;
   $('drop').innerHTML = `<strong>${f.name.replace(/</g,'&lt;')}</strong><br><small>${(f.size/1048576).toFixed(1)} MB · 다른 파일을 선택하려면 클릭</small>`;
   setBusy(busy);
@@ -156,7 +174,7 @@ $('drop').addEventListener('drop', e => !busy && pickFile(e.dataTransfer.files[0
 
 $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   // 업로드 진행률 표시를 위해 XHR 사용
-  const fd = new FormData(); fd.append('file', selectedFile);
+  const fd = new FormData(); fd.append('file', selectedFile); fd.append('preset', $('preset').value);
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/convert');
   xhr.upload.onprogress = e => e.lengthComputable && setStatus(e.loaded / e.total * 100, `업로드 중 ${Math.round(e.loaded / e.total * 100)}%`);

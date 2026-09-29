@@ -1,7 +1,12 @@
-"""유튜브 다운로드 / 영상 → MP4 변환 로컬 웹앱.
+"""유튜브 다운로드 / 영상 → MP4 변환 웹앱.
 
 실행: python server.py  →  http://localhost:8000
+환경변수로 설정합니다 (README 참고): APP_PASSWORD, MAX_UPLOAD_MB, MAX_CONCURRENT,
+WORK_DIR, HOST, PORT, DISABLE_GPU
 """
+import asyncio
+import base64
+import hmac
 import os
 import re
 import shutil
@@ -12,15 +17,23 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).parent
-WORK_DIR = Path(tempfile.gettempdir()) / "video-converter"
-WORK_DIR.mkdir(exist_ok=True)
+WORK_DIR = Path(os.environ.get("WORK_DIR") or Path(tempfile.gettempdir()) / "video-converter")
+WORK_DIR.mkdir(parents=True, exist_ok=True)
 JOB_TTL_SECONDS = 60 * 60
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "4096"))
+MAX_CONCURRENT = max(1, int(os.environ.get("MAX_CONCURRENT", "2")))
+
+# 서버 재시작 시 이전에 남은 작업 폴더 정리
+for _old in WORK_DIR.iterdir():
+    if _old.is_dir() and _old.name != "bin":
+        shutil.rmtree(_old, ignore_errors=True)
 
 
 def _find_ffmpeg() -> str:
@@ -45,9 +58,63 @@ def _find_ffmpeg() -> str:
 
 FFMPEG = _find_ffmpeg()
 
+
+def _detect_gpu_encoder() -> str | None:
+    """NVIDIA GPU 인코더(NVENC)를 실제로 써볼 수 있는지 확인."""
+    if os.environ.get("DISABLE_GPU") == "1":
+        return None
+    r = subprocess.run(
+        [FFMPEG, "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=s=256x256:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+        capture_output=True,
+    )
+    return "h264_nvenc" if r.returncode == 0 else None
+
+
+GPU_ENCODER = _detect_gpu_encoder()
+
+# 속도/화질 프리셋: fast(빠름, 파일 조금 큼) / balanced(기본) / quality(고화질, 느림)
+PRESETS = {
+    "fast": {"cpu": ["-preset", "ultrafast", "-crf", "26"], "gpu": ["-preset", "p1", "-cq", "26"]},
+    "balanced": {"cpu": ["-preset", "veryfast", "-crf", "23"], "gpu": ["-preset", "p4", "-cq", "23"]},
+    "quality": {"cpu": ["-preset", "slow", "-crf", "20"], "gpu": ["-preset", "p7", "-cq", "20"]},
+}
+
 app = FastAPI(title="Video Converter")
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+# 동시에 돌아가는 변환/다운로드 수 제한 (나머지는 순서대로 대기)
+work_slots = threading.Semaphore(MAX_CONCURRENT)
+
+
+@app.middleware("http")
+async def password_guard(request: Request, call_next):
+    """APP_PASSWORD가 설정되어 있으면 브라우저 기본 로그인 창으로 비밀번호를 묻는다."""
+    if APP_PASSWORD:
+        header = request.headers.get("authorization", "")
+        password = ""
+        if header.startswith("Basic "):
+            try:
+                password = base64.b64decode(header[6:]).decode().partition(":")[2]
+            except Exception:  # noqa: BLE001
+                password = ""
+            if not hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
+                await asyncio.sleep(1)  # 무차별 대입 완화
+                password = None
+        if not password:
+            return Response(
+                "비밀번호가 필요합니다", status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="video-converter", charset="UTF-8"'},
+            )
+    return await call_next(request)
+
+
+def _start_worker(job_id: str, target, *args):
+    def run():
+        _update(job_id, message="대기 중 (다른 작업이 끝나면 시작)")
+        with work_slots:
+            target(job_id, *args)
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _new_job(kind: str) -> tuple[str, Path]:
@@ -160,7 +227,7 @@ def start_youtube(req: YoutubeRequest):
         raise HTTPException(400, "잘못된 화질 값입니다")
     _cleanup_old_jobs()
     job_id, job_dir = _new_job("youtube")
-    threading.Thread(target=_run_youtube, args=(job_id, job_dir, req), daemon=True).start()
+    _start_worker(job_id, _run_youtube, job_dir, req)
     return {"job_id": job_id}
 
 
@@ -185,7 +252,7 @@ def _probe(path: Path) -> tuple[float, str | None, str | None]:
     return duration, vcodec, (a[1] if a else None)
 
 
-def _run_convert(job_id: str, src: Path, out: Path):
+def _run_convert(job_id: str, src: Path, out: Path, preset: str):
     try:
         _update(job_id, status="running", message="파일 분석 중")
         duration, vcodec, acodec = _probe(src)
@@ -196,13 +263,21 @@ def _run_convert(job_id: str, src: Path, out: Path):
         copy_video = vcodec == "h264"
         copy_audio = acodec in (None, "aac", "mp3")
         cmd = [FFMPEG, "-hide_banner", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?"]
-        cmd += ["-c:v", "copy"] if copy_video else [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+        if copy_video:
+            cmd += ["-c:v", "copy"]
+        elif GPU_ENCODER:
+            cmd += ["-c:v", GPU_ENCODER, *PRESETS[preset]["gpu"], "-rc", "vbr", "-b:v", "0"]
+        else:
+            cmd += ["-c:v", "libx264", *PRESETS[preset]["cpu"]]
+        if not copy_video:
+            cmd += ["-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
         cmd += ["-c:a", "copy"] if copy_audio else ["-c:a", "aac", "-b:a", "192k"]
         cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(out)]
 
-        mode = "컨테이너 변환 중" if copy_video and copy_audio else "인코딩 중"
+        if copy_video and copy_audio:
+            mode = "컨테이너 변환 중 (재인코딩 없음)"
+        else:
+            mode = "인코딩 중" + (" (GPU)" if GPU_ENCODER and not copy_video else "")
         _update(job_id, message=mode)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, errors="replace")
@@ -232,22 +307,38 @@ def _run_convert(job_id: str, src: Path, out: Path):
 
 
 @app.post("/api/convert")
-async def start_convert(file: UploadFile = File(...)):
+async def start_convert(file: UploadFile = File(...), preset: str = Form("balanced")):
+    if preset not in PRESETS:
+        raise HTTPException(400, "잘못된 속도/화질 옵션입니다")
     _cleanup_old_jobs()
     job_id, job_dir = _new_job("convert")
     original = _safe_name(Path(file.filename or "video").stem)
-    suffix = Path(file.filename or "").suffix.lower() or ".bin"
+    suffix = re.sub(r"[^.\w]", "", Path(file.filename or "").suffix.lower()) or ".bin"
     src = job_dir / f"input{suffix}"
+    limit = MAX_UPLOAD_MB * 1024 * 1024
+    written = 0
     with src.open("wb") as f:
         while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > limit:
+                break
             f.write(chunk)
+    if written > limit:
+        _remove_job(job_id)
+        raise HTTPException(413, f"파일이 너무 큽니다 (최대 {MAX_UPLOAD_MB} MB)")
     out = job_dir / "output.mp4"
     _update(job_id, filename=f"{original}.mp4")
-    threading.Thread(target=_run_convert, args=(job_id, src, out), daemon=True).start()
+    _start_worker(job_id, _run_convert, src, out, preset)
     return {"job_id": job_id}
 
 
 # ------------------------------------------------------------- Common
+
+
+@app.get("/api/config")
+def config():
+    return {"max_upload_mb": MAX_UPLOAD_MB, "gpu": GPU_ENCODER is not None,
+            "max_concurrent": MAX_CONCURRENT}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -284,4 +375,5 @@ app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="stat
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=os.environ.get("HOST", "127.0.0.1"),
+                port=int(os.environ.get("PORT", "8000")))
