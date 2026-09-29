@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영상 변환기</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --muted:#8b93a7; --accent:#ff4d4d; --ok:#3ecf8e; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:40px 16px; }
+  h1 { font-size:24px; margin:0 0 24px; }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; }
+  .tab { flex:1; padding:12px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:15px; cursor:pointer; }
+  .tab.active { background:var(--card); color:var(--text); border-color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
+  .panel { display:none; } .panel.active { display:block; }
+  label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
+  input[type=text], select { width:100%; padding:12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); font-size:15px; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  button.go { width:100%; margin-top:18px; padding:14px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:not-allowed; }
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:32px 16px; text-align:center; color:var(--muted); cursor:pointer; }
+  .drop.over { border-color:var(--accent); color:var(--text); }
+  .drop strong { color:var(--text); word-break:break-all; }
+  .status { margin-top:18px; display:none; }
+  .bar { height:8px; background:var(--bg); border-radius:4px; overflow:hidden; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .msg { font-size:14px; color:var(--muted); margin-top:8px; word-break:break-all; }
+  .msg.err { color:#ff8080; } .msg.ok { color:var(--ok); }
+  .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎬 영상 변환기</h1>
+  <div class="tabs">
+    <button class="tab active" data-tab="yt">유튜브 다운로드</button>
+    <button class="tab" data-tab="conv">파일 → MP4 변환</button>
+  </div>
+
+  <div class="card">
+    <section class="panel active" id="yt">
+      <label for="url">유튜브 링크</label>
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+      <div class="row">
+        <div>
+          <label for="fmt">포맷</label>
+          <select id="fmt"><option value="mp4">MP4 (영상)</option><option value="mp3">MP3 (음원)</option></select>
+        </div>
+        <div>
+          <label for="quality">화질</label>
+          <select id="quality">
+            <option value="best">최고 화질</option><option value="1080">1080p</option>
+            <option value="720">720p</option><option value="480">480p</option><option value="360">360p</option>
+          </select>
+        </div>
+      </div>
+      <button class="go" id="ytGo">변환 시작</button>
+    </section>
+
+    <section class="panel" id="conv">
+      <input type="file" id="file" accept="video/*,.mkv,.avi,.mov,.wmv,.flv,.webm,.ts,.m4v,.3gp,.mpg,.mpeg" hidden>
+      <div class="drop" id="drop">파일을 여기로 끌어다 놓거나 클릭해서 선택하세요<br><small>MKV, AVI, MOV, WMV, FLV, WEBM, TS 등</small></div>
+      <button class="go" id="convGo" disabled>MP4로 변환</button>
+    </section>
+
+    <div class="status" id="status">
+      <div class="bar"><div id="barFill"></div></div>
+      <div class="msg" id="msg"></div>
+    </div>
+  </div>
+
+  <p class="note">※ 본인 영상이나 저작권 문제가 없는 콘텐츠에만 사용하세요. 변환된 파일은 다운로드 후 서버에서 자동 삭제됩니다.</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let busy = false, selectedFile = null;
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  if (busy) return;
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === t.dataset.tab));
+  $('status').style.display = 'none';
+});
+$('fmt').onchange = () => { $('quality').disabled = $('fmt').value === 'mp3'; };
+
+function setStatus(pct, text, cls = '') {
+  $('status').style.display = 'block';
+  $('barFill').style.width = pct + '%';
+  $('msg').className = 'msg ' + cls;
+  $('msg').textContent = text;
+}
+function setBusy(b) {
+  busy = b;
+  $('ytGo').disabled = b;
+  $('convGo').disabled = b || !selectedFile;
+}
+
+async function poll(jobId) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 800));
+    const res = await fetch(`/api/jobs/${jobId}`);
+    if (!res.ok) throw new Error('작업 상태를 가져올 수 없습니다');
+    const j = await res.json();
+    if (j.status === 'error') throw new Error(j.message);
+    if (j.status === 'done') {
+      setStatus(100, `완료! ${j.filename} 다운로드를 시작합니다.`, 'ok');
+      const a = document.createElement('a');
+      a.href = `/api/jobs/${jobId}/download`;
+      document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    setStatus(j.progress, `${j.message} ${j.progress ? j.progress + '%' : ''}`);
+  }
+}
+
+async function run(startFn) {
+  setBusy(true);
+  try { await poll(await startFn()); }
+  catch (e) { setStatus(100, e.message, 'err'); }
+  finally { setBusy(false); }
+}
+
+async function jsonOrThrow(res) {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || '요청 실패');
+  return data.job_id;
+}
+
+$('ytGo').onclick = () => {
+  const url = $('url').value.trim();
+  if (!url) return setStatus(0, '유튜브 링크를 입력하세요', 'err');
+  run(async () => {
+    setStatus(0, '요청 중...');
+    return jsonOrThrow(await fetch('/api/youtube', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, format: $('fmt').value, quality: $('quality').value}),
+    }));
+  });
+};
+$('url').onkeydown = e => { if (e.key === 'Enter' && !busy) $('ytGo').click(); };
+
+function pickFile(f) {
+  if (!f) return;
+  selectedFile = f;
+  $('drop').innerHTML = `<strong>${f.name.replace(/</g,'&lt;')}</strong><br><small>${(f.size/1048576).toFixed(1)} MB · 다른 파일을 선택하려면 클릭</small>`;
+  setBusy(busy);
+}
+$('drop').onclick = () => !busy && $('file').click();
+$('file').onchange = e => pickFile(e.target.files[0]);
+['dragover','dragenter'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave','drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => !busy && pickFile(e.dataTransfer.files[0]));
+
+$('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
+  // 업로드 진행률 표시를 위해 XHR 사용
+  const fd = new FormData(); fd.append('file', selectedFile);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/convert');
+  xhr.upload.onprogress = e => e.lengthComputable && setStatus(e.loaded / e.total * 100, `업로드 중 ${Math.round(e.loaded / e.total * 100)}%`);
+  xhr.onload = () => {
+    let data = {}; try { data = JSON.parse(xhr.responseText); } catch {}
+    xhr.status === 200 ? (setStatus(0, '변환 준비 중...'), resolve(data.job_id)) : reject(new Error(data.detail || '업로드 실패'));
+  };
+  xhr.onerror = () => reject(new Error('업로드 실패'));
+  xhr.send(fd);
+}));
+</script>
+</body>
+</html>
