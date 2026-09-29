@@ -228,8 +228,27 @@ async def retry_due_targets() -> int:
     return handled
 
 
+# 예약 검사 루프가 살아 있는지 밖에서 확인할 수 있도록 마지막 상태를 남긴다.
+# (실서버에서 '예약 시각이 지났는데 안 올라갔다' 가 루프가 멈춘 탓인지,
+#  루프는 도는데 다른 이유로 안 된 건지 구분하려면 이 값이 필요하다.)
+SCHEDULER = {"checked_at": 0.0, "ran_at": 0.0, "ran_total": 0, "last_error": ""}
+
+
+def scheduler_state() -> dict:
+    waiting = db.list_scheduled_jobs()
+    now = time.time()
+    return {
+        **SCHEDULER,
+        "waiting": len(waiting),
+        "overdue": sum(1 for j in waiting if (j.get("scheduled_at") or 0) <= now),
+        "next_at": min((j["scheduled_at"] for j in waiting if j.get("scheduled_at")),
+                       default=None),
+    }
+
+
 async def run_due_scheduled() -> int:
     """예약 시각이 된 게시를 실행한다. 실행한 개수를 돌려준다."""
+    SCHEDULER["checked_at"] = time.time()
     due = db.due_scheduled_jobs(time.time())
     for job_id in due:
         job = db.get_job(job_id)
@@ -245,6 +264,8 @@ async def run_due_scheduled() -> int:
             print(f"[schedule] {job_id} 원본이 없어 실패 처리")
             continue
         print(f"[schedule] 예약 게시 시작 ({kst(job['scheduled_at'])}) · {job['title'][:30]}")
+        SCHEDULER["ran_at"] = time.time()
+        SCHEDULER["ran_total"] += 1
         await run_job(job_id)
     return len(due)
 

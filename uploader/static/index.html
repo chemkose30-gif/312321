@@ -1421,7 +1421,19 @@ async function loadVersion(){
   try{
     const v = await fetch('/api/version').then(r => r.json());
     const el = $('#buildInfo');
-    if(el) el.textContent = `서버 버전 ${v.version} · ${v.commit} · 가동 ${Math.floor(v.uptime_sec/60)}분`;
+    if(!el) return;
+    const sc = v.scheduler || {};
+    const ago = sec => !sec ? '없음' : `${Math.round(Date.now()/1000 - sec)}초 전`;
+    // 예약이 안 올라갈 때 '검사 루프가 멈췄는지'를 여기서 바로 볼 수 있다.
+    const alive = sc.checked_at && (Date.now()/1000 - sc.checked_at) < 180;
+    el.innerHTML = `서버 버전 ${esc(v.version)} · ${esc(v.commit)} · 가동 ${Math.floor(v.uptime_sec/60)}분<br>`
+      + `<span style="color:${alive ? 'var(--green)' : 'var(--amber)'}">`
+      + `예약 검사 ${alive ? '정상' : '멈춤?'} · 마지막 검사 ${ago(sc.checked_at)}</span>`
+      + ` · 대기 중 예약 ${sc.waiting || 0}건`
+      + (sc.overdue ? ` <b style="color:var(--amber)">(시각 지난 것 ${sc.overdue}건)</b>` : '')
+      + (sc.next_at ? ` · 다음 ${fmtKst(sc.next_at)}` : '')
+      + (sc.ran_total ? ` · 지금까지 실행 ${sc.ran_total}건` : '')
+      + (sc.last_error ? `<br><span style="color:var(--red)">마지막 오류: ${esc(sc.last_error)}</span>` : '');
   }catch(_){}
 }
 

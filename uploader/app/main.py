@@ -76,6 +76,7 @@ async def _retry_loop() -> None:
         try:
             await jobs.run_due_scheduled()
         except Exception as exc:
+            jobs.SCHEDULER["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
             print(f"[schedule] 예약 실행 중 오류: {type(exc).__name__}: {exc}")
 
 
@@ -462,7 +463,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-09-29-예약시각입력"
+APP_VERSION = "2026-09-29-예약계기판"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -479,6 +480,7 @@ async def version() -> dict:
         "commit": BUILD_COMMIT or "-",
         "started_at": BUILD_STARTED,
         "uptime_sec": int(time.time() - BUILD_STARTED),
+        "scheduler": jobs.scheduler_state(),
     }
 
 
