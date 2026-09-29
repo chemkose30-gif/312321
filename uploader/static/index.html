@@ -457,7 +457,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       </div>
       <div id="whenBox" class="hidden" style="margin-top:14px">
         <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
-          <input type="datetime-local" id="schedAt" style="max-width:250px;margin:0">
+          <input type="datetime-local" id="schedAt" step="60" style="max-width:250px;margin:0">
           <span class="small muted" id="schedHint"></span>
         </div>
         <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap" id="schedQuick"></div>
@@ -1314,9 +1314,12 @@ function refreshPublishButton(){
     : !state.media ? `채널 ${n}개 선택됨 · 이제 영상을 올려주세요`
     : dups.length ? '세트별 제목을 서로 다르게 고쳐주세요'
     : state.when === 'later'
-      ? (scheduledAt() ? `${fmtKst(scheduledAt())}에 ${n}개 채널로 예약` : '예약 시각을 골라주세요')
+      ? (!scheduledAt() ? '예약 시각을 골라주세요'
+          : scheduledAt() < Date.now()/1000 + 30 ? '지난 시각입니다 — 시각을 다시 골라주세요'
+          : `${fmtKst(scheduledAt())}에 ${n}개 채널로 예약`)
       : `${n}개 채널에 한 번에 올리기`;
-  if(state.when === 'later' && !scheduledAt()) btn.disabled = true;
+  if(state.when === 'later'
+     && (!scheduledAt() || scheduledAt() < Date.now()/1000 + 30)) btn.disabled = true;
 }
 
 /* ── 번역 API 키 ── */
@@ -1635,12 +1638,14 @@ function renderWhen(){
     b.onclick = () => { state.when = b.dataset.when; renderWhen(); refreshPublishButton(); };
   });
   $('#whenBox').classList.toggle('hidden', state.when !== 'later');
+  if(state.when === 'later') refreshSchedMin();
   const when = scheduledAt();
   const hint = $('#schedHint');
   if(state.when === 'later' && hint){
     hint.textContent = !when ? '시각을 골라주세요'
-      : when < Date.now()/1000 + 30 ? '지금보다 뒤 시각이어야 합니다'
-      : `${fmtKst(when)}에 올립니다`;
+      : when < Date.now()/1000 + 30
+        ? `${fmtKst(when)}은 이미 지난 시각입니다 — 지금보다 뒤로 골라주세요`
+        : `${fmtKst(when)}에 올립니다`;
     hint.style.color = (!when || when < Date.now()/1000 + 30) ? 'var(--amber)' : 'var(--green)';
   }
   const quick = $('#schedQuick');
@@ -1663,7 +1668,18 @@ function renderWhen(){
     });
   }
 }
-if($('#schedAt')) $('#schedAt').onchange = () => { renderWhen(); refreshPublishButton(); };
+if($('#schedAt')){
+  // change 는 칸에서 빠져나와야 뜬다. 고치는 도중에도 바로 보이도록 input 도 같이 듣는다.
+  const onPick = () => { renderWhen(); refreshPublishButton(); };
+  $('#schedAt').onchange = onPick;
+  $('#schedAt').oninput = onPick;
+}
+
+/* 달력에서 지난 시각을 아예 못 고르게 막는다(골라도 버튼이 안 켜져서 헤맨다). */
+function refreshSchedMin(){
+  const el = $('#schedAt');
+  if(el) el.min = epochToKstInput(Date.now()/1000 + 60);
+}
 
 async function loadScheduled(){
   const box = $('#schedList');
