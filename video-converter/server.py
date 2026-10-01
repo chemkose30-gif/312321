@@ -29,6 +29,9 @@ JOB_TTL_SECONDS = 60 * 60
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "4096"))
 MAX_CONCURRENT = max(1, int(os.environ.get("MAX_CONCURRENT", "2")))
+# 유튜브 봇 차단 대응: 로그인 쿠키 파일 / 프록시 (README 참고)
+COOKIES_FILE = Path(os.environ.get("YTDLP_COOKIES") or BASE_DIR / "cookies" / "cookies.txt")
+YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "")
 
 # 서버 재시작 시 이전에 남은 작업 폴더 정리
 for _old in WORK_DIR.iterdir():
@@ -160,6 +163,26 @@ def _safe_name(name: str) -> str:
 # ---------------------------------------------------------------- YouTube
 
 
+def _ytdlp_opts(**extra) -> dict:
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True, **extra}
+    if COOKIES_FILE.is_file():
+        opts["cookiefile"] = str(COOKIES_FILE)
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
+    return opts
+
+
+def _ytdlp_error(e: Exception) -> str:
+    msg = str(e).replace("ERROR: ", "")
+    if "not a bot" in msg or "Sign in to confirm" in msg:
+        if COOKIES_FILE.is_file():
+            return ("유튜브가 서버를 봇으로 차단했어요. 등록된 쿠키가 만료됐을 수 있으니 "
+                    "화면 아래 '유튜브 쿠키 설정'에서 새 쿠키를 등록해 주세요.")
+        return ("유튜브가 서버를 봇으로 차단했어요. 화면 아래 '유튜브 쿠키 설정'에서 "
+                "쿠키를 등록하면 해결돼요.")
+    return msg[:300]
+
+
 class YoutubeRequest(BaseModel):
     url: str
     format: str = "mp4"  # mp4 | mp3
@@ -236,13 +259,11 @@ def youtube_info(url: str):
 
     if not re.match(r"^https?://", url.strip()):
         raise HTTPException(400, "올바른 URL을 입력하세요")
-    opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(_ytdlp_opts(skip_download=True)) as ydl:
             info = ydl.extract_info(url.strip(), download=False)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, "영상 정보를 가져오지 못했습니다: "
-                            + str(e).replace("ERROR: ", "")[:300])
+        raise HTTPException(400, "영상 정보를 가져오지 못했습니다: " + _ytdlp_error(e))
     if info.get("_type") == "playlist":
         raise HTTPException(400, "재생목록이 아닌 영상 하나의 링크를 넣어주세요")
     return _summarize_formats(info)
@@ -260,15 +281,11 @@ def _run_youtube(job_id: str, job_dir: Path, req: YoutubeRequest):
         elif d["status"] == "finished":
             _update(job_id, progress=90, message="변환 중")
 
-    opts = {
-        "outtmpl": str(job_dir / "%(title)s.%(ext)s"),
-        "restrictfilenames": False,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [hook],
-        "ffmpeg_location": FFMPEG,
-    }
+    opts = _ytdlp_opts(
+        outtmpl=str(job_dir / "%(title)s.%(ext)s"),
+        progress_hooks=[hook],
+        ffmpeg_location=FFMPEG,
+    )
     if req.format == "mp3":
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [
@@ -292,8 +309,7 @@ def _run_youtube(job_id: str, job_dir: Path, req: YoutubeRequest):
         _update(job_id, status="done", progress=100, message="완료",
                 file=str(out), filename=f"{title}.{ext}")
     except Exception as e:  # noqa: BLE001
-        msg = str(e).replace("ERROR: ", "")
-        _update(job_id, status="error", message=f"실패: {msg[:300]}")
+        _update(job_id, status="error", message=f"실패: {_ytdlp_error(e)}")
 
 
 @app.post("/api/youtube")
@@ -308,6 +324,35 @@ def start_youtube(req: YoutubeRequest):
     job_id, job_dir = _new_job("youtube")
     _start_worker(job_id, _run_youtube, job_dir, req)
     return {"job_id": job_id}
+
+
+@app.get("/api/youtube/cookies")
+def cookies_status():
+    if not COOKIES_FILE.is_file():
+        return {"set": False}
+    return {"set": True, "updated": int(COOKIES_FILE.stat().st_mtime)}
+
+
+@app.post("/api/youtube/cookies")
+async def upload_cookies(file: UploadFile = File(...)):
+    data = await file.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise HTTPException(400, "쿠키 파일이 너무 큽니다")
+    text = data.decode("utf-8", errors="replace")
+    first_line = next((ln for ln in text.splitlines() if ln.strip()), "")
+    if "HTTP Cookie File" not in first_line:
+        raise HTTPException(400, "cookies.txt(Netscape 형식) 파일이 아닙니다")
+    if "youtube.com" not in text:
+        raise HTTPException(400, "유튜브 쿠키가 들어있지 않습니다. youtube.com에서 내보내 주세요")
+    COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    COOKIES_FILE.write_text(text, encoding="utf-8")
+    return {"set": True, "updated": int(COOKIES_FILE.stat().st_mtime)}
+
+
+@app.delete("/api/youtube/cookies")
+def delete_cookies():
+    COOKIES_FILE.unlink(missing_ok=True)
+    return {"set": False}
 
 
 # ---------------------------------------------------------- File → MP4

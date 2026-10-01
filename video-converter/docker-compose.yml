@@ -8,6 +8,7 @@ services:
     env_file: .env
     volumes:
       - work:/data
+      - ./cookies:/app/cookies   # 유튜브 쿠키 (화면에서 등록)
     # NVIDIA GPU 서버라면 아래 주석을 풀어주세요 (nvidia-container-toolkit 필요)
     # deploy:
     #   resources:

@@ -41,6 +41,12 @@
   .opt b { min-width:72px; } .opt .n { color:var(--muted); font-size:13px; flex:1; }
   .opt .sz { color:var(--muted); font-size:13px; }
   .opt .warn { color:#f0b45a; font-size:12px; }
+  details.admin { margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 20px; font-size:14px; }
+  details.admin summary { cursor:pointer; color:var(--muted); }
+  details.admin ol { padding-left:20px; line-height:1.7; color:var(--muted); font-size:13px; }
+  details.admin a { color:var(--text); }
+  .adminrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .adminrow button { padding:9px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -85,6 +91,25 @@
       <div class="msg" id="msg"></div>
     </div>
   </div>
+
+  <details class="admin" id="admin">
+    <summary>⚙️ 유튜브 쿠키 설정 <span id="ckBadge"></span></summary>
+    <p class="msg">유튜브가 서버를 봇으로 차단하면 로그인 쿠키를 등록해야 해요. 쿠키는 몇 주~몇 달 뒤 만료되면 다시 등록하세요.</p>
+    <ol>
+      <li><b>업무용 보조 구글 계정</b>을 쓰세요 (개인 계정은 정지될 위험이 있어요)</li>
+      <li>크롬에 <a href="https://chromewebstore.google.com/search/Get%20cookies.txt%20LOCALLY" target="_blank" rel="noopener">Get cookies.txt LOCALLY</a> 확장 프로그램 설치 → 확장 프로그램 관리에서 <b>시크릿 모드 허용</b></li>
+      <li><b>시크릿 창</b>을 열고 youtube.com에서 보조 계정으로 로그인</li>
+      <li>같은 탭에서 확장 프로그램 아이콘 → <b>Export</b>로 cookies.txt 저장</li>
+      <li><b>시크릿 창을 바로 닫기</b> (창을 계속 쓰면 쿠키가 바뀌어 무효가 돼요)</li>
+      <li>아래에서 저장한 파일 등록</li>
+    </ol>
+    <div class="adminrow">
+      <input type="file" id="ckFile" accept=".txt" hidden>
+      <button id="ckUpload">cookies.txt 등록</button>
+      <button id="ckDelete" hidden>삭제</button>
+      <span class="msg" id="ckMsg" style="margin:0"></span>
+    </div>
+  </details>
 
   <p class="note">※ 본인 영상이나 저작권 문제가 없는 콘텐츠에만 사용하세요. 변환된 파일은 다운로드 후 서버에서 자동 삭제됩니다.</p>
 </main>
@@ -235,6 +260,30 @@ $('file').onchange = e => pickFile(e.target.files[0]);
 ['dragover','dragenter'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.add('over'); }));
 ['dragleave','drop'].forEach(ev => $('drop').addEventListener(ev, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
 $('drop').addEventListener('drop', e => !busy && pickFile(e.dataTransfer.files[0]));
+
+function showCookies(c) {
+  $('ckBadge').textContent = c.set ? '· 등록됨' : '';
+  $('ckDelete').hidden = !c.set;
+  $('ckMsg').className = 'msg';
+  $('ckMsg').textContent = c.set ? `등록됨 (${new Date(c.updated * 1000).toLocaleString()})` : '등록된 쿠키 없음';
+}
+fetch('/api/youtube/cookies').then(r => r.json()).then(showCookies).catch(() => {});
+$('ckUpload').onclick = () => $('ckFile').click();
+$('ckFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const res = await fetch('/api/youtube/cookies', {method: 'POST', body: fd});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { $('ckMsg').className = 'msg err'; $('ckMsg').textContent = data.detail || '등록 실패'; return; }
+  showCookies(data);
+  ytInfoUrl = '';  // 같은 링크로 다시 시도할 수 있게
+  $('ckMsg').className = 'msg ok'; $('ckMsg').textContent = '등록 완료! 유튜브 링크를 다시 시도해 보세요.';
+};
+$('ckDelete').onclick = async () => {
+  if (!confirm('등록된 쿠키를 삭제할까요?')) return;
+  showCookies(await (await fetch('/api/youtube/cookies', {method: 'DELETE'})).json());
+};
 
 $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   // 업로드 진행률 표시를 위해 XHR 사용
