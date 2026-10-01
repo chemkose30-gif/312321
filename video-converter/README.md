@@ -48,7 +48,7 @@ sudo bash setup.sh
 | `APP_PASSWORD` | (자동 생성) | 접속 비밀번호. 퇴사자가 생기면 바꿔주세요 |
 | `DOMAIN` | 서버IP.sslip.io | 접속 주소 |
 | `MAX_UPLOAD_MB` | 4096 | 업로드 최대 크기 (MB) |
-| `MAX_CONCURRENT` | CPU 코어 수 ÷ 2 | 동시 처리 작업 수 |
+| `MAX_CONCURRENT` | CPU 코어 수 ÷ 2 (최소 2) | 동시 처리 작업 수 |
 | `DISABLE_GPU` | 0 | 1로 하면 GPU가 있어도 CPU로 인코딩 |
 
 `.env`를 수정한 뒤에는 `docker compose up -d`로 적용하세요.

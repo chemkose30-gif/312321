@@ -13,7 +13,8 @@ if [ ! -f .env ]; then
   echo "▶ 설정 파일(.env) 생성 중..."
   ip=$(curl -fsS https://api.ipify.org)
   password=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 16)
-  concurrent=$(( $(nproc) / 2 )); [ "$concurrent" -lt 1 ] && concurrent=1
+  # 최소 2개: 긴 인코딩 중에도 몇 초짜리 변환(재인코딩 없음)이 기다리지 않도록
+  concurrent=$(( $(nproc) / 2 )); [ "$concurrent" -lt 2 ] && concurrent=2
   cp .env.example .env
   sed -i "s/^APP_PASSWORD=.*/APP_PASSWORD=${password}/" .env
   sed -i "s/^MAX_CONCURRENT=.*/MAX_CONCURRENT=${concurrent}/" .env
