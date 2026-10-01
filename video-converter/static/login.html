@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영상 변환기 로그인</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --muted:#8b93a7; --accent:#ff4d4d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
+  main { max-width:380px; margin:0 auto; padding:80px 16px; }
+  h1 { font-size:24px; margin:0 0 24px; text-align:center; }
+  form { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:24px 20px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+  input { width:100%; padding:13px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); font-size:16px; }
+  button { width:100%; margin-top:16px; padding:14px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  .err { color:#ff8080; font-size:14px; margin-top:12px; min-height:1em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎬 영상 변환기</h1>
+  <form id="f">
+    <label for="pw">비밀번호</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus required>
+    <button id="go">로그인</button>
+    <div class="err" id="err"></div>
+  </form>
+</main>
+<script>
+document.getElementById('f').onsubmit = async e => {
+  e.preventDefault();
+  const go = document.getElementById('go'), err = document.getElementById('err');
+  go.disabled = true; err.textContent = '';
+  try {
+    const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: document.getElementById('pw').value})});
+    if (res.ok) { location.href = '/'; return; }
+    const data = await res.json().catch(() => ({}));
+    err.textContent = data.detail || '로그인 실패';
+  } catch { err.textContent = '서버에 연결할 수 없습니다'; }
+  go.disabled = false;
+  document.getElementById('pw').select();
+};
+</script>
+</body>
+</html>

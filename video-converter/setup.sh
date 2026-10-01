@@ -34,6 +34,6 @@ password=$(grep '^APP_PASSWORD=' .env | cut -d= -f2)
 echo
 echo "✅ 완료!"
 echo "   접속 주소 : https://${domain}"
-echo "   비밀번호  : ${password}   (사용자 이름은 아무거나)"
+echo "   비밀번호  : ${password}"
 echo "   ※ 처음 접속 시 HTTPS 인증서 발급에 1분 정도 걸릴 수 있어요."
 echo "   ※ 비밀번호 변경: .env 수정 후 'docker compose up -d'"

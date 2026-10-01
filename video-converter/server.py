@@ -5,7 +5,7 @@
 WORK_DIR, HOST, PORT, DISABLE_GPU
 """
 import asyncio
-import base64
+import hashlib
 import hmac
 import os
 import re
@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -92,26 +92,51 @@ jobs_lock = threading.Lock()
 work_slots = threading.Semaphore(MAX_CONCURRENT)
 
 
+SESSION_COOKIE = "vc_session"
+# 비밀번호에서 만든 세션 토큰: 비밀번호를 바꾸면 기존 로그인은 모두 풀린다
+SESSION_TOKEN = hmac.new(APP_PASSWORD.encode(), b"video-converter-session",
+                         hashlib.sha256).hexdigest()
+PUBLIC_PATHS = {"/login.html", "/api/login"}
+
+
+def _logged_in(request: Request) -> bool:
+    return hmac.compare_digest(request.cookies.get(SESSION_COOKIE, ""), SESSION_TOKEN)
+
+
 @app.middleware("http")
 async def password_guard(request: Request, call_next):
-    """APP_PASSWORD가 설정되어 있으면 브라우저 기본 로그인 창으로 비밀번호를 묻는다."""
-    if APP_PASSWORD:
-        header = request.headers.get("authorization", "")
-        password = ""
-        if header.startswith("Basic "):
-            try:
-                password = base64.b64decode(header[6:]).decode().partition(":")[2]
-            except Exception:  # noqa: BLE001
-                password = ""
-            if not hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
-                await asyncio.sleep(1)  # 무차별 대입 완화
-                password = None
-        if not password:
-            return Response(
-                "비밀번호가 필요합니다", status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="video-converter", charset="UTF-8"'},
-            )
+    """APP_PASSWORD가 설정되어 있으면 로그인 페이지에서 비밀번호를 받는다."""
+    if APP_PASSWORD and request.url.path not in PUBLIC_PATHS and not _logged_in(request):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "로그인이 필요합니다"}, status_code=401)
+        return RedirectResponse("/login.html", status_code=302)
     return await call_next(request)
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/login")
+async def login(req: LoginRequest, request: Request):
+    if not APP_PASSWORD:
+        return {"ok": True}
+    if not hmac.compare_digest(req.password.encode(), APP_PASSWORD.encode()):
+        await asyncio.sleep(1)  # 무차별 대입 완화
+        raise HTTPException(401, "비밀번호가 틀렸습니다")
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        SESSION_COOKIE, SESSION_TOKEN, max_age=60 * 60 * 24 * 30, httponly=True,
+        samesite="lax", secure=request.headers.get("x-forwarded-proto") == "https",
+    )
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
 
 
 def _start_worker(job_id: str, target, *args):
@@ -473,6 +498,7 @@ async def start_convert(file: UploadFile = File(...), preset: str = Form("balanc
 @app.get("/api/config")
 def config():
     return {"max_upload_mb": MAX_UPLOAD_MB, "gpu": GPU_ENCODER is not None,
+            "auth": bool(APP_PASSWORD),
             "max_concurrent": MAX_CONCURRENT}
 
 

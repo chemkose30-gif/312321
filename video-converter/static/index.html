@@ -143,15 +143,24 @@
     </div>
   </details>
 
+  <p class="note" id="logoutRow" hidden><a href="#" id="logout" style="color:var(--muted)">로그아웃</a></p>
   <p class="note">※ 본인 영상이나 저작권 문제가 없는 콘텐츠에만 사용하세요. 변환된 파일은 다운로드 후 서버에서 자동 삭제됩니다.</p>
 </main>
 
 <script>
 const $ = id => document.getElementById(id);
+// 로그인이 풀리면(비밀번호 변경 등) 로그인 페이지로 이동
+const _fetch = window.fetch;
+window.fetch = async (...args) => {
+  const res = await _fetch(...args);
+  if (res.status === 401) { location.href = '/login.html'; throw new Error('로그인이 필요합니다'); }
+  return res;
+};
 let busy = false, selectedFile = null, maxUploadMb = Infinity;
 
 fetch('/api/config').then(r => r.json()).then(c => {
   maxUploadMb = c.max_upload_mb;
+  $('logoutRow').hidden = !c.auth;
   $('serverInfo').textContent = `최대 ${c.max_upload_mb >= 1024 ? (c.max_upload_mb / 1024).toFixed(1) + ' GB' : c.max_upload_mb + ' MB'}`
     + ` · ${c.gpu ? 'GPU 가속 사용 중' : 'CPU 인코딩'} · 동시 ${c.max_concurrent}개 처리`
     + ' · H.264 영상은 재인코딩 없이 즉시 변환';
@@ -318,6 +327,12 @@ $('ckDelete').onclick = async () => {
   showCookies(await (await fetch('/api/youtube/cookies', {method: 'DELETE'})).json());
 };
 
+$('logout').onclick = async e => {
+  e.preventDefault();
+  await fetch('/api/logout', {method: 'POST'});
+  location.href = '/login.html';
+};
+
 $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   // 업로드 진행률 표시를 위해 XHR 사용
   const fd = new FormData(); fd.append('file', selectedFile); fd.append('preset', $('preset').value);
@@ -325,6 +340,7 @@ $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   xhr.open('POST', '/api/convert');
   xhr.upload.onprogress = e => e.lengthComputable && setStatus(e.loaded / e.total * 100, `업로드 중 ${Math.round(e.loaded / e.total * 100)}%`);
   xhr.onload = () => {
+    if (xhr.status === 401) { location.href = '/login.html'; return; }
     let data = {}; try { data = JSON.parse(xhr.responseText); } catch {}
     xhr.status === 200 ? (setStatus(0, '변환 준비 중...'), resolve(data.job_id)) : reject(new Error(data.detail || '업로드 실패'));
   };
