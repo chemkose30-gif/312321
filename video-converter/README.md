@@ -26,8 +26,9 @@
 서버에 SSH로 접속한 뒤:
 
 ```bash
-git clone <이 저장소 주소> app && cd app/video-converter
-git checkout feat/video-converter   # main에 합치기 전이라면
+git clone <이 저장소 주소> app && cd app
+git checkout feat/video-converter   # main에 합치기 전이라면 (폴더 이동보다 먼저)
+cd video-converter
 sudo bash setup.sh
 ```
 
