@@ -3,6 +3,7 @@
 게시에 성공한 영상마다 플랫폼에 물어서 지표를 가져와 저장한다.
 하루에 한 줄씩 쌓아 추이를 볼 수 있게 한다.
 """
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -40,6 +41,20 @@ def _num(value) -> int:
 
 # ── 유튜브 ──────────────────────────────────────────────────
 # 한 번에 보낼 수 있는 개수 — 유튜브가 정한 한도.
+# 메타(인스타·페북)는 영상마다 따로 물어봐야 해서 수가 많다. 동시에 보내되
+# 너무 세게 보내면 rate limit 에 걸리므로 이만큼으로 묶어 둔다.
+META_CONCURRENCY = 6
+_GATE: asyncio.Semaphore | None = None
+
+
+def _gate() -> asyncio.Semaphore:
+    """이벤트 루프가 생긴 뒤에 만들어야 해서 쓸 때 만든다."""
+    global _GATE
+    if _GATE is None:
+        _GATE = asyncio.Semaphore(META_CONCURRENCY)
+    return _GATE
+
+
 YT_STATS_CHUNK = 50        # videos.list 의 id 파라미터
 YT_ANALYTICS_CHUNK = 200   # Analytics 의 video 필터
 
@@ -113,14 +128,15 @@ async def instagram_stats(account: dict, media_ids: list[str]) -> dict[str, dict
     out: dict[str, dict] = {}
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for media_id in _unique(media_ids):
-            res = await client.get(
-                f"{base}/{media_id}/insights",
-                params={"metric": IG_METRICS, "access_token": token},
-            )
+        async def one(media_id: str) -> None:
+            async with _gate():
+                res = await client.get(
+                    f"{base}/{media_id}/insights",
+                    params={"metric": IG_METRICS, "access_token": token},
+                )
             if res.status_code >= 400:
                 print(f"[stats] 인스타 {media_id} 실패 {res.status_code} {res.text[:160]}")
-                continue
+                return
             row: dict = {}
             for item in (res.json() or {}).get("data") or []:
                 name = item.get("name")
@@ -138,6 +154,8 @@ async def instagram_stats(account: dict, media_ids: list[str]) -> dict[str, dict
                     row["watch_sec"] = value // 1000      # 밀리초로 온다
             if row:
                 out[media_id] = row
+
+        await asyncio.gather(*(one(m) for m in _unique(media_ids)))
     return out
 
 
@@ -149,14 +167,15 @@ async def facebook_stats(account: dict, video_ids: list[str]) -> dict[str, dict]
     token = account["access_token"]
     out: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=30) as client:
-        for video_id in _unique(video_ids):
-            res = await client.get(
-                f"{GRAPH}/{video_id}/video_insights",
-                params={"metric": FB_METRICS, "access_token": token},
-            )
+        async def one(video_id: str) -> None:
+            async with _gate():
+                res = await client.get(
+                    f"{GRAPH}/{video_id}/video_insights",
+                    params={"metric": FB_METRICS, "access_token": token},
+                )
             if res.status_code >= 400:
                 print(f"[stats] 페북 {video_id} 실패 {res.status_code} {res.text[:160]}")
-                continue
+                return
             row: dict = {}
             for item in (res.json() or {}).get("data") or []:
                 values = item.get("values") or [{}]
@@ -167,6 +186,8 @@ async def facebook_stats(account: dict, video_ids: list[str]) -> dict[str, dict]
                     row["watch_sec"] = value // 1000
             if row:
                 out[video_id] = row
+
+        await asyncio.gather(*(one(v) for v in _unique(video_ids)))
     return out
 
 
@@ -194,26 +215,33 @@ async def collect(days: int | None = COLLECT_WINDOW_DAYS) -> dict:
     for target in targets:
         by_account.setdefault(target["account_id"], []).append(target)
 
-    day, saved = today(), 0
-    for account_id, group in by_account.items():
+    day = today()
+
+    async def one_account(account_id: str, group: list[dict]) -> int:
         account = db.get_account(account_id)
         if not account or not account.get("access_token"):
-            continue
+            return 0
         collector = COLLECTORS.get(account["platform"])
         if collector is None:
-            continue
+            return 0
         ids = [t["remote_id"] for t in group if t.get("remote_id")]
         try:
             result = await collector(account, ids)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"[stats] {account['platform']} {account.get('name')} 수집 실패:"
                   f" {type(exc).__name__}: {exc}")
-            continue
+            return 0
+        done = 0
         for target in group:
             data = result.get(target.get("remote_id") or "")
             if data:
                 db.save_stats(target["id"], day, data)
-                saved += 1
+                done += 1
+        return done
+
+    # 계정을 한 줄로 세우지 않고 동시에 처리한다(플랫폼 쪽 동시 요청 수는 따로 제한한다).
+    counts = await asyncio.gather(*(one_account(a, g) for a, g in by_account.items()))
+    saved = sum(counts)
     print(f"[stats] {len(targets)}개 중 {saved}개 지표를 저장했습니다.")
     return {"targets": len(targets), "saved": saved}
 
@@ -429,21 +457,23 @@ WEEKLY_WEEKS = 12
 async def collect_uploads(weeks: int = WEEKLY_WEEKS) -> dict:
     """연결된 모든 채널에서 '실제로 올라가 있는 영상' 목록을 받아 저장한다."""
     since = _week_start(time.time()) - (weeks - 1) * 7 * 86400
-    saved, failed = 0, []
-    for account in db.list_accounts(with_tokens=True):
-        if not account.get("access_token"):
-            continue
+    failed: list[str] = []
+
+    async def one_account(account: dict) -> int:
         lister = UPLOAD_LISTERS.get(account["platform"])
         if lister is None:
-            continue
+            return 0
         try:
             rows = await lister(account, since)
         except Exception as exc:  # noqa: BLE001
             failed.append(f"{account.get('name')}: {type(exc).__name__}")
             print(f"[uploads] {account['platform']} {account.get('name')} 실패:"
                   f" {type(exc).__name__}: {exc}")
-            continue
-        saved += db.save_channel_uploads(account["id"], rows)
+            return 0
+        return db.save_channel_uploads(account["id"], rows)
+
+    todo = [a for a in db.list_accounts(with_tokens=True) if a.get("access_token")]
+    saved = sum(await asyncio.gather(*(one_account(a) for a in todo)))
     print(f"[uploads] {saved}개 영상을 기록했습니다.")
     return {"saved": saved, "failed": failed}
 
@@ -514,11 +544,17 @@ def weekly(weeks: int = WEEKLY_WEEKS) -> dict:
         if bucket is not None:
             bucket["videos"] = bucket.get("videos", 0) + 1
 
+    # 화면에서 플랫폼마다 칸을 따로 쓰므로, 어떤 플랫폼이 나오는지 함께 알려준다.
+    order = ["youtube", "instagram", "facebook", "tiktok"]
+    seen = {p for b in buckets.values() for p in b["by_platform"]}
+    seen |= {a["platform"] for a in accounts.values() if a.get("linked")}
+    platforms = [p for p in order if p in seen] + sorted(seen - set(order))
+
     rows = []
     for start in sorted(buckets, reverse=True):
         b = buckets[start]
         b["videos"] = b.get("videos", 0)
         b["label"] = datetime.fromtimestamp(start, KST).strftime("%m/%d")
-        b["by_platform"] = sorted(b["by_platform"].items(), key=lambda kv: -kv[1])
         rows.append(b)
-    return {"weeks": rows, "fetched_at": db.uploads_fetched_at() or None}
+    return {"weeks": rows, "platforms": platforms,
+            "fetched_at": db.uploads_fetched_at() or None}

@@ -216,6 +216,19 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .wk-legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--text2);margin-bottom:10px}
 .wk-legend b{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .wk-plat{font-size:11.5px;color:var(--text3)}
+/* 플랫폼마다 칸을 따로 쓴다. 좁은 화면에서는 가로로 밀어서 본다. */
+.wk-wrap{overflow-x:auto}
+.wk-table{width:100%;border-collapse:collapse;font-size:12.5px;white-space:nowrap}
+.wk-table th{font-weight:600;color:var(--text2);font-size:11.5px;text-align:right;
+  padding:0 0 8px;border-bottom:1px solid var(--border)}
+.wk-table td{text-align:right;padding:9px 0;border-bottom:1px solid var(--border)}
+.wk-table tr:last-child td{border-bottom:none}
+.wk-table th.l,.wk-table td.l{text-align:left;min-width:92px;font-weight:600}
+.wk-table th,.wk-table td{padding-left:14px}
+.wk-table th.b,.wk-table td.b{width:100%;padding-left:14px}
+.wk-table td.b .bar{margin:0;min-width:70px}
+.wk-table td.muted{color:var(--text3)}
+.wk-table tr.now td{color:var(--text)}
 .en-box{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
 .en-box input,.en-box textarea{margin-top:9px}
 .set-titles{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
@@ -2444,6 +2457,7 @@ const PLAT_KO = {youtube:'YouTube', instagram:'Instagram', facebook:'Facebook', 
 
 function weeklyRows(d){
   const rows = d.weeks || [];
+  const plats = d.platforms || [];
   if(!rows.some(w => w.posts || w.videos))
     return '<div class="acc-empty">아직 올린 영상이 없습니다. '
          + '<b>지금 받아오기</b>를 누르면 각 채널에서 목록을 받아옵니다.</div>';
@@ -2453,20 +2467,24 @@ function weeklyRows(d){
       <span><b style="background:#d95926"></b>직접 올림</span>
       <span class="wk-plat">· 막대 길이 = 게시 건수</span>
     </div>`;
-  return legend + `<div class="meta-list wk">${rows.map((w, i) => {
-    const plat = (w.by_platform || []).map(([k, n]) => `${PLAT_KO[k] || k} ${n}`).join(' · ');
+  const head = `<tr><th class="l">주차</th><th class="b"></th>
+      <th>게시</th><th>영상</th>
+      ${plats.map(p => `<th>${esc(PLAT_KO[p] || p)}</th>`).join('')}</tr>`;
+  const body = rows.map((w, i) => {
+    const bp = w.by_platform || {};
     const title = `${w.label} 주 — 앱 ${w.app_posts}건, 직접 ${w.manual_posts}건`;
-    return `<div class="stat-row${i === 0 ? ' now' : ''}" title="${esc(title)}">
-      <div class="nm">${esc(w.label)}${i === 0 ? ' <span class="small muted">이번 주</span>' : ''}</div>
-      <div class="bar">
+    return `<tr class="${i === 0 ? 'now' : ''}" title="${esc(title)}">
+      <td class="l">${esc(w.label)}${i === 0 ? '<span class="small muted"> 이번 주</span>' : ''}</td>
+      <td class="b"><div class="bar">
         ${w.app_posts ? `<i class="app" style="width:${w.app_posts / max * 100}%"></i>` : ''}
         ${w.manual_posts ? `<i class="manual" style="width:${w.manual_posts / max * 100}%"></i>` : ''}
-      </div>
-      <div class="val"><b>${fmtNum(w.posts)}</b> 건</div>
-      <div class="val small muted">${w.videos ? `영상 ${w.videos}개` : '-'}</div>
-      <div class="val wk-plat" style="min-width:150px">${esc(plat)}</div>
-    </div>`;
-  }).join('')}</div>`;
+      </div></td>
+      <td><b>${fmtNum(w.posts)}</b></td>
+      <td class="muted">${w.videos || '·'}</td>
+      ${plats.map(p => `<td class="${bp[p] ? '' : 'muted'}">${bp[p] || '·'}</td>`).join('')}
+    </tr>`;
+  }).join('');
+  return legend + `<div class="wk-wrap wk"><table class="wk-table">${head}${body}</table></div>`;
 }
 
 async function loadWeekly(){
