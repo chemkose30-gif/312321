@@ -283,3 +283,242 @@ def summary(days: int | None = 30) -> dict:
         "fetched_at": fetched or None,
         "measured": sum(1 for v in videos if v["has_stat"]),
     }
+
+
+# ── 채널에 실제로 올라가 있는 영상 목록 ─────────────────────
+# 앱으로 올린 것만이 아니라, 사용자가 유튜브에서 직접 올린 것까지 세려면
+# 각 플랫폼에 '네 채널에 뭐가 올라가 있냐' 를 물어봐야 한다.
+UPLOAD_PAGE = 50
+UPLOAD_MAX_PAGES = 12       # 넉넉히 600개까지
+
+
+def _iso_to_epoch(value: str) -> float:
+    """2026-09-28T12:34:56Z → epoch 초."""
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+async def youtube_uploads(account: dict, since: float) -> list[dict]:
+    """채널 업로드 재생목록을 훑어 올린 영상과 날짜를 모은다."""
+    token = await youtube._access_token(account)
+    headers = {"Authorization": f"Bearer {token}"}
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        res = await client.get(
+            f"{youtube.API}/channels",
+            params={"part": "contentDetails", "mine": "true"},
+            headers=headers,
+        )
+        if res.status_code >= 400:
+            print(f"[uploads] 유튜브 채널 조회 실패 {res.status_code} {res.text[:200]}")
+            return out
+        items = (res.json() or {}).get("items") or []
+        if not items:
+            return out
+        playlist = (((items[0].get("contentDetails") or {})
+                     .get("relatedPlaylists") or {}).get("uploads"))
+        if not playlist:
+            return out
+
+        page = None
+        for _ in range(UPLOAD_MAX_PAGES):
+            params = {"part": "contentDetails,snippet", "playlistId": playlist,
+                      "maxResults": UPLOAD_PAGE}
+            if page:
+                params["pageToken"] = page
+            res = await client.get(f"{youtube.API}/playlistItems", params=params, headers=headers)
+            if res.status_code >= 400:
+                print(f"[uploads] 유튜브 목록 실패 {res.status_code} {res.text[:200]}")
+                break
+            body = res.json() or {}
+            oldest = None
+            for item in body.get("items") or []:
+                details = item.get("contentDetails") or {}
+                published = _iso_to_epoch(
+                    details.get("videoPublishedAt")
+                    or (item.get("snippet") or {}).get("publishedAt") or ""
+                )
+                oldest = published if oldest is None else min(oldest, published)
+                if published and published >= since:
+                    out.append({
+                        "remote_id": details.get("videoId") or "",
+                        "published_at": published,
+                        "title": (item.get("snippet") or {}).get("title") or "",
+                    })
+            page = body.get("nextPageToken")
+            # 목록은 최신순이므로, 기간 밖으로 넘어갔으면 더 볼 필요가 없다.
+            if not page or (oldest is not None and oldest < since):
+                break
+    return out
+
+
+async def instagram_uploads(account: dict, since: float) -> list[dict]:
+    login_mode = (account.get("meta") or {}).get("auth") == "instagram_login"
+    base = instagram_login.GRAPH if login_mode else GRAPH
+    token = (
+        await instagram_login._fresh_token(account) if login_mode else account["access_token"]
+    )
+    user_id = "me" if login_mode else account["external_id"]
+    out: list[dict] = []
+    url = f"{base}/{user_id}/media"
+    params: dict = {"fields": "id,timestamp,caption", "limit": UPLOAD_PAGE,
+                    "access_token": token}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for _ in range(UPLOAD_MAX_PAGES):
+            res = await client.get(url, params=params)
+            if res.status_code >= 400:
+                print(f"[uploads] 인스타 목록 실패 {res.status_code} {res.text[:200]}")
+                break
+            body = res.json() or {}
+            oldest = None
+            for item in body.get("data") or []:
+                published = _iso_to_epoch(item.get("timestamp") or "")
+                oldest = published if oldest is None else min(oldest, published)
+                if published and published >= since:
+                    out.append({"remote_id": str(item.get("id") or ""),
+                                "published_at": published,
+                                "title": (item.get("caption") or "")[:120]})
+            nxt = ((body.get("paging") or {}).get("next"))
+            if not nxt or (oldest is not None and oldest < since):
+                break
+            url, params = nxt, {}       # next 에 이미 모든 값이 붙어 있다
+    return out
+
+
+async def facebook_uploads(account: dict, since: float) -> list[dict]:
+    token = account["access_token"]
+    out: list[dict] = []
+    url = f"{GRAPH}/{account['external_id']}/videos"
+    params: dict = {"fields": "id,created_time,description", "limit": UPLOAD_PAGE,
+                    "access_token": token}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for _ in range(UPLOAD_MAX_PAGES):
+            res = await client.get(url, params=params)
+            if res.status_code >= 400:
+                print(f"[uploads] 페북 목록 실패 {res.status_code} {res.text[:200]}")
+                break
+            body = res.json() or {}
+            oldest = None
+            for item in body.get("data") or []:
+                published = _iso_to_epoch(item.get("created_time") or "")
+                oldest = published if oldest is None else min(oldest, published)
+                if published and published >= since:
+                    out.append({"remote_id": str(item.get("id") or ""),
+                                "published_at": published,
+                                "title": (item.get("description") or "")[:120]})
+            nxt = ((body.get("paging") or {}).get("next"))
+            if not nxt or (oldest is not None and oldest < since):
+                break
+            url, params = nxt, {}
+    return out
+
+
+UPLOAD_LISTERS = {
+    "youtube": youtube_uploads,
+    "instagram": instagram_uploads,
+    "facebook": facebook_uploads,
+}
+
+WEEKLY_WEEKS = 12
+
+
+async def collect_uploads(weeks: int = WEEKLY_WEEKS) -> dict:
+    """연결된 모든 채널에서 '실제로 올라가 있는 영상' 목록을 받아 저장한다."""
+    since = _week_start(time.time()) - (weeks - 1) * 7 * 86400
+    saved, failed = 0, []
+    for account in db.list_accounts(with_tokens=True):
+        if not account.get("access_token"):
+            continue
+        lister = UPLOAD_LISTERS.get(account["platform"])
+        if lister is None:
+            continue
+        try:
+            rows = await lister(account, since)
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"{account.get('name')}: {type(exc).__name__}")
+            print(f"[uploads] {account['platform']} {account.get('name')} 실패:"
+                  f" {type(exc).__name__}: {exc}")
+            continue
+        saved += db.save_channel_uploads(account["id"], rows)
+    print(f"[uploads] {saved}개 영상을 기록했습니다.")
+    return {"saved": saved, "failed": failed}
+
+
+def _week_start(ts: float) -> float:
+    """그 시각이 속한 주의 월요일 0시(한국 시간) epoch."""
+    kst_day = datetime.fromtimestamp(ts, KST).replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = kst_day - timedelta(days=kst_day.weekday())
+    return monday.timestamp()
+
+
+def weekly(weeks: int = WEEKLY_WEEKS) -> dict:
+    """주차별로 올린 영상 수·게시 수를 센다.
+
+    채널에서 받아온 목록이 기준이라 유튜브에 직접 올린 것도 함께 잡힌다.
+    앱으로 올린 것은 id 로 구분해 '직접 올림' 과 나눠 센다.
+    """
+    this_week = _week_start(time.time())
+    since = this_week - (weeks - 1) * 7 * 86400
+    accounts = {a["id"]: a for a in db.list_accounts()}
+    ours = db.app_remote_ids()
+
+    buckets: dict[float, dict] = {}
+    for i in range(weeks):
+        start = since + i * 7 * 86400
+        buckets[start] = {"start": start, "posts": 0, "app_posts": 0, "manual_posts": 0,
+                          "by_platform": {}}
+
+    # 게시 건수는 두 곳을 합쳐서 센다. 채널에서 받아온 목록이 더 정확하지만
+    # (직접 올린 것까지 들어 있다) 아직 안 받아왔을 수도 있으므로, 앱이
+    # 올린 기록도 같이 넣고 같은 영상은 하나로 친다.
+    posts: dict[tuple, dict] = {}
+
+    for target in db.published_targets(since=None):
+        when = target.get("updated_at") or target.get("job_created_at") or 0
+        if when < since:
+            continue
+        posts[(target["account_id"], target["remote_id"])] = {
+            "at": when, "platform": target["platform"], "manual": False,
+        }
+
+    for row in db.channel_uploads_since(since):
+        key = (row["account_id"], row["remote_id"])
+        platform = (accounts.get(row["account_id"]) or {}).get("platform") or "기타"
+        # 채널이 알려준 게시 시각이 더 정확하므로 그걸로 덮어쓴다.
+        posts[key] = {
+            "at": row["published_at"], "platform": platform,
+            "manual": row["remote_id"] not in ours,
+        }
+
+    for info in posts.values():
+        bucket = buckets.get(_week_start(info["at"]))
+        if bucket is None:
+            continue
+        bucket["posts"] += 1
+        bucket["manual_posts" if info["manual"] else "app_posts"] += 1
+        bucket["by_platform"][info["platform"]] = (
+            bucket["by_platform"].get(info["platform"], 0) + 1
+        )
+
+    # 영상 수(같은 영상을 여러 채널에 올린 것은 하나로) — 앱 기록으로만 알 수 있다.
+    for job in db.list_jobs(500):
+        done = [t for t in job["targets"] if t["status"] == "success"]
+        if not done:
+            continue
+        when = max((t.get("updated_at") or job["created_at"]) for t in done)
+        bucket = buckets.get(_week_start(when))
+        if bucket is not None:
+            bucket["videos"] = bucket.get("videos", 0) + 1
+
+    rows = []
+    for start in sorted(buckets, reverse=True):
+        b = buckets[start]
+        b["videos"] = b.get("videos", 0)
+        b["label"] = datetime.fromtimestamp(start, KST).strftime("%m/%d")
+        b["by_platform"] = sorted(b["by_platform"].items(), key=lambda kv: -kv[1])
+        rows.append(b)
+    return {"weeks": rows, "fetched_at": db.uploads_fetched_at() or None}

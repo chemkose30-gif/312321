@@ -203,6 +203,19 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .stat-row .nm{min-width:130px;font-size:13px;font-weight:600}
 .stat-row .bar{flex:1;min-width:90px;margin:0}
 .stat-row .val{min-width:78px;text-align:right;font-size:12.5px}
+/* 주간 업로드 — 앱으로 올린 것과 직접 올린 것을 한 줄에 나눠 쌓는다.
+   색은 두 가지뿐이고 색맹 구분(ΔE 26.8)까지 확인한 조합이다. */
+.wk{--app:#3987e5;--manual:#d95926}
+.wk .bar{display:flex;background:var(--bg4)}
+.wk .bar>i{transition:width .25s ease}
+.wk .bar>i.app{background:var(--app)}
+.wk .bar>i.manual{background:var(--manual);margin-left:2px}
+.wk .bar>i:only-child{margin-left:0}
+.wk .nm{min-width:94px}
+.wk .now .nm{color:var(--text)}
+.wk-legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--text2);margin-bottom:10px}
+.wk-legend b{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.wk-plat{font-size:11.5px;color:var(--text3)}
 .en-box{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
 .en-box input,.en-box textarea{margin-top:9px}
 .set-titles{border:1px solid var(--border);border-radius:var(--radius);padding:13px 14px;margin-top:14px;background:var(--bg2)}
@@ -606,6 +619,13 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
     <div id="statMsg"></div>
 
     <div class="card">
+      <h2>주간 업로드</h2>
+      <p class="sub">한 주에 몇 개를 올렸는지입니다. 월요일 시작, 한국 시간 기준.
+        각 채널에 실제로 올라가 있는 것을 세므로 <b>유튜브에서 직접 올린 것도 함께</b> 잡힙니다.</p>
+      <div id="statWeekly"></div>
+    </div>
+
+    <div class="card">
       <h2>플랫폼별</h2>
       <div id="statByPlatform"></div>
     </div>
@@ -751,7 +771,7 @@ function route(){
   PAGES.forEach(p => $('#page-'+p).classList.toggle('hidden', p !== active));
   $$('[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === active));
   if(active === 'history') loadHistory();
-  if(active === 'stats') loadStats();
+  if(active === "stats"){ loadStats(); loadWeekly(); }
   if(active === 'home') renderHome();
   window.scrollTo({top:0});
 }
@@ -2420,6 +2440,44 @@ function statRows(rows, label){
     </div>`).join('')}</div>`;
 }
 
+const PLAT_KO = {youtube:'YouTube', instagram:'Instagram', facebook:'Facebook', tiktok:'TikTok'};
+
+function weeklyRows(d){
+  const rows = d.weeks || [];
+  if(!rows.some(w => w.posts || w.videos))
+    return '<div class="acc-empty">아직 올린 영상이 없습니다. '
+         + '<b>지금 받아오기</b>를 누르면 각 채널에서 목록을 받아옵니다.</div>';
+  const max = Math.max(...rows.map(w => w.posts), 1);
+  const legend = `<div class="wk-legend">
+      <span><b style="background:#3987e5"></b>앱으로 올림</span>
+      <span><b style="background:#d95926"></b>직접 올림</span>
+      <span class="wk-plat">· 막대 길이 = 게시 건수</span>
+    </div>`;
+  return legend + `<div class="meta-list wk">${rows.map((w, i) => {
+    const plat = (w.by_platform || []).map(([k, n]) => `${PLAT_KO[k] || k} ${n}`).join(' · ');
+    const title = `${w.label} 주 — 앱 ${w.app_posts}건, 직접 ${w.manual_posts}건`;
+    return `<div class="stat-row${i === 0 ? ' now' : ''}" title="${esc(title)}">
+      <div class="nm">${esc(w.label)}${i === 0 ? ' <span class="small muted">이번 주</span>' : ''}</div>
+      <div class="bar">
+        ${w.app_posts ? `<i class="app" style="width:${w.app_posts / max * 100}%"></i>` : ''}
+        ${w.manual_posts ? `<i class="manual" style="width:${w.manual_posts / max * 100}%"></i>` : ''}
+      </div>
+      <div class="val"><b>${fmtNum(w.posts)}</b> 건</div>
+      <div class="val small muted">${w.videos ? `영상 ${w.videos}개` : '-'}</div>
+      <div class="val wk-plat" style="min-width:150px">${esc(plat)}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+async function loadWeekly(){
+  const box = $('#statWeekly');
+  if(!box) return;
+  try{
+    const d = await fetch('/api/stats/weekly').then(r => r.json());
+    box.innerHTML = weeklyRows(d);
+  }catch(_){ box.innerHTML = '<div class="acc-empty">주간 집계를 불러오지 못했습니다.</div>'; }
+}
+
 async function loadStats(){
   $$('#statDays .viewtab').forEach(b => {
     b.classList.toggle('active', String(state.statDays) === b.dataset.days);
@@ -2468,11 +2526,15 @@ if($('#btnStatRefresh')) $('#btnStatRefresh').onclick = async () => {
   b.disabled = true; b.textContent = '받아오는 중...';
   const res = await fetch('/api/stats/refresh', {method:'POST'});
   const d = await res.json().catch(() => ({}));
+  const up = d.uploads || {};
   flash(res.ok ? 'ok' : 'err', res.ok
     ? `영상 ${d.targets}개 중 ${d.saved}개의 지표를 받았습니다.`
+      + (up.saved ? ` · 채널에 올라가 있는 영상 ${up.saved}개를 확인했습니다.` : '')
+      + ((up.failed || []).length ? ` (못 읽은 채널: ${up.failed.join(', ')})` : '')
     : '받아오지 못했습니다.');
   b.disabled = false; b.textContent = '지금 받아오기';
   loadStats();
+  loadWeekly();
 };
 
 /* ── 기록 ── */

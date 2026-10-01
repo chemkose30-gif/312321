@@ -103,8 +103,20 @@ CREATE TABLE IF NOT EXISTS stats (
     PRIMARY KEY (target_id, day)
 );
 
+-- 각 채널에 실제로 올라가 있는 영상 목록. 앱으로 올린 것뿐 아니라
+-- 사용자가 유튜브에서 직접 올린 것까지 들어온다(주간 집계에 쓴다).
+CREATE TABLE IF NOT EXISTS channel_uploads (
+    account_id   TEXT NOT NULL,
+    remote_id    TEXT NOT NULL,
+    published_at REAL NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    fetched_at   REAL NOT NULL,
+    PRIMARY KEY (account_id, remote_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_targets_job ON job_targets(job_id);
 CREATE INDEX IF NOT EXISTS idx_stats_day ON stats(day);
+CREATE INDEX IF NOT EXISTS idx_uploads_at ON channel_uploads(published_at);
 """
 
 
@@ -477,6 +489,49 @@ def published_targets(since: float | None = None) -> list[dict]:
         sql += " AND j.created_at >= ?"
         params = (since,)
     return [dict(r) for r in _rows(sql + " ORDER BY j.created_at DESC", params)]
+
+
+def save_channel_uploads(account_id: str, rows: list[dict]) -> int:
+    """채널에서 받아온 영상 목록을 저장한다(이미 있으면 갱신)."""
+    now = time.time()
+    saved = 0
+    for row in rows:
+        remote_id = (row.get("remote_id") or "").strip()
+        if not remote_id:
+            continue
+        _exec(
+            """INSERT INTO channel_uploads (account_id, remote_id, published_at, title, fetched_at)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(account_id, remote_id) DO UPDATE SET
+                 published_at=excluded.published_at, title=excluded.title,
+                 fetched_at=excluded.fetched_at""",
+            (account_id, remote_id, float(row.get("published_at") or 0),
+             (row.get("title") or "")[:300], now),
+        )
+        saved += 1
+    return saved
+
+
+def app_remote_ids() -> set[str]:
+    """앱이 올려서 id 를 받아둔 것들 — 직접 올린 것과 구분하는 데 쓴다."""
+    rows = _rows(
+        "SELECT DISTINCT remote_id FROM job_targets"
+        " WHERE status='success' AND remote_id IS NOT NULL AND remote_id <> ''"
+    )
+    return {r["remote_id"] for r in rows}
+
+
+def channel_uploads_since(since: float) -> list[dict]:
+    rows = _rows(
+        "SELECT * FROM channel_uploads WHERE published_at >= ? ORDER BY published_at DESC",
+        (since,),
+    )
+    return [dict(r) for r in rows]
+
+
+def uploads_fetched_at() -> float:
+    rows = _rows("SELECT MAX(fetched_at) AS at FROM channel_uploads")
+    return (rows[0]["at"] or 0) if rows else 0
 
 
 def latest_stats() -> dict[str, dict]:
