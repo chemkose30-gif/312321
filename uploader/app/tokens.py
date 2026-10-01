@@ -32,6 +32,11 @@ def status(account: dict) -> dict:
     if not account.get("linked"):
         return _row("none", "로그인 연결 필요", expires_at, account)
 
+    # 갱신이 거절당한 적이 있으면 '자동 갱신' 으로 보여서는 안 된다.
+    # (유튜브는 액세스 토큰 만료만 봐서는 연결이 끊긴 걸 알 수 없다.)
+    if account.get("token_error"):
+        return _row("expired", "다시 로그인 필요", expires_at, account)
+
     if _auto_renewing(account):
         return _row("ok", "자동 갱신", expires_at, account)
 
@@ -48,6 +53,7 @@ def _row(state: str, text: str, expires_at: float, account: dict) -> dict:
     return {
         "state": state,
         "text": text,
+        "error": account.get("token_error") or "",
         "auto": _auto_renewing(account),
         "expires_at": expires_at or None,
         "can_refresh": _refresher(account) is not None,

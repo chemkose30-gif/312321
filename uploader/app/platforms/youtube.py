@@ -97,13 +97,31 @@ async def _access_token(account: dict) -> str:
             },
         )
     if res.status_code >= 400:
-        raise PublishError(f"YouTube 토큰 갱신 실패 — 계정을 다시 연결하세요: {res.text}")
+        # 구글이 갱신을 거절하면 연결이 끊긴 것이다. 화면에서 '자동 갱신' 으로
+        # 멀쩡해 보이지 않도록 사유를 남겨 둔다.
+        message = _refresh_error(res)
+        db.set_token_error(account["id"], message)
+        raise PublishError(f"YouTube {message}")
     token = res.json()
+    db.set_token_error(account["id"], None)
     db.update_account_tokens(
         account["id"], token["access_token"], token.get("refresh_token"),
         time.time() + int(token.get("expires_in", 3600)),
     )
     return token["access_token"]
+
+
+def _refresh_error(res) -> str:
+    """구글이 갱신을 거절한 이유를 사람 말로."""
+    code = ""
+    try:
+        code = (res.json() or {}).get("error") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    if code == "invalid_grant":
+        return ("연결이 끊겼습니다 — 다시 로그인하세요."
+                " (구글 OAuth 동의 화면이 '테스트' 상태면 7일마다 이렇게 끊깁니다.)")
+    return f"토큰 갱신 실패 — 계정을 다시 연결하세요: {res.text[:200]}"
 
 
 async def publish(account: dict, job: dict, options: dict, progress: Progress) -> PublishResult:

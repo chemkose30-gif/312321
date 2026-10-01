@@ -1909,8 +1909,9 @@ function tokenBadge(a, platform){
       : badge;
   }
   const cls = t.state === 'expired' ? 'need' : 'need';
-  const label = t.state === 'expired' ? '로그인 만료' : `만료 임박 · ${t.text}`;
-  return `<span class="tagbadge ${cls}" title="${esc(t.expires_at ? fmtKst(t.expires_at) + ' 만료' : '')}">${esc(label)}</span>`
+  const label = t.state === 'expired' ? (t.text || '로그인 만료') : `만료 임박 · ${t.text}`;
+  const tip = t.error || (t.expires_at ? fmtKst(t.expires_at) + ' 만료' : '');
+  return `<span class="tagbadge ${cls}" title="${esc(tip)}">${esc(label)}</span>`
     + (t.can_refresh
         ? `<button class="btn sm" data-refreshtok="${a.id}">지금 갱신</button>`
         : `<a class="btn sm" href="/api/oauth/${platform}/start">다시 로그인</a>`);

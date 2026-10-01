@@ -140,6 +140,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "category" not in columns:
         conn.execute("ALTER TABLE accounts ADD COLUMN category TEXT")
 
+    # 토큰 갱신이 실패하면 그 사유를 남긴다. 유튜브처럼 '자동 갱신' 으로 보이는
+    # 계정도 실제로는 연결이 끊겨 있을 수 있어서, 그걸 화면에 띄우려면 필요하다.
+    if "token_error" not in columns:
+        conn.execute("ALTER TABLE accounts ADD COLUMN token_error TEXT")
+    if "token_error_at" not in columns:
+        conn.execute("ALTER TABLE accounts ADD COLUMN token_error_at REAL")
+
     set_columns = {row["name"] for row in conn.execute("PRAGMA table_info(channel_sets)")}
     if "category" not in set_columns:
         conn.execute("ALTER TABLE channel_sets ADD COLUMN category TEXT")
@@ -203,6 +210,8 @@ def _account_dict(row: sqlite3.Row, *, with_tokens: bool = False) -> dict[str, A
         "linked": bool(row["access_token"]),
         # 값은 내보내지 않고, 갱신용 토큰을 가지고 있는지만 알려준다
         "has_refresh": bool(row["refresh_token"]),
+        "token_error": _col(row, "token_error"),
+        "token_error_at": _col(row, "token_error_at"),
         "manual": bool(json.loads(row["meta"] or "{}").get("manual")),
         # 인스타는 연결 방식이 두 가지라 계정마다 다를 수 있다
         "auth": json.loads(row["meta"] or "{}").get("auth") or "",
@@ -510,6 +519,22 @@ def save_channel_uploads(account_id: str, rows: list[dict]) -> int:
         )
         saved += 1
     return saved
+
+
+def _col(row, name):
+    """예전 DB 에 없는 컬럼이면 None."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
+def set_token_error(account_id: str, message: str | None) -> None:
+    """토큰 갱신 실패 사유를 남긴다(성공하면 None 으로 지운다)."""
+    _exec(
+        "UPDATE accounts SET token_error=?, token_error_at=? WHERE id=?",
+        ((message or "")[:400] or None, time.time() if message else None, account_id),
+    )
 
 
 def app_remote_ids() -> set[str]:
