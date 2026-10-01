@@ -163,7 +163,89 @@ def _safe_name(name: str) -> str:
 class YoutubeRequest(BaseModel):
     url: str
     format: str = "mp4"  # mp4 | mp3
-    quality: str = "best"  # best | 1080 | 720 | 480 | 360
+    quality: str = "best"  # best | 영상 높이(px) 예: 2160, 1080, 720
+
+
+QUALITY_NAMES = {4320: "8K", 2160: "4K", 1440: "QHD", 1080: "Full HD", 720: "HD"}
+
+
+def _video_selector(height: str) -> str:
+    """같은 화질이면 어디서나 재생되는 H.264(avc)를 우선 선택."""
+    h = "" if height == "best" else f"[height<={int(height)}]"
+    return (f"bv*{h}[vcodec^=avc]+ba[ext=m4a]/bv*{h}[ext=mp4]+ba[ext=m4a]"
+            f"/bv*{h}+ba/b{h}/b")
+
+
+def _size(f: dict) -> int:
+    return int(f.get("filesize") or f.get("filesize_approx") or 0)
+
+
+def _summarize_formats(info: dict) -> dict:
+    """yt-dlp 영상 정보에서 화질별 선택지(예상 용량 포함)를 만든다."""
+    formats = info.get("formats") or []
+    audios = [f for f in formats
+              if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    m4a = [f for f in audios if f.get("ext") == "m4a"] or audios
+    best_audio = max(m4a, key=lambda f: f.get("abr") or 0, default=None)
+    audio_size = _size(best_audio) if best_audio else 0
+
+    by_height: dict[int, list[dict]] = {}
+    for f in formats:
+        if f.get("height") and f.get("vcodec") not in (None, "none"):
+            by_height.setdefault(int(f["height"]), []).append(f)
+
+    qualities = []
+    for height, fs in sorted(by_height.items(), reverse=True):
+        # 다운로드 시 실제로 고를 포맷과 같은 우선순위로 대표 포맷 선택
+        for pick in (lambda f: f["vcodec"].startswith("avc"),
+                     lambda f: f.get("ext") == "mp4",
+                     lambda f: True):
+            cands = [f for f in fs if pick(f)]
+            if cands:
+                break
+        chosen = max(cands, key=lambda f: f.get("tbr") or 0)
+        size = _size(chosen)
+        if size and chosen.get("acodec") in (None, "none"):
+            size += audio_size
+        short_side = min(height, int(chosen.get("width") or height))
+        fps = int(max((f.get("fps") or 0) for f in fs))
+        label = f"{short_side}p" + (str(fps) if fps > 30 else "")
+        qualities.append({
+            "height": height,
+            "label": label,
+            "name": QUALITY_NAMES.get(short_side, ""),
+            "size": size,
+            # H.264가 아니면 일부 기기(아이폰 기본 앱, 구형 PC 등)에서 재생이 안 될 수 있음
+            "compatible": chosen["vcodec"].startswith("avc"),
+        })
+
+    duration = info.get("duration") or 0
+    return {
+        "title": info.get("title") or "",
+        "uploader": info.get("uploader") or "",
+        "thumbnail": info.get("thumbnail") or "",
+        "duration": duration,
+        "qualities": qualities,
+        "mp3_size": int(duration * 192_000 / 8),
+    }
+
+
+@app.get("/api/youtube/info")
+def youtube_info(url: str):
+    import yt_dlp
+
+    if not re.match(r"^https?://", url.strip()):
+        raise HTTPException(400, "올바른 URL을 입력하세요")
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url.strip(), download=False)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, "영상 정보를 가져오지 못했습니다: "
+                            + str(e).replace("ERROR: ", "")[:300])
+    if info.get("_type") == "playlist":
+        raise HTTPException(400, "재생목록이 아닌 영상 하나의 링크를 넣어주세요")
+    return _summarize_formats(info)
 
 
 def _run_youtube(job_id: str, job_dir: Path, req: YoutubeRequest):
@@ -193,10 +275,7 @@ def _run_youtube(job_id: str, job_dir: Path, req: YoutubeRequest):
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
         ]
     else:
-        h = "" if req.quality == "best" else f"[height<={int(req.quality)}]"
-        opts["format"] = (
-            f"bv*{h}[ext=mp4]+ba[ext=m4a]/b{h}[ext=mp4]/bv*{h}+ba/b{h}/b"
-        )
+        opts["format"] = _video_selector(req.quality)
         opts["merge_output_format"] = "mp4"
         opts["postprocessors"] = [{"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}]
 

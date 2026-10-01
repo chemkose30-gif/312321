@@ -28,6 +28,19 @@
   .bar > div { height:100%; width:0; background:var(--accent); transition:width .3s; }
   .msg { font-size:14px; color:var(--muted); margin-top:8px; word-break:break-all; }
   .msg.err { color:#ff8080; } .msg.ok { color:var(--ok); }
+  .urlrow { display:flex; gap:8px; } .urlrow input { flex:1; }
+  .urlrow button { padding:0 16px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:14px; cursor:pointer; white-space:nowrap; }
+  .urlrow button:disabled { opacity:.5; cursor:not-allowed; }
+  .video { display:flex; gap:12px; margin-top:16px; align-items:center; }
+  .video img { width:120px; aspect-ratio:16/9; object-fit:cover; border-radius:8px; background:var(--bg); flex-shrink:0; }
+  .video .t { font-size:15px; font-weight:600; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .video .s { font-size:13px; color:var(--muted); margin-top:4px; }
+  .opts { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+  .opt { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:15px; cursor:pointer; text-align:left; }
+  .opt.sel { border-color:var(--accent); background:rgba(255,77,77,.08); }
+  .opt b { min-width:72px; } .opt .n { color:var(--muted); font-size:13px; flex:1; }
+  .opt .sz { color:var(--muted); font-size:13px; }
+  .opt .warn { color:#f0b45a; font-size:12px; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -42,21 +55,16 @@
   <div class="card">
     <section class="panel active" id="yt">
       <label for="url">유튜브 링크</label>
-      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
-      <div class="row">
-        <div>
-          <label for="fmt">포맷</label>
-          <select id="fmt"><option value="mp4">MP4 (영상)</option><option value="mp3">MP3 (음원)</option></select>
-        </div>
-        <div>
-          <label for="quality">화질</label>
-          <select id="quality">
-            <option value="best">최고 화질</option><option value="1080">1080p</option>
-            <option value="720">720p</option><option value="480">480p</option><option value="360">360p</option>
-          </select>
-        </div>
+      <div class="urlrow">
+        <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
+        <button id="infoGo">화질 보기</button>
       </div>
-      <button class="go" id="ytGo">변환 시작</button>
+      <div id="ytInfo" hidden>
+        <div class="video"><img id="thumb" alt=""><div><div class="t" id="vTitle"></div><div class="s" id="vSub"></div></div></div>
+        <label>화질 선택</label>
+        <div class="opts" id="opts"></div>
+      </div>
+      <button class="go" id="ytGo" disabled>다운로드</button>
     </section>
 
     <section class="panel" id="conv">
@@ -98,7 +106,65 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === t.dataset.tab));
   $('status').style.display = 'none';
 });
-$('fmt').onchange = () => { $('quality').disabled = $('fmt').value === 'mp3'; };
+let ytChoice = null, ytInfoUrl = '';
+
+const fmtSize = b => !b ? '' : b >= 1073741824 ? `약 ${(b / 1073741824).toFixed(1)} GB` : `약 ${Math.max(1, Math.round(b / 1048576))} MB`;
+const fmtTime = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${x}` : `${m}:${x}`; };
+
+function renderOpts(info) {
+  const opts = info.qualities.map(q => ({format: 'mp4', quality: String(q.height), main: q.label,
+    sub: q.name, size: q.size,
+    warn: q.compatible ? '' : '일부 기기 재생 불가'}));
+  opts.push({format: 'mp3', quality: 'best', main: 'MP3', sub: '음원만 (192kbps)', size: info.mp3_size, warn: ''});
+  $('opts').innerHTML = '';
+  opts.forEach((o, i) => {
+    const b = document.createElement('button');
+    b.className = 'opt';
+    b.innerHTML = `<b></b><span class="n"></span><span class="warn"></span><span class="sz"></span>`;
+    b.children[0].textContent = o.main;
+    b.children[1].textContent = o.sub;
+    b.children[2].textContent = o.warn;
+    b.children[3].textContent = fmtSize(o.size);
+    b.onclick = () => {
+      if (busy) return;
+      document.querySelectorAll('.opt').forEach(x => x.classList.toggle('sel', x === b));
+      ytChoice = o; setBusy(busy);
+    };
+    $('opts').appendChild(b);
+    // 기본 선택: 어디서나 재생되는 화질 중 가장 높은 것
+    if (!ytChoice && o.format === 'mp4' && !o.warn) b.click();
+  });
+  if (!ytChoice) $('opts').firstChild.click();
+}
+
+async function loadInfo() {
+  const url = $('url').value.trim();
+  if (!url || busy) return;
+  if (url === ytInfoUrl && ytChoice) return;
+  ytChoice = null; ytInfoUrl = url; $('ytInfo').hidden = true; setBusy(busy);
+  $('infoGo').disabled = true;
+  setStatus(0, '영상 정보를 불러오는 중...');
+  try {
+    const res = await fetch('/api/youtube/info?url=' + encodeURIComponent(url));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || '영상 정보를 불러오지 못했습니다');
+    if ($('url').value.trim() !== url) return;  // 그 사이 링크가 바뀜
+    $('thumb').src = data.thumbnail || ''; $('thumb').hidden = !data.thumbnail;
+    $('vTitle').textContent = data.title;
+    $('vSub').textContent = [data.uploader, data.duration ? fmtTime(data.duration) : ''].filter(Boolean).join(' · ');
+    renderOpts(data);
+    $('ytInfo').hidden = false;
+    $('status').style.display = 'none';
+  } catch (e) {
+    ytInfoUrl = '';
+    setStatus(0, e.message, 'err');
+  } finally { $('infoGo').disabled = false; }
+}
+$('infoGo').onclick = loadInfo;
+$('url').addEventListener('paste', () => setTimeout(loadInfo, 0));
+$('url').onkeydown = e => { if (e.key === 'Enter') loadInfo(); };
+$('url').oninput = () => { if ($('url').value.trim() !== ytInfoUrl) { ytChoice = null; $('ytInfo').hidden = true; setBusy(busy); } };
 
 function setStatus(pct, text, cls = '') {
   $('status').style.display = 'block';
@@ -108,7 +174,7 @@ function setStatus(pct, text, cls = '') {
 }
 function setBusy(b) {
   busy = b;
-  $('ytGo').disabled = b;
+  $('ytGo').disabled = b || !ytChoice;
   $('convGo').disabled = b || !selectedFile;
 }
 
@@ -144,17 +210,15 @@ async function jsonOrThrow(res) {
 }
 
 $('ytGo').onclick = () => {
-  const url = $('url').value.trim();
-  if (!url) return setStatus(0, '유튜브 링크를 입력하세요', 'err');
+  if (!ytChoice) return;
   run(async () => {
     setStatus(0, '요청 중...');
     return jsonOrThrow(await fetch('/api/youtube', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url, format: $('fmt').value, quality: $('quality').value}),
+      body: JSON.stringify({url: ytInfoUrl, format: ytChoice.format, quality: ytChoice.quality}),
     }));
   });
 };
-$('url').onkeydown = e => { if (e.key === 'Enter' && !busy) $('ytGo').click(); };
 
 function pickFile(f) {
   if (!f) return;
