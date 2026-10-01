@@ -32,6 +32,8 @@ MAX_CONCURRENT = max(1, int(os.environ.get("MAX_CONCURRENT", "2")))
 # 유튜브 봇 차단 대응: 로그인 쿠키 파일 / 프록시 (README 참고)
 COOKIES_FILE = Path(os.environ.get("YTDLP_COOKIES") or BASE_DIR / "cookies" / "cookies.txt")
 YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "")
+# PO 토큰 제공 서버 (쿠키 없이 봇 차단을 줄이는 용도, docker-compose에 포함)
+YTDLP_POT_URL = os.environ.get("YTDLP_POT_URL", "")
 
 # 서버 재시작 시 이전에 남은 작업 폴더 정리
 for _old in WORK_DIR.iterdir():
@@ -169,6 +171,8 @@ def _ytdlp_opts(**extra) -> dict:
         opts["cookiefile"] = str(COOKIES_FILE)
     if YTDLP_PROXY:
         opts["proxy"] = YTDLP_PROXY
+    if YTDLP_POT_URL:
+        opts["extractor_args"] = {"youtubepot-bgutilhttp": {"base_url": [YTDLP_POT_URL]}}
     return opts
 
 
@@ -179,7 +183,7 @@ def _ytdlp_error(e: Exception) -> str:
             return ("유튜브가 서버를 봇으로 차단했어요. 등록된 쿠키가 만료됐을 수 있으니 "
                     "화면 아래 '유튜브 쿠키 설정'에서 새 쿠키를 등록해 주세요.")
         return ("유튜브가 서버를 봇으로 차단했어요. 화면 아래 '유튜브 쿠키 설정'에서 "
-                "쿠키를 등록하면 해결돼요.")
+                "쿠키를 등록하거나, 관리자가 프록시(YTDLP_PROXY)를 설정해야 해요.")
     return msg[:300]
 
 

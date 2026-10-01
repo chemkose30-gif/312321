@@ -3,3 +3,4 @@ uvicorn>=0.29
 python-multipart>=0.0.9
 yt-dlp[default]>=2025.11.12
 imageio-ffmpeg>=0.4.9
+bgutil-ytdlp-pot-provider>=1.0
