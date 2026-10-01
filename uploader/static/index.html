@@ -2458,8 +2458,16 @@ const PLAT_KO = {youtube:'YouTube', instagram:'Instagram', facebook:'Facebook', 
 function weeklyRows(d){
   const rows = d.weeks || [];
   const plats = d.platforms || [];
+  const last = d.last_fetch || {};
+  // 채널에서 목록을 못 받아왔으면 그 이유를 그대로 보여준다(로그만 보고는 알 수 없다).
+  const problem = (last.failed || []).length
+    ? `<div class="err" style="margin-bottom:12px">
+        <b>목록을 못 받아온 채널이 ${last.failed.length}개 있습니다.</b> 그 채널은 아래 숫자에서 빠져 있습니다.
+        <ul style="margin:6px 0 0 18px">${last.failed.map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      </div>`
+    : '';
   if(!rows.some(w => w.posts || w.videos))
-    return '<div class="acc-empty">아직 올린 영상이 없습니다. '
+    return problem + '<div class="acc-empty">아직 올린 영상이 없습니다. '
          + '<b>지금 받아오기</b>를 누르면 각 채널에서 목록을 받아옵니다.</div>';
   const max = Math.max(...rows.map(w => w.posts), 1);
   const legend = `<div class="wk-legend">
@@ -2484,7 +2492,8 @@ function weeklyRows(d){
       ${plats.map(p => `<td class="${bp[p] ? '' : 'muted'}">${bp[p] || '·'}</td>`).join('')}
     </tr>`;
   }).join('');
-  return legend + `<div class="wk-wrap wk"><table class="wk-table">${head}${body}</table></div>`;
+  return problem + legend
+       + `<div class="wk-wrap wk"><table class="wk-table">${head}${body}</table></div>`;
 }
 
 async function loadWeekly(){
@@ -2548,7 +2557,7 @@ if($('#btnStatRefresh')) $('#btnStatRefresh').onclick = async () => {
   flash(res.ok ? 'ok' : 'err', res.ok
     ? `영상 ${d.targets}개 중 ${d.saved}개의 지표를 받았습니다.`
       + (up.saved ? ` · 채널에 올라가 있는 영상 ${up.saved}개를 확인했습니다.` : '')
-      + ((up.failed || []).length ? ` (못 읽은 채널: ${up.failed.join(', ')})` : '')
+      + ((up.failed || []).length ? ` · 못 읽은 채널 ${up.failed.length}개 — 아래 빨간 칸을 보세요.` : '')
     : '받아오지 못했습니다.');
   b.disabled = false; b.textContent = '지금 받아오기';
   loadStats();

@@ -4,6 +4,7 @@
 하루에 한 줄씩 쌓아 추이를 볼 수 있게 한다.
 """
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -320,6 +321,25 @@ UPLOAD_PAGE = 50
 UPLOAD_MAX_PAGES = 12       # 넉넉히 600개까지
 
 
+def _api_error(res, where: str) -> str:
+    """플랫폼이 돌려준 거절 사유를 사람이 읽을 수 있게 바꾼다."""
+    detail = ""
+    try:
+        body = res.json() or {}
+        err = body.get("error") or {}
+        detail = err.get("message") or (err if isinstance(err, str) else "")
+    except Exception:  # noqa: BLE001
+        detail = ""
+    if not detail:
+        detail = (res.text or "")[:200]
+    hint = {
+        401: " — 로그인이 만료됐습니다. 계정 관리에서 다시 로그인하세요.",
+        403: " — 권한이 없거나 하루 사용량을 넘겼습니다. 다시 로그인하면 권한이 추가됩니다.",
+        404: " — 채널을 찾을 수 없습니다.",
+    }.get(res.status_code, "")
+    return f"{where} 실패 ({res.status_code}){hint} {detail}".strip()
+
+
 def _iso_to_epoch(value: str) -> float:
     """2026-09-28T12:34:56Z → epoch 초."""
     if not value:
@@ -342,15 +362,15 @@ async def youtube_uploads(account: dict, since: float) -> list[dict]:
             headers=headers,
         )
         if res.status_code >= 400:
-            print(f"[uploads] 유튜브 채널 조회 실패 {res.status_code} {res.text[:200]}")
-            return out
+            raise RuntimeError(_api_error(res, "유튜브 채널 조회"))
         items = (res.json() or {}).get("items") or []
         if not items:
-            return out
+            raise RuntimeError("유튜브가 이 계정의 채널을 알려주지 않았습니다"
+                               " — 계정 관리에서 다시 로그인해 보세요.")
         playlist = (((items[0].get("contentDetails") or {})
                      .get("relatedPlaylists") or {}).get("uploads"))
         if not playlist:
-            return out
+            raise RuntimeError("이 채널에는 업로드 재생목록이 없습니다.")
 
         page = None
         for _ in range(UPLOAD_MAX_PAGES):
@@ -360,7 +380,9 @@ async def youtube_uploads(account: dict, since: float) -> list[dict]:
                 params["pageToken"] = page
             res = await client.get(f"{youtube.API}/playlistItems", params=params, headers=headers)
             if res.status_code >= 400:
-                print(f"[uploads] 유튜브 목록 실패 {res.status_code} {res.text[:200]}")
+                if not out:      # 한 개도 못 받았으면 이유를 알려야 한다
+                    raise RuntimeError(_api_error(res, "유튜브 영상 목록"))
+                print(f"[uploads] 유튜브 목록 중단 {res.status_code} {res.text[:200]}")
                 break
             body = res.json() or {}
             oldest = None
@@ -399,7 +421,9 @@ async def instagram_uploads(account: dict, since: float) -> list[dict]:
         for _ in range(UPLOAD_MAX_PAGES):
             res = await client.get(url, params=params)
             if res.status_code >= 400:
-                print(f"[uploads] 인스타 목록 실패 {res.status_code} {res.text[:200]}")
+                if not out:
+                    raise RuntimeError(_api_error(res, "인스타 영상 목록"))
+                print(f"[uploads] 인스타 목록 중단 {res.status_code} {res.text[:200]}")
                 break
             body = res.json() or {}
             oldest = None
@@ -427,7 +451,9 @@ async def facebook_uploads(account: dict, since: float) -> list[dict]:
         for _ in range(UPLOAD_MAX_PAGES):
             res = await client.get(url, params=params)
             if res.status_code >= 400:
-                print(f"[uploads] 페북 목록 실패 {res.status_code} {res.text[:200]}")
+                if not out:
+                    raise RuntimeError(_api_error(res, "페북 영상 목록"))
+                print(f"[uploads] 페북 목록 중단 {res.status_code} {res.text[:200]}")
                 break
             body = res.json() or {}
             oldest = None
@@ -466,16 +492,29 @@ async def collect_uploads(weeks: int = WEEKLY_WEEKS) -> dict:
         try:
             rows = await lister(account, since)
         except Exception as exc:  # noqa: BLE001
-            failed.append(f"{account.get('name')}: {type(exc).__name__}")
-            print(f"[uploads] {account['platform']} {account.get('name')} 실패:"
-                  f" {type(exc).__name__}: {exc}")
+            message = str(exc) or type(exc).__name__
+            failed.append(f"{account.get('name')} — {message}"[:300])
+            print(f"[uploads] {account['platform']} {account.get('name')} 실패: {message}")
             return 0
         return db.save_channel_uploads(account["id"], rows)
 
     todo = [a for a in db.list_accounts(with_tokens=True) if a.get("access_token")]
     saved = sum(await asyncio.gather(*(one_account(a) for a in todo)))
     print(f"[uploads] {saved}개 영상을 기록했습니다.")
+    # 버튼을 누르지 않아도 화면에서 볼 수 있게 마지막 결과를 남긴다.
+    db.set_setting(UPLOAD_RESULT_KEY, json.dumps(
+        {"at": time.time(), "saved": saved, "failed": failed}, ensure_ascii=False))
     return {"saved": saved, "failed": failed}
+
+
+UPLOAD_RESULT_KEY = "uploads_last_result"
+
+
+def last_upload_result() -> dict:
+    try:
+        return json.loads(db.get_setting(UPLOAD_RESULT_KEY) or "{}")
+    except ValueError:
+        return {}
 
 
 def _week_start(ts: float) -> float:
@@ -557,4 +596,5 @@ def weekly(weeks: int = WEEKLY_WEEKS) -> dict:
         b["label"] = datetime.fromtimestamp(start, KST).strftime("%m/%d")
         rows.append(b)
     return {"weeks": rows, "platforms": platforms,
-            "fetched_at": db.uploads_fetched_at() or None}
+            "fetched_at": db.uploads_fetched_at() or None,
+            "last_fetch": last_upload_result()}
