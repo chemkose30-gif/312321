@@ -36,6 +36,11 @@ except ImportError:
 
 import psutil
 
+# 콘솔 인코딩(cp949)에서 이모지/한글 출력 오류 방지
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 # ── 설정 ────────────────────────────────────────────────────────────────
 # MT5 설치 경로. 환경변수 MT5_PATH 로도 지정 가능.
 # ATFX MT5 기본 설치 경로가 다르면 아래 값을 바꾸세요.
@@ -69,6 +74,7 @@ def connect(launch: bool = True) -> bool:
         # 파이썬과 분리된 독립 프로세스로 실행 (이 스크립트가 끝나도 MT5는 계속 켜져 있음)
         subprocess.Popen([MT5_PATH], creationflags=subprocess.DETACHED_PROCESS)
         time.sleep(5)
+    mt5.shutdown()  # 이전 연결이 끊긴 상태일 수 있으니 정리 후 재연결
     kwargs = {"timeout": 60_000}
     if os.path.exists(MT5_PATH):
         kwargs["path"] = MT5_PATH
