@@ -2,8 +2,9 @@ services:
   video-converter:
     build: .
     restart: unless-stopped
+    # 외부에는 Caddy(HTTPS)만 열고, 앱 포트는 서버 내부에서만 접근 가능
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file: .env
     volumes:
       - work:/data
@@ -16,5 +17,21 @@ services:
     #           count: all
     #           capabilities: [gpu, video]
 
+  # HTTPS 인증서를 자동으로 발급/갱신하는 웹서버
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?.env에 DOMAIN을 설정하세요}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - video-converter
+
 volumes:
   work:
+  caddy_data:

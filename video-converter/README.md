@@ -10,44 +10,61 @@
 - 공용 비밀번호로 접속을 제한해요.
 - 동시에 처리하는 작업 수를 제한해서, 여러 명이 동시에 올려도 서버가 멈추지 않고 순서대로 처리돼요.
 
-## 서버에 배포하기 (Docker)
+## 서버에 배포하기 (VPS)
 
-추천 서버: CPU 4~8코어 VPS (Vultr, DigitalOcean, AWS Lightsail 등). Docker가 설치되어 있어야 해요.
+### 1. 서버 만들기
+
+- **지역**: 서울(Seoul) — 업로드 속도가 체감 속도를 좌우하므로 가까운 곳이 좋아요
+- **사양**: 4 vCPU / 8GB RAM 정도부터 시작 (자주 쓰면 8 vCPU)
+- **CPU 종류**: 가능하면 "CPU Optimized / Dedicated CPU". 순간 성능만 보장하는 "burstable" 요금제(AWS Lightsail, t 시리즈 등)는 인코딩처럼 오래 CPU를 쓰면 느려지니 피하세요
+- **디스크**: 50GB 이상
+- **OS**: Ubuntu 24.04
+- 클라우드 방화벽을 쓴다면 **22, 80, 443 포트**를 열어주세요
+
+### 2. 설치 (명령어 3줄)
+
+서버에 SSH로 접속한 뒤:
 
 ```bash
-git clone <이 저장소> && cd <저장소>/video-converter
-cp .env.example .env
-nano .env                 # APP_PASSWORD를 꼭 바꾸세요
-docker compose up -d --build
+git clone <이 저장소 주소> app && cd app/video-converter
+git checkout feat/video-converter   # main에 합치기 전이라면
+sudo bash setup.sh
 ```
 
-이제 `http://서버IP:8000` 으로 접속하면 브라우저가 비밀번호를 물어봐요.
-사용자 이름은 아무거나 입력하고, 비밀번호에 `APP_PASSWORD` 값을 넣으면 돼요.
+끝나면 접속 주소와 비밀번호가 출력돼요. 예:
+
+```
+접속 주소 : https://203-0-113-7.sslip.io
+비밀번호  : fwEMoUGHyu5R5zav
+```
+
+도메인을 사지 않아도 `서버IP.sslip.io` 주소로 HTTPS가 자동 적용돼요.
+나중에 도메인을 사면 `.env`의 `DOMAIN`만 바꾸고 `docker compose up -d` 하면 돼요.
 
 ### 설정 (.env)
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `APP_PASSWORD` | (없음) | 접속 비밀번호. 비워두면 누구나 접속 가능하니 서버에서는 꼭 설정 |
+| `APP_PASSWORD` | (자동 생성) | 접속 비밀번호. 퇴사자가 생기면 바꿔주세요 |
+| `DOMAIN` | 서버IP.sslip.io | 접속 주소 |
 | `MAX_UPLOAD_MB` | 4096 | 업로드 최대 크기 (MB) |
-| `MAX_CONCURRENT` | 2 | 동시 처리 작업 수. 4코어면 2, 8코어면 3~4 추천 |
+| `MAX_CONCURRENT` | CPU 코어 수 ÷ 2 | 동시 처리 작업 수 |
 | `DISABLE_GPU` | 0 | 1로 하면 GPU가 있어도 CPU로 인코딩 |
+
+`.env`를 수정한 뒤에는 `docker compose up -d`로 적용하세요.
+
+### 자주 쓰는 명령어
+
+```bash
+docker compose logs -f video-converter   # 로그 보기
+docker compose restart                   # 재시작
+git pull && docker compose up -d --build # 업데이트 (yt-dlp도 최신으로)
+```
 
 ### GPU 서버
 
 NVIDIA 드라이버와 `nvidia-container-toolkit`을 설치하고, `docker-compose.yml`에서 `deploy:` 부분의 주석을 풀어주세요.
 화면 아래에 "GPU 가속 사용 중"이 표시되면 적용된 거예요.
-
-### HTTPS (권장)
-
-비밀번호가 오가므로 도메인이 있다면 HTTPS를 쓰는 걸 권장해요. 가장 쉬운 방법은 [Caddy](https://caddyserver.com/)예요:
-
-```bash
-# 도메인을 서버 IP로 연결한 뒤
-caddy reverse-proxy --from convert.회사도메인.com --to localhost:8000
-```
-
-그리고 방화벽에서 8000 포트는 닫고 80/443만 열어두세요.
 
 ## 내 PC에서 실행하기
 
