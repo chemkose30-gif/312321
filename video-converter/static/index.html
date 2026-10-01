@@ -43,6 +43,9 @@
   .opt .warn { color:#f0b45a; font-size:12px; }
   details.admin { margin-top:16px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 20px; font-size:14px; }
   details.admin summary { cursor:pointer; color:var(--muted); }
+  details.admin h4 { margin:18px 0 4px; font-size:14px; }
+  details.admin h4 small { color:var(--muted); font-weight:normal; }
+  details.admin code { background:var(--bg); padding:1px 5px; border-radius:4px; }
   details.admin ol { padding-left:20px; line-height:1.7; color:var(--muted); font-size:13px; }
   details.admin a { color:var(--text); }
   .adminrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
@@ -94,15 +97,44 @@
 
   <details class="admin" id="admin">
     <summary>⚙️ 유튜브 쿠키 설정 <span id="ckBadge"></span></summary>
-    <p class="msg">유튜브가 서버를 봇으로 차단하면 로그인 쿠키를 등록해야 해요. 쿠키는 몇 주~몇 달 뒤 만료되면 다시 등록하세요.</p>
+    <p class="msg">유튜브가 서버를 봇으로 차단하면("봇 차단" 에러) 유튜브 로그인 쿠키를 등록해야 해요.
+      처음 한 번은 준비(1~2단계)가 필요하고, 그다음부터는 쿠키가 만료될 때마다 3~4단계만 하면 돼요.</p>
+
+    <h4>1단계 · 보조 구글 계정 만들기 <small>(처음 한 번)</small></h4>
     <ol>
-      <li><b>업무용 보조 구글 계정</b>을 쓰세요 (개인 계정은 정지될 위험이 있어요)</li>
-      <li>크롬에 <a href="https://chromewebstore.google.com/search/Get%20cookies.txt%20LOCALLY" target="_blank" rel="noopener">Get cookies.txt LOCALLY</a> 확장 프로그램 설치 → 확장 프로그램 관리에서 <b>시크릿 모드 허용</b></li>
-      <li><b>시크릿 창</b>을 열고 youtube.com에서 보조 계정으로 로그인</li>
-      <li>같은 탭에서 확장 프로그램 아이콘 → <b>Export</b>로 cookies.txt 저장</li>
-      <li><b>시크릿 창을 바로 닫기</b> (창을 계속 쓰면 쿠키가 바뀌어 무효가 돼요)</li>
-      <li>아래에서 저장한 파일 등록</li>
+      <li><a href="https://accounts.google.com/signup" target="_blank" rel="noopener">accounts.google.com/signup</a>에서 유튜브 다운로드용 새 지메일을 만드세요.</li>
+      <li>⚠️ <b>개인 계정은 쓰지 마세요.</b> 쿠키 파일은 "로그인된 상태" 그 자체라서 서버에 올리면 그 계정에 접근할 수 있게 되고, 다운로드가 많으면 계정이 제한될 수도 있어요.</li>
+      <li>다 만들었으면 로그아웃하세요.</li>
     </ol>
+
+    <h4>2단계 · 크롬 확장 프로그램 설치 <small>(처음 한 번)</small></h4>
+    <ol>
+      <li><a href="https://chromewebstore.google.com/search/Get%20cookies.txt%20LOCALLY" target="_blank" rel="noopener">크롬 웹스토어</a>에서 <b>Get cookies.txt LOCALLY</b>를 찾아 <b>Chrome에 추가</b>하세요.<br>
+        ⚠️ 이름에 <b>LOCALLY</b>가 붙은 것만 쓰세요. 비슷한 이름 중에는 쿠키를 외부로 보내는 위험한 것도 있어요.</li>
+      <li>주소창에 <code>chrome://extensions</code> 입력 → <b>Get cookies.txt LOCALLY</b>의 <b>세부정보</b></li>
+      <li><b>시크릿 모드에서 허용</b> 스위치를 켜세요.</li>
+    </ol>
+
+    <h4>3단계 · 쿠키 파일 저장 <small>(만료될 때마다)</small></h4>
+    <ol>
+      <li><b>Ctrl+Shift+N</b>(Mac: Cmd+Shift+N)으로 <b>시크릿 창</b>을 여세요.</li>
+      <li>youtube.com에 들어가서 오른쪽 위 <b>로그인</b> → <b>보조 계정</b>으로 로그인하세요.</li>
+      <li>유튜브 메인 화면이 보이면 주소창 오른쪽 <b>🧩 퍼즐 아이콘</b> → <b>Get cookies.txt LOCALLY</b>를 누르세요.</li>
+      <li><b>Export</b> 버튼을 누르면 <code>www.youtube.com_cookies.txt</code> 파일이 다운로드 폴더에 저장돼요.</li>
+      <li>⚠️ <b>시크릿 창을 바로 닫으세요.</b> 그 창에서 유튜브를 계속 보면 쿠키가 바뀌어 방금 저장한 파일이 무효가 돼요.</li>
+    </ol>
+
+    <h4>4단계 · 아래에서 등록</h4>
+    <ol>
+      <li><b>cookies.txt 등록</b>을 누르고 방금 저장한 파일을 고르세요.</li>
+      <li>"등록 완료!"가 뜨면 유튜브 링크를 다시 넣어보세요.</li>
+      <li>등록한 뒤에는 PC에 남은 쿠키 파일을 지워도 돼요. 다른 사람에게 보내지는 마세요.</li>
+    </ol>
+
+    <p class="msg"><b>이럴 땐?</b><br>
+      · 몇 주~몇 달 뒤 다시 "봇 차단" 에러 → 쿠키가 만료된 거예요. 3~4단계를 다시 하세요.<br>
+      · 다시 등록해도 계속 막힘 → 보조 계정이 제한됐을 수 있어요. 새 보조 계정으로 1단계부터 하세요.<br>
+      · 확장 프로그램 아이콘이 안 보임 → 🧩 퍼즐 아이콘을 누르면 목록에 있어요. 시크릿 창에서 안 보이면 2단계 3번(시크릿 모드 허용)을 확인하세요.</p>
     <div class="adminrow">
       <input type="file" id="ckFile" accept=".txt" hidden>
       <button id="ckUpload">cookies.txt 등록</button>
@@ -184,6 +216,7 @@ async function loadInfo() {
   } catch (e) {
     ytInfoUrl = '';
     setStatus(0, e.message, 'err');
+    if (e.message.includes('쿠키')) $('admin').open = true;
   } finally { $('infoGo').disabled = false; }
 }
 $('infoGo').onclick = loadInfo;
@@ -224,7 +257,7 @@ async function poll(jobId) {
 async function run(startFn) {
   setBusy(true);
   try { await poll(await startFn()); }
-  catch (e) { setStatus(100, e.message, 'err'); }
+  catch (e) { setStatus(100, e.message, 'err'); if (e.message.includes('쿠키')) $('admin').open = true; }
   finally { setBusy(false); }
 }
 

@@ -197,10 +197,17 @@ QUALITY_NAMES = {4320: "8K", 2160: "4K", 1440: "QHD", 1080: "Full HD", 720: "HD"
 
 
 def _video_selector(height: str) -> str:
-    """같은 화질이면 어디서나 재생되는 H.264(avc)를 우선 선택."""
-    h = "" if height == "best" else f"[height<={int(height)}]"
-    return (f"bv*{h}[vcodec^=avc]+ba[ext=m4a]/bv*{h}[ext=mp4]+ba[ext=m4a]"
-            f"/bv*{h}+ba/b{h}/b")
+    """선택한 화질을 정확히 받되, 같은 화질 안에서는 호환성 좋은 코덱을 우선.
+
+    H.264(avc) > VP9 > 그 외(AV1 등) 순서. 유튜브는 H.264를 1080p까지만 주므로
+    1440p/4K는 VP9로 받아진다. 정확한 화질이 없으면 그 이하 최고 화질로 대체.
+    """
+    if height == "best":
+        return "bv*+ba[ext=m4a]/bv*+ba/b"
+    eq, le = f"[height={int(height)}]", f"[height<={int(height)}]"
+    return (f"bv*{eq}[vcodec^=avc]+ba[ext=m4a]/bv*{eq}[vcodec^=vp]+ba[ext=m4a]"
+            f"/bv*{eq}+ba[ext=m4a]/bv*{eq}+ba"
+            f"/bv*{le}+ba[ext=m4a]/bv*{le}+ba/b{le}/b")
 
 
 def _size(f: dict) -> int:
@@ -225,7 +232,7 @@ def _summarize_formats(info: dict) -> dict:
     for height, fs in sorted(by_height.items(), reverse=True):
         # 다운로드 시 실제로 고를 포맷과 같은 우선순위로 대표 포맷 선택
         for pick in (lambda f: f["vcodec"].startswith("avc"),
-                     lambda f: f.get("ext") == "mp4",
+                     lambda f: f["vcodec"].startswith("vp"),
                      lambda f: True):
             cands = [f for f in fs if pick(f)]
             if cands:
