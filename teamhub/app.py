@@ -205,7 +205,8 @@ def init_db():
         for table, col, ddl in (("quotes", "cust_cd", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_quote_slip", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_sale_slip", "TEXT NOT NULL DEFAULT ''"),
-                                ("quote_items", "prod_cd", "TEXT NOT NULL DEFAULT ''")):
+                                ("quote_items", "prod_cd", "TEXT NOT NULL DEFAULT ''"),
+                                ("ecount_customers", "memo", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
@@ -1009,6 +1010,9 @@ def replace_master(c, kind: str, rows: list):
         c.executemany("INSERT OR REPLACE INTO ecount_products (code, name, spec, unit, price) VALUES (?, ?, ?, ?, ?)",
                       [(r["code"], r.get("name", ""), r.get("spec", ""), r.get("unit", ""), r.get("price") or 0)
                        for r in rows])
+    elif kind == "customers":
+        c.executemany("INSERT OR REPLACE INTO ecount_customers (code, name, memo) VALUES (?, ?, ?)",
+                      [(r["code"], r.get("name", ""), r.get("memo", "")) for r in rows])
     else:
         c.executemany(f"INSERT OR REPLACE INTO ecount_{kind} (code, name) VALUES (?, ?)",
                       [(r["code"], r.get("name", "")) for r in rows])
@@ -1046,6 +1050,7 @@ def rows_to_master(kind: str, rows: list) -> list:
             continue
         find = lambda *keys: next((i for i, h in enumerate(cells) if any(k in h for k in keys)), None)
         spec_i, unit_i, price_i = find("규격"), find("단위"), find("출고단가", "판매단가", "단가")
+        memo_i = find("주소", "비고", "적요")
         out = []
         for r in rows[hi + 1:]:
             get = lambda i: (str(r[i]).strip() if i is not None and i < len(r) and r[i] is not None else "")
@@ -1053,6 +1058,8 @@ def rows_to_master(kind: str, rows: list) -> list:
             if not code:
                 continue
             item = {"code": code, "name": get(name_i)}
+            if kind == "customers":
+                item["memo"] = get(memo_i)
             if kind == "products":
                 try:
                     price = float(get(price_i).replace(",", "") or 0)
@@ -1098,7 +1105,7 @@ def ecount_master(user: dict = Depends(current_user)):
             "enabled": bool(cfg["com_code"] and cfg["user_id"] and cfg["api_key"]),
             "mode": "test" if cfg["is_test"] in ("1", "true") else "live",
             "products": [dict(r) for r in c.execute("SELECT code, name, spec, unit, price FROM ecount_products ORDER BY name")],
-            "customers": [dict(r) for r in c.execute("SELECT code, name FROM ecount_customers ORDER BY name")],
+            "customers": [dict(r) for r in c.execute("SELECT code, name, memo FROM ecount_customers ORDER BY name")],
             "warehouses": [dict(r) for r in c.execute("SELECT code, name FROM ecount_warehouses ORDER BY code")],
         }
 

@@ -848,7 +848,7 @@ async function openQuoteForm(quote, task, template) {
     <form autocomplete="off">
       <div class="grid2">
         <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(이카운트 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
-          ${ec.enabled ? `<div class="row" style="gap:6px;margin-top:4px"><small class="muted">이카운트 거래처코드</small><input name="cust_cd" value="${esc(q.cust_cd || '')}" style="max-width:160px;padding:4px 8px;font-size:12px" placeholder="검색해서 선택"></div>` : '<input type="hidden" name="cust_cd" value="' + esc(q.cust_cd || '') + '">'}</div>
+          <input type="hidden" name="cust_cd" value="${esc(q.cust_cd || '')}">${ec.enabled ? '<div id="custChip"></div>' : ''}</div>
         <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="예: 사무용품 납품 견적"></div>
         <div><label>거래처 담당자</label><input name="customer_contact" value="${esc(q.customer_contact)}"></div>
         <div><label>거래처 연락처 / 이메일</label><div class="row" style="flex-wrap:nowrap"><input name="customer_phone" value="${esc(q.customer_phone)}" placeholder="연락처"><input name="customer_email" value="${esc(q.customer_email)}" placeholder="이메일"></div></div>
@@ -924,11 +924,25 @@ async function openQuoteForm(quote, task, template) {
       const tr = e.target.closest('tr'); $('[name=prod_cd]', tr).value = ''; $('.pc', tr).innerHTML = prodCode('');
     });
     if (ec.customers.length) {
-      const pickCust = c => { f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change')); };
-      const custHtml = c => `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>`;
-      attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name]), custHtml, pickCust);
-      attachSearch(f.cust_cd, v => searchList(ec.customers, v, c => [c.code, c.name]), custHtml, pickCust);
+      const pickCust = c => { f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change')); drawCustChip(); };
+      const custHtml = c => `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>${c.memo ? `<br><small>${esc(c.memo)}</small>` : ''}`;
+      attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name, c.memo]), custHtml, pickCust);
+      // 직접 입력한 이름이 이카운트 거래처 하나와 정확히 같으면 자동 연결
+      f.customer_name.addEventListener('blur', () => setTimeout(() => {
+        if (f.cust_cd.value) return;
+        const hits = ec.customers.filter(c => normText(c.name) === normText(f.customer_name.value));
+        if (hits.length === 1) { f.cust_cd.value = hits[0].code; drawCustChip(); }
+      }, 200));
     }
+    function drawCustChip() {
+      const box = $('#custChip', bg); if (!box) return;
+      const c = ec.customers.find(x => x.code === f.cust_cd.value);
+      box.innerHTML = f.cust_cd.value
+        ? `<span class="code">이카운트: ${esc(c ? c.name : '')} ${esc(f.cust_cd.value)}<button type="button" id="custUnlink" title="연결 해제">✕</button></span>`
+        : '<span class="code miss">이카운트 거래처 미지정 — 이름 일부(예: 삼성 2공장)로 검색해서 선택하세요</span>';
+      const u = $('#custUnlink', bg); if (u) u.onclick = () => { f.cust_cd.value = ''; drawCustChip(); f.customer_name.focus(); };
+    }
+    drawCustChip();
     recalc();
     const save = async (andPrint) => {
       $('.err', bg).textContent = '';
@@ -965,7 +979,7 @@ async function openQuoteView(id) {
       <dt>결제조건</dt><dd>${esc(q.payment_terms || '-')}</dd><dt>작성자</dt><dd>${esc(q.creator_name)}</dd>
     </dl>
     ${q.note ? `<div class="desc">${esc(q.note)}</div>` : ''}
-    ${ecEnabled ? `<div class="ec-box"><div class="row"><b>🔗 이카운트</b><span class="muted">거래처 ${q.cust_cd ? esc(q.cust_cd) : '<span class="code miss">미지정</span>'} · 품목 ${q.items.filter(i => i.prod_cd).length}/${q.items.length}개 연결</span></div>
+    ${ecEnabled ? `<div class="ec-box"><div class="row"><b>🔗 이카운트</b><span class="muted">거래처 ${q.cust_cd ? esc((ec.customers.find(c => c.code === q.cust_cd) || {}).name || '') + ' ' + esc(q.cust_cd) : '<span class="code miss">미지정</span>'} · 품목 ${q.items.filter(i => i.prod_cd).length}/${q.items.length}개 연결</span></div>
       <div class="row" style="margin-top:8px">
         ${q.ecount_quote_slip ? `<span class="tag s-done">견적서 전송됨 ${esc(q.ecount_quote_slip)}</span>` : ''}
         ${q.ecount_sale_slip ? `<span class="tag s-done">판매 전송됨 ${esc(q.ecount_sale_slip)}</span>` : ''}
@@ -1106,12 +1120,16 @@ async function ecMaster(reload) {
 }
 
 // 여러 단어 검색: "a4 500" → 코드/이름/규격에 모든 단어가 들어간 것
+// 비교용 정규화: 대소문자·띄어쓰기·(주)/㈜/주식회사·괄호 무시
+const normText = t => String(t || '').toLowerCase().replace(/\(주\)|㈜|주식회사|\(유\)|유한회사/g, '').replace(/[\s()\[\]\-_.,·]/g, '');
+
+// 여러 단어 검색: "삼성 2공장" → 이름/코드 등에 모든 단어가 들어간 것 (띄어쓰기·(주) 무시)
 function searchList(list, query, fields) {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = query.split(/\s+/).map(normText).filter(Boolean);
   if (!words.length) return list.slice(0, 30);
   const out = [];
   for (const it of list) {
-    const hay = fields(it).join(' ').toLowerCase();
+    const hay = normText(fields(it).join(' '));
     if (words.every(w => hay.includes(w))) { out.push(it); if (out.length >= 50) break; }
   }
   return out;
