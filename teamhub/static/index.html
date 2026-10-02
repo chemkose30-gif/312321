@@ -843,7 +843,7 @@ function cleanItem(name) {
     if (!/^(cis|trans|alpha|beta|gamma|delta|epsilon|omega|ortho|meta|para|sec|tert|dl|[dlnomp])-/.test(n))
       n = n.replace(/[a-z]/, ch => ch.toUpperCase());
     n = n.replace(/\b[a-z]{1,3}\d{2,}[a-z]?\b/g, w => w.toUpperCase())      // F13512 같은 제품코드는 대문자 그대로
-         .replace(/\(([a-z]{1,4})\)/g, (_, w) => `(${w.toUpperCase()})`);   // (PG) 같은 약어
+         .replace(/\(([a-z]{1,3})\)/g, (_, w) => `(${w.toUpperCase()})`);   // (PG) 같은 약어
   }
   return n || String(name || '').trim();
 }
