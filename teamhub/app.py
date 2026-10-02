@@ -395,15 +395,18 @@ def init_db():
                                 ("shipments", "cs_events", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("shipments", "cs_checked_at", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''"),
-                                ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''")):
+                                ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
-        # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
-        for q in c.execute("SELECT id FROM quotes WHERE title = '' AND note = '이카운트에서 가져옴'").fetchall():
-            names = [r["name"] for r in c.execute("SELECT name FROM quote_items WHERE quote_id = ? ORDER BY seq", (q["id"],))]
-            c.execute("UPDATE quotes SET title = ? WHERE id = ?", (auto_title(names), q["id"]))
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
         c.execute("PRAGMA journal_mode = WAL")
+        # 예전에 비고에 적던 '이카운트에서 가져옴' 표시 → 따로 표시(imported)하고 비고는 비움
+        c.execute("UPDATE quotes SET imported = 1, note = '' WHERE note = '이카운트에서 가져옴'")
+        # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
+        for q in c.execute("SELECT id FROM quotes WHERE title = '' AND imported = 1").fetchall():
+            names = [r["name"] for r in c.execute("SELECT name FROM quote_items WHERE quote_id = ? ORDER BY seq", (q["id"],))]
+            c.execute("UPDATE quotes SET title = ? WHERE id = ?", (auto_title(names), q["id"]))
         c.executescript("""
             CREATE INDEX IF NOT EXISTS idx_quote_items_quote ON quote_items(quote_id, seq);
             CREATE INDEX IF NOT EXISTS idx_quotes_type_date ON quotes(doc_type, quote_date DESC, id DESC);
@@ -1836,16 +1839,15 @@ async def import_docs_api(file: UploadFile = File(...), doc_type: str = "stateme
     return await import_docs(file, doc_type, dry_run, user, overwrite, year)
 
 
-IMPORT_NOTE = "이카운트에서 가져옴"
 
 
 @app.delete("/api/docs/imported")
 def delete_imported(doc_type: str, _: dict = Depends(admin_user)):
-    """엑셀로 가져온 문서(비고가 '이카운트에서 가져옴' 그대로인 것)를 모두 삭제 — 잘못 가져왔을 때 다시 하기용."""
+    """엑셀로 가져온 문서를 모두 삭제 — 잘못 가져왔을 때 다시 하기용."""
     if doc_type not in DOC_TYPES:
         raise HTTPException(400, "잘못된 문서 종류입니다.")
     with db() as c:
-        n = c.execute("DELETE FROM quotes WHERE doc_type = ? AND note = ?", (doc_type, IMPORT_NOTE)).rowcount
+        n = c.execute("DELETE FROM quotes WHERE doc_type = ? AND imported = 1", (doc_type,)).rowcount
     return {"deleted": n}
 
 
@@ -1886,10 +1888,10 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
             quote_no = next_quote_no(c, g["date"], doc_type)
             cur = c.execute(
                 "INSERT INTO quotes (quote_no, doc_type, title, transport, customer_name, cust_cd, quote_date, vat_mode,"
-                f" status, note, supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
+                f" status, note, supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at, imported)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 (quote_no, doc_type, g["title"], g.get("transport", ""), g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
-                 IMPORT_NOTE, supply_total, vat_total, supply_total + vat_total, g["slip"],
+                 "", supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
             insert_import_items(c, cur.lastrowid, g["items"])
@@ -3715,11 +3717,11 @@ def dashboard(user: dict = Depends(current_user)):
             " (SELECT name FROM quote_items qi WHERE qi.quote_id = q.id ORDER BY seq LIMIT 1) AS first_item,"
             " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = q.id) AS item_count"
             " FROM quotes q JOIN users u ON u.id = q.created_by"
-            " WHERE q.doc_type = 'statement' AND q.note != ? AND ("
+            " WHERE q.doc_type = 'statement' AND q.imported = 0 AND ("
             "   (q.quote_date = ? AND q.status IN ('sent', 'won'))"
             "   OR (q.quote_date BETWEEN ? AND ? AND q.status = 'sent'))"
             " ORDER BY q.status = 'won', q.quote_date, q.id",
-            (IMPORT_NOTE, today, week_ago, today),
+            (today, week_ago, today),
         ).fetchall()
     return {
         "statements_todo": [dict(r) for r in stmts],
