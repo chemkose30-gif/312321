@@ -1096,72 +1096,88 @@ async function printQuote(id) {
 }
 
 
-// 거래명세서 인쇄: A4 한 장에 공급받는자 보관용 + 공급자 보관용 (품목이 많으면 각각 한 장씩)
+// 거래명세서 인쇄: 이카운트 거래명세서 양식과 같은 배치 (A4 상단 1부 + 절취선)
 async function printStatement(w, q) {
   if (!w) { toast('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.'); return; }
   const co = await api('/api/company');
-  const md = d => d ? `${+d.slice(5, 7)}/${+d.slice(8, 10)}` : '';
-  const many = q.items.length > 10;
-  const minRows = many ? Math.max(q.items.length, 22) : 10;
-  const copy = (who, color) => {
-    const rows = q.items.map(i => `<tr><td class="c">${md(q.quote_date)}</td><td>${esc(i.name)}</td><td>${esc(i.spec)}</td>
-      <td class="r">${i.qty.toLocaleString('ko-KR')}${i.unit ? ' ' + esc(i.unit) : ''}</td><td class="r">${won(i.unit_price)}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.vat)}</td><td>${esc(i.note)}</td></tr>`);
-    while (rows.length < minRows) rows.push('<tr>' + '<td>&nbsp;</td>'.repeat(8) + '</tr>');
-    return `<div class="copy" style="--c:${color}">
-      <div class="head"><h1>거 래 명 세 서</h1><span class="who">(${who} 보관용)</span></div>
-      <div class="meta">No. ${esc(q.quote_no)} &nbsp; 거래일자: ${esc(q.quote_date)}</div>
-      <div class="parties">
-        <table class="party"><tr><th class="vh" rowspan="4">공<br>급<br>받<br>는<br>자</th><th>상호</th><td colspan="3"><b>${esc(q.customer_name)}</b></td></tr>
-          <tr><th>등록번호</th><td colspan="3">${esc(q.customer_biz_no)}</td></tr>
-          <tr><th>대표자</th><td>${esc(q.customer_ceo)}</td><th>담당</th><td>${esc(q.customer_contact)}</td></tr>
-          <tr><th>주소</th><td colspan="3">${esc(q.customer_address)}</td></tr></table>
-        <table class="party"><tr><th class="vh" rowspan="4">공<br>급<br>자</th><th>등록번호</th><td colspan="3">${esc(co.biz_no || '')}</td></tr>
-          <tr><th>상호</th><td>${esc(co.company_name || '')}</td><th>성명</th><td class="stampbox">${esc(co.ceo || '')}${co.stamp ? `<img class="stamp" src="${co.stamp}">` : ' (인)'}</td></tr>
-          <tr><th>주소</th><td colspan="3">${esc(co.address || '')}</td></tr>
-          <tr><th>업태</th><td>${esc(co.biz_type || '')}</td><th>종목</th><td>${esc(co.biz_item || '')}</td></tr></table>
+  const md = d => d ? `${d.slice(5, 7)}/${d.slice(8, 10)}` : '';
+  const units = [...new Set(q.items.map(i => (i.unit || '').trim()).filter(Boolean))];
+  const unit = units.length === 1 ? units[0] : '';
+  const isKg = /^kg$/i.test(unit);
+  const qtyFmt = n => isKg ? Number(n).toFixed(2) : Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 2});
+  const totalQty = q.items.reduce((a, i) => a + Number(i.qty || 0), 0);
+  // 일련번호: 이카운트 판매 전표번호가 있으면 그것, 없으면 명세서번호(T20261002-001 → 20261002 - 1)
+  const m = /^T(\d{8})-0*(\d+)$/.exec(q.quote_no || '');
+  const serial = q.ecount_sale_slip ? q.ecount_sale_slip.replace(/-/, ' - ') : (m ? `${m[1]} - ${m[2]}` : q.quote_no);
+  const pages = [];
+  for (let i = 0; i < Math.max(q.items.length, 1); i += 10) pages.push(q.items.slice(i, i + 10));
+  const sheet = (items, last) => {
+    const rows = items.map(i => `<tr><td class="c">${md(q.quote_date)}</td>
+        <td class="nm">${esc(i.name)}${i.spec ? ' ' + esc(i.spec) : ''}${!unit && i.unit ? ` <small>(${esc(i.unit)})</small>` : ''}</td>
+        <td class="r">${qtyFmt(i.qty)}</td><td class="r">${won(i.unit_price)}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.vat)}</td></tr>`);
+    while (rows.length < 10) rows.push('<tr><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
+    return `<div class="form">
+      <div class="top">
+        <div class="left">
+          <div class="title">거래명세서</div>
+          <div class="to">
+            <div class="cname">${esc(q.customer_name)}<span class="gwi">貴 中</span></div>
+            ${q.customer_address ? `<div>${esc(q.customer_address)}</div>` : ''}
+            ${q.customer_phone ? `<div>☎ ${esc(q.customer_phone)}</div>` : ''}
+          </div>
+        </div>
+        <table class="sup">
+          <tr><th class="vh" rowspan="4">공<br><br>급<br><br>자</th><th>일련번호</th><td>${esc(serial)}</td><th class="sm">TEL</th><td>${esc(co.phone || '')}</td></tr>
+          <tr><th>사업자등록<br>번호</th><td>${esc(co.biz_no || '')}</td><th class="sm">성명</th><td class="stampbox">${esc(co.ceo || '')}${co.stamp ? `<img class="stamp" src="${co.stamp}">` : ''}</td></tr>
+          <tr><th>상호</th><td colspan="3">${esc(co.company_name || '')}</td></tr>
+          <tr><th>주소</th><td colspan="3" class="addr">${esc(co.address || '')}</td></tr>
+        </table>
       </div>
-      <table class="total"><tr><th>합계금액</th><td>일금 ${koreanAmount(q.grand_total)}원정 (₩ ${won(q.grand_total)})</td><th>${VAT[q.vat_mode]}</th></tr></table>
-      <table class="items"><tr><th style="width:42px">월/일</th><th>품목</th><th>규격</th><th style="width:70px">수량</th><th style="width:76px">단가</th><th style="width:86px">공급가액</th><th style="width:70px">세액</th><th style="width:70px">비고</th></tr>
+      <div class="amount"><span>금 액 : ${koreanAmount(q.grand_total)}원 정</span><span>(₩ ${won(q.grand_total)})</span></div>
+      <table class="items">
+        <tr><th style="width:44px">월/일</th><th>품명 및 규격</th><th style="width:84px">수량${unit ? `(${esc(unit)})` : ''}</th><th style="width:80px">단가(원화)</th><th style="width:118px">공급가액</th><th style="width:114px">부가세</th></tr>
         ${rows.join('')}
-        <tr class="sumrow"><td colspan="5" class="c">합 계</td><td class="r">${won(q.supply_total)}</td><td class="r">${won(q.vat_total)}</td><td class="r">${won(q.grand_total)}</td></tr></table>
-      <table class="foot"><tr><th>비고</th><td style="white-space:pre-wrap">${esc(q.note)}${q.payment_terms ? (q.note ? '\n' : '') + '결제조건: ' + esc(q.payment_terms) : ''}</td><th>인수자</th><td style="width:120px;text-align:right">(인)</td></tr></table>
+      </table>
+      ${last ? `<table class="sum"><tr><th>수량</th><td>${isKg ? totalQty.toFixed(1) : qtyFmt(totalQty)}</td><th>공급가액</th><td>${won(q.supply_total)}</td><th>VAT</th><td>${won(q.vat_total)}</td><th>합계</th><td>${won(q.grand_total)}</td><th>인수</th><td>인</td></tr></table>
+        ${q.note ? `<div class="note">비고: ${esc(q.note)}</div>` : ''}` : '<div class="note">(다음 장에 계속)</div>'}
+      <div class="cut"></div>
     </div>`;
   };
   w.document.open();
   w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>거래명세서 ${esc(q.quote_no)} - ${esc(q.customer_name)}</title>
   <style>
-    @page{size:A4;margin:8mm}
-    body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#111;font-size:11px;margin:0;padding:12px}
-    .sheet{max-width:790px;margin:0 auto}
-    .copy{border:2px solid var(--c);padding:8px 10px;margin-bottom:6px}
-    .copy th{background:color-mix(in srgb,var(--c) 12%,#fff);color:#111}
-    .copy td,.copy th{border:1px solid var(--c)}
-    .head{display:flex;align-items:baseline;justify-content:center;gap:10px}
-    h1{font-size:22px;letter-spacing:12px;margin:2px 0;color:var(--c)}
-    .who{font-size:11px;color:var(--c)}
-    .meta{text-align:right;font-size:10px;margin-bottom:4px}
+    @page{size:A4;margin:10mm}
+    body{font-family:"Malgun Gothic","Apple SD Gothic Neo","Nanum Gothic",sans-serif;color:#111;font-size:12px;margin:0;padding:16px}
+    .form{max-width:745px;margin:0 auto;box-sizing:border-box;padding:0 2px}
+    .form + .form{page-break-before:always;margin-top:20px}
     table{border-collapse:collapse;width:100%}
-    td,th{padding:3px 5px}
-    th{font-weight:bold;white-space:nowrap}
-    .parties{display:flex;gap:6px}.party th{width:48px;font-size:10px}.party .vh{width:16px;text-align:center;line-height:1.15}
-    .stampbox{position:relative}.stamp{position:absolute;right:0;top:50%;transform:translateY(-50%);height:36px;opacity:.85}
-    .total{margin:5px 0;font-size:13px}.total th{width:80px}.total td{font-weight:bold}.total th:last-child{width:90px;font-size:10px}
-    .items th{font-size:10px}.items td{height:15px}
+    td,th{border:1px solid #888;padding:3px 6px}
+    th{background:#f2f2f2;font-weight:bold;text-align:center;white-space:nowrap}
+    .top{display:flex;gap:22px;align-items:stretch}
+    .left{flex:0 0 46%;display:flex;flex-direction:column;justify-content:space-between}
+    .title{font-size:28px;text-align:center;margin:12px 0 10px;letter-spacing:1px}
+    .to{border:1px solid #111;text-align:center;padding:4px 6px;line-height:1.6;font-size:12.5px}
+    .cname{font-weight:bold}.gwi{margin-left:2px;font-weight:bold}
+    .sup{flex:1;min-width:0;border:1.5px solid #111}.sup td{font-size:11.5px}
+    .sup th{font-size:12px}.sup th.sm{width:46px}
+    .sup .vh{width:20px;line-height:1.2;padding:2px}
+    .sup .addr{line-height:1.3}
+    .stampbox{position:relative;height:30px}
+    .stamp{position:absolute;left:20px;top:50%;transform:translateY(-50%);height:62px;opacity:.85;pointer-events:none}
+    .amount{display:flex;justify-content:space-between;border:2.5px solid #111;padding:6px 30px;font-size:17px;font-weight:bold;margin:8px 0 26px}
+    .items{table-layout:fixed}.items td{height:22px;font-size:12px;overflow-wrap:anywhere}
+    .items .nm{font-size:11.5px;line-height:1.2}
     .c{text-align:center}.r{text-align:right;font-variant-numeric:tabular-nums}
-    .sumrow td{font-weight:bold}
-    .foot{margin-top:4px}.foot th{width:48px}
-    .cut{border-top:1px dashed #999;margin:8px 0 10px;text-align:center;font-size:9px;color:#999;height:0}
-    .cut span{background:#fff;padding:0 6px;position:relative;top:-7px}
-    .pb{page-break-after:always}
-    .noprint{text-align:center;margin:14px}
+    .sum{margin-top:6px;border:1.5px solid #111}.sum th{width:52px}.sum td{text-align:right;font-variant-numeric:tabular-nums}
+    .note{font-size:11px;margin-top:4px;color:#333;white-space:pre-wrap}
+    .cut{border-top:1px dashed #888;margin-top:14px}
+    .noprint{text-align:center;margin:18px}
     @media print{.noprint{display:none}body{padding:0}}
-  </style></head><body><div class="sheet">
-  ${copy('공급받는자', '#1d4ed8')}
-  ${many ? '<div class="pb"></div>' : '<div class="cut"><span>✂ 자르는 선</span></div>'}
-  ${copy('공급자', '#b91c1c')}
+  </style></head><body>
+  ${pages.map((items, i) => sheet(items, i === pages.length - 1)).join('')}
   <div class="noprint"><button onclick="print()" style="font-size:15px;padding:10px 24px">🖨 인쇄 / PDF로 저장</button>
     <p style="color:#666;font-size:12px">PDF로 받으려면 인쇄 창에서 대상(프린터)을 "PDF로 저장"으로 선택하세요.</p></div>
-  </div></body></html>`);
+  </body></html>`);
   w.document.close();
   setTimeout(() => w.print(), 400);
 }
