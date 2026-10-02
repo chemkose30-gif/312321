@@ -850,7 +850,7 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", user: di
         where.append("qt.status = ?")
         params.append(status)
     sql = ("SELECT qt.*, u.name AS creator_name FROM quotes qt JOIN users u ON u.id = qt.created_by"
-           + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY qt.id DESC LIMIT 300")
+           + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY qt.quote_date DESC, qt.id DESC LIMIT 500")
     with db() as c:
         return [dict(r) for r in c.execute(sql, params).fetchall()]
 
@@ -1192,6 +1192,131 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
     if not result["ok"]:
         raise HTTPException(400, f"이카운트가 {label} 등록을 거부했습니다: {msg}")
     return {"ok": True, "slip_nos": result["slip_nos"], "mode": "테스트 서버" if client.is_test else "실서비스"}
+
+
+# ---------------------------------------------------------------- 이카운트 판매(거래명세서) 엑셀 가져오기
+# 이카운트는 판매 조회 API 를 제공하지 않으므로 [판매조회/판매현황] 화면에서 내려받은 엑셀을 올려 가져온다.
+SALE_COLS = {
+    "slip": ("일자-no", "일자no", "전표번호"),
+    "date": ("일자", "판매일", "거래일"),
+    "cust_cd": ("거래처코드",),
+    "customer": ("거래처명", "거래처"),
+    "prod_cd": ("품목코드",),
+    "name": ("품목명", "품명"),
+    "spec": ("규격",),
+    "unit": ("단위",),
+    "qty": ("수량",),
+    "price": ("단가",),
+    "supply": ("공급가액",),
+    "vat": ("부가세",),
+    "note": ("적요", "비고"),
+}
+
+
+def _num(v) -> float:
+    try:
+        return float(str(v).replace(",", "").strip() or 0)
+    except ValueError:
+        return 0.0
+
+
+def parse_sales_sheet(rows: list):
+    """머리글을 찾아 열을 매핑하고, 전표(일자-No) 단위로 묶은 목록을 반환."""
+    import re
+    for hi, header in enumerate(rows[:20]):
+        cells = [str(h).replace(" ", "").replace("\n", "").lower() for h in header]
+        if not any("거래처" in h for h in cells) or not any(h in ("수량",) or "공급가액" in h or "금액" in h for h in cells):
+            continue
+        col = {}
+        for key, names in SALE_COLS.items():
+            for i, h in enumerate(cells):
+                if i in col.values():
+                    continue
+                if key == "date" and ("일자-no" in h or "일자no" in h):
+                    continue
+                if key == "customer" and "코드" in h:
+                    continue
+                if key == "name" and "코드" in h:
+                    continue
+                if any(h == n or h.startswith(n) for n in names):
+                    col[key] = i
+                    break
+        if "customer" not in col or ("slip" not in col and "date" not in col):
+            break
+        groups, order = {}, []
+        for r in rows[hi + 1:]:
+            get = lambda k: (str(r[col[k]]).strip() if k in col and col[k] < len(r) and r[col[k]] is not None else "")
+            cust = get("customer")
+            if not cust or any(w in cust for w in ("합계", "소계", "총계")):
+                continue
+            raw = get("slip") or get("date")
+            m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[^\d-]*-\s*(\d+))?", raw)
+            if not m:
+                continue
+            date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            no = m.group(4)
+            key = f"{date}|{no}" if no else f"{date}|{cust}"
+            name = get("name")
+            if not name and not get("prod_cd"):
+                continue
+            qty, price = _num(get("qty")), _num(get("price"))
+            supply = _num(get("supply")) if "supply" in col else round(qty * price)
+            vat = _num(get("vat")) if "vat" in col else int(supply * 0.1)
+            if key not in groups:
+                groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{no}" if no else "",
+                               "customer": cust, "cust_cd": get("cust_cd"), "items": []}
+                order.append(key)
+            groups[key]["items"].append({"prod_cd": get("prod_cd"), "name": name, "spec": get("spec"),
+                                         "unit": get("unit"), "qty": qty, "price": price,
+                                         "supply": int(round(supply)), "vat": int(round(vat)), "note": get("note")})
+        return [groups[k] for k in order], sorted(col)
+    raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/공급가액' 열을 찾지 못했습니다."
+                             " 이카운트 판매조회 화면에서 내려받은 엑셀을 그대로 올려주세요.")
+
+
+@app.post("/api/statements/import")
+async def import_statements(file: UploadFile = File(...), dry_run: bool = True, user: dict = Depends(admin_user)):
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
+    slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data))
+    created = skipped = 0
+    with db() as c:
+        cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
+        for g in slips:
+            dup = g["slip"] and c.execute(
+                "SELECT 1 FROM quotes WHERE doc_type = 'statement' AND ecount_sale_slip = ?", (g["slip"],)).fetchone()
+            g["duplicate"] = bool(dup)
+            if dup:
+                skipped += 1
+                continue
+            if dry_run:
+                continue
+            ts = now()
+            supply_total = sum(i["supply"] for i in g["items"])
+            vat_total = sum(i["vat"] for i in g["items"])
+            quote_no = next_quote_no(c, g["date"], "statement")
+            cur = c.execute(
+                "INSERT INTO quotes (quote_no, doc_type, customer_name, cust_cd, quote_date, vat_mode, status, note,"
+                " supply_total, vat_total, grand_total, ecount_sale_slip, created_by, created_at, updated_at)"
+                " VALUES (?, 'statement', ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (quote_no, g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
+                 "이카운트에서 가져옴", supply_total, vat_total, supply_total + vat_total, g["slip"],
+                 user["id"], ts, ts),
+            )
+            for seq, it in enumerate(g["items"], 1):
+                c.execute(
+                    "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (cur.lastrowid, seq, it["prod_cd"], it["name"], it["spec"], it["unit"], it["qty"], it["price"],
+                     it["supply"], it["vat"], it["note"]),
+                )
+            created += 1
+    preview = [{"date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
+                "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]}
+               for g in slips[:8]]
+    return {"slips": len(slips), "lines": sum(len(g["items"]) for g in slips), "created": created,
+            "skipped": skipped, "columns": cols, "preview": preview, "dry_run": dry_run}
 
 
 @app.get("/api/ecount/logs")

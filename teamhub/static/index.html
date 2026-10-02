@@ -815,6 +815,7 @@ async function renderQuotes() {
   const sum = list.reduce((a, x) => a + x.grand_total, 0);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">${D.icon} ${D.label}</h3><span class="spacer"></span>
+      ${isAdmin && dt === 'statement' ? '<button class="btn" id="qImport">📥 이카운트에서 가져오기</button>' : ''}
       ${isAdmin ? '<button class="btn" id="qEcount">🔗 이카운트</button><button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
       <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     <div class="row" style="margin-bottom:10px">
@@ -829,6 +830,7 @@ async function renderQuotes() {
   </div>`;
   $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);
   if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
+  if ($('#qImport')) $('#qImport').onclick = openStatementImport;
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; renderQuotes(); };
   let timer;
   $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -1180,6 +1182,46 @@ async function printStatement(w, q) {
   </body></html>`);
   w.document.close();
   setTimeout(() => w.print(), 400);
+}
+
+function openStatementImport() {
+  openModal(`<h2>📥 이카운트 거래명세서(판매) 가져오기</h2>
+    <div class="desc" style="font-size:13px">이카운트는 지난 판매를 조회하는 API를 제공하지 않아, <b>엑셀 파일</b>로 가져옵니다.<br>
+      1. 이카운트 → 영업관리 → <b>판매조회</b> (또는 판매현황) 화면에서 기간을 정해 조회<br>
+      2. 화면의 <b>[Excel]</b> 버튼으로 내려받기 (거래처명·일자-No.·품목·수량·단가·공급가액·부가세 열이 보이게)<br>
+      3. 아래에 그 파일을 올리면 미리보기 후 가져옵니다. 이미 가져온 전표(같은 일자-No.)는 건너뜁니다.</div>
+    <input type="file" id="impFile" accept=".xlsx,.csv">
+    <div id="impRes" style="margin-top:12px"></div>
+    <div class="err" id="impErr"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary hidden" id="impGo">가져오기</button></div>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    const send = async (dry) => {
+      const file = $('#impFile', bg).files[0]; if (!file) return;
+      const fd = new FormData(); fd.append('file', file);
+      const res = await fetch(`/api/statements/import?dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '가져오기 실패');
+      return data;
+    };
+    $('#impFile', bg).onchange = async () => {
+      $('#impErr', bg).textContent = ''; $('#impRes', bg).innerHTML = '<span class="muted">읽는 중…</span>'; $('#impGo', bg).classList.add('hidden');
+      try {
+        const r = await send(true);
+        const fresh = r.slips - r.skipped;
+        $('#impRes', bg).innerHTML = `<b>전표 ${r.slips}건 (품목 ${r.lines}줄)</b> 확인 · 새로 가져올 것 <b>${fresh}건</b>${r.skipped ? ` · 이미 있음 ${r.skipped}건` : ''}
+          <div class="qscroll"><table style="margin-top:8px"><thead><tr><th>일자</th><th>전표</th><th>거래처</th><th style="text-align:right">품목</th><th style="text-align:right">합계</th><th></th></tr></thead><tbody>
+          ${r.preview.map(g => `<tr style="cursor:default"><td>${esc(g.date)}</td><td>${esc(g.slip || '-')}</td><td>${esc(g.customer)}</td><td class="money">${g.lines}</td><td class="money">${won(g.total)}</td><td>${g.duplicate ? '<span class="tag s-todo">이미 있음</span>' : ''}</td></tr>`).join('')}
+          </tbody></table></div>${r.slips > r.preview.length ? `<small class="muted">… 외 ${r.slips - r.preview.length}건</small>` : ''}
+          <div class="muted" style="font-size:12px;margin-top:6px">인식한 열: ${esc(r.columns.join(', '))}</div>`;
+        if (fresh > 0) { $('#impGo', bg).classList.remove('hidden'); $('#impGo', bg).textContent = `${fresh}건 가져오기`; }
+      } catch (err) { $('#impRes', bg).innerHTML = ''; $('#impErr', bg).textContent = err.message; }
+    };
+    $('#impGo', bg).onclick = async e => {
+      e.target.disabled = true; e.target.textContent = '가져오는 중…';
+      try { const r = await send(false); close(); toast(`거래명세서 ${r.created}건을 가져왔습니다.`); renderQuotes(); }
+      catch (err) { $('#impErr', bg).textContent = err.message; e.target.disabled = false; }
+    };
+  });
 }
 
 async function openCompany() {
