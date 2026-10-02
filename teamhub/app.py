@@ -2530,7 +2530,7 @@ def inventory_forecast(user: dict = Depends(current_user)):
         match = ItemMatcher(inv_items, links)
         # 수입 중(입고예정·인바운딩)인 것 — 재고 엑셀에 없는 품목도 새 줄로 넣는다
         ships = [dict(r) for r in c.execute(
-            "SELECT id, item, qty, unit, eta, status, supplier, customer, cs_in_at, cs_arrived, cs_cleared_at"
+            "SELECT id, item, qty, unit, eta, status, supplier, customer, cs_in_at, cs_arrived, cs_cleared_at, note"
             " FROM shipments WHERE status != 'arrived' ORDER BY eta")]
         new_names = {}
         for sh in ships:
@@ -2581,7 +2581,7 @@ def inventory_forecast(user: dict = Depends(current_user)):
                      else "선적" if sh["status"] == "shipped" else "발주")
             e["list"].append({"id": sh["id"], "name": sh["item"], "qty": sh["qty"] or 0, "unit": sh["unit"] or "kg",
                               "eta": sh["eta"] or "", "stage": stage, "supplier": sh["supplier"] or "",
-                              "client": sh["customer"] or ""})
+                              "client": sh["customer"] or "", "guessed": "추정" in (sh["note"] or "")})
         checked = json.loads(get_setting(c, f"forecast_checked:{y}", "{}") or "{}")
     stock = {}
     for l in lots:
@@ -2594,8 +2594,8 @@ def inventory_forecast(user: dict = Depends(current_user)):
         pick = lambda k: max(a.get(k, 0), b.get(k, 0))
         last, last_same, ytd = pick("last"), pick("last_same"), pick("ytd")
         inc_e = incoming.get(it, {})
-        if not (last or ytd or inc_e.get("list")):
-            continue
+        if not (last or ytd):
+            continue                     # 판매 기록이 없는 품목은 예상할 게 없음
         if last and last_same:
             growth = min(ytd / last_same, 2.0)        # 올해가 작년 같은 기간보다 빠르면 최대 2배까지
             fc, basis = last * growth, f"작년 × 올해 증감 {growth:.0%}"
@@ -2606,16 +2606,26 @@ def inventory_forecast(user: dict = Depends(current_user)):
         fc = max(fc, ytd)
         remain = max(fc - ytd, 0)
         st, inc = stock.get(it, 0), inc_e.get("qty", 0)
+        lst = inc_e.get("list", [])
         short = remain - st - inc
-        level = "short" if short > 0.001 else "watch" if remain - st > 0.001 else "ok"
+        # 재고로 모자라는데 인바운딩·입고예정에 이미 있으면 '부족(발주 필요)'이 아니라 '입고 예정'
+        level = "ok" if remain - st <= 0.001 else "incoming" if lst else "short"
         monthly = fc / 12
+        # 지금 재고가 언제 바닥날지 (남은 기간 동안 고르게 나간다고 보고) → 입고 예정일보다 빠르면 표시
+        left_days = (date(y, 12, 31) - today).days + 1
+        daily = remain / left_days if left_days > 0 else 0
+        runout = (today + timedelta(days=int(st / daily))).isoformat() if daily > 0 and st / daily < left_days else ""
+        eta = inc_e.get("eta", "")
+        first = next((x for x in lst if x["eta"] == eta), None)
         rows.append({"item": it, "last": last, "ytd": ytd, "forecast": fc, "remain": remain, "stock": st,
-                     "incoming": inc, "incoming_eta": inc_e.get("eta", ""), "incoming_list": inc_e.get("list", []),
-                     "new": it not in inv_set, "short": max(short, 0),
+                     "incoming": inc, "incoming_eta": eta, "incoming_guess": bool(first and first["guessed"]),
+                     "incoming_list": lst, "runout": runout, "late": bool(runout and eta and eta > runout),
+                     "short": max(short, 0), "short_after": max(short, 0) if lst else 0,
                      "cover_months": (st / monthly) if monthly else None, "level": level, "basis": basis,
                      "checked": checked.get(it)})
-    order = {"short": 0, "watch": 1, "ok": 2}
-    rows.sort(key=lambda r: (order[r["level"]], -(r["short"] or 0), -(r["remain"] or 0)))
+    order = {"short": 0, "incoming": 1, "ok": 2}
+    rows.sort(key=lambda r: (order[r["level"]], -(r["short"] or 0) if r["level"] == "short" else r["incoming_eta"] or "9",
+                             -(r["remain"] or 0)))
     return {"year": y, "elapsed": frac, "rows": rows, "items": inv_items,
             "unmatched": sorted(unmatched.values(), key=lambda u: -u["qty"])[:40]}
 
