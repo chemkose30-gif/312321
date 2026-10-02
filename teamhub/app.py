@@ -236,6 +236,8 @@ def init_db():
                                 ("quotes", "customer_fax", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "transport", "TEXT NOT NULL DEFAULT ''"),
                                 ("quote_items", "cas_no", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "ecount_wh", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "ecount_old_slips", "TEXT NOT NULL DEFAULT ''"),
                                 ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
@@ -1019,7 +1021,8 @@ def update_quote(qid: int, body: QuoteIn, user: dict = Depends(current_user)):
             mail = change_status(c, t, user, "done")
     if mail:
         mailer.send_async(db, *mail)
-    return {"id": qid, "quote_no": q["quote_no"]}
+    return {"id": qid, "quote_no": q["quote_no"],
+            "ecount": {"quotation": q["ecount_quote_slip"], "sale": q["ecount_sale_slip"]}}
 
 
 @app.patch("/api/quotes/{qid}/status")
@@ -1353,16 +1356,37 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
             ecount_log(c, qid, body.kind, False, "", str(e), user)
         raise HTTPException(400, f"이카운트 전송 실패: {e}")
     slips = ", ".join(result["slip_nos"])
+    delete_task = None
     with db() as c:
         if result["ok"]:
             c.execute(f"UPDATE quotes SET {slip_col} = ?, updated_at = ? WHERE id = ?", (slips or "전송됨", now(), qid))
+            if body.kind == "sale" and body.wh_cd:
+                c.execute("UPDATE quotes SET ecount_wh = ? WHERE id = ?", (body.wh_cd, qid))
+            old = q[slip_col]
+            if old:
+                # 이카운트 API 로는 수정·삭제가 안 되므로: 새 전표로 다시 등록 + 예전 전표 삭제를 할 일로 남김
+                kind_label = "견적서" if body.kind == "quotation" else "판매"
+                menu = "영업관리 > 견적서조회" if body.kind == "quotation" else "영업관리 > 판매조회"
+                note = f"{kind_label} {old}"
+                c.execute("UPDATE quotes SET ecount_old_slips = TRIM(ecount_old_slips || ? || ?, '; ') WHERE id = ?",
+                          ("; " if q["ecount_old_slips"] else "", note, qid))
+                ts = now()
+                cur = c.execute(
+                    "INSERT INTO tasks (title, description, assigner_id, assignee_id, priority, due_date, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, 'high', ?, ?, ?)",
+                    (f"[이카운트] 예전 {kind_label} 전표 {old} 삭제 ({q['customer_name']})",
+                     f"TeamHub {q['quote_no']} ({q['customer_name']}) 수정 후 이카운트에 새 전표 {slips}로 다시 등록했습니다.\n"
+                     f"이카운트 {menu} 에서 예전 전표 {old} 를 찾아 삭제해 주세요. 삭제했으면 이 업무를 완료로 바꾸세요.",
+                     user["id"], user["id"], datetime.now().strftime("%Y-%m-%d"), ts, ts))
+                delete_task = cur.lastrowid
             if body.kind == "sale" and q["doc_type"] == "quote" and q["status"] in ("draft", "sent"):
                 c.execute("UPDATE quotes SET status = 'won' WHERE id = ?", (qid,))
         msg = "; ".join(result["messages"]) or ("" if result["ok"] else json.dumps(result["raw"], ensure_ascii=False)[:500])
         ecount_log(c, qid, body.kind, result["ok"], slips, msg, user)
     if not result["ok"]:
         raise HTTPException(400, f"이카운트가 {label} 등록을 거부했습니다: {msg}")
-    return {"ok": True, "slip_nos": result["slip_nos"], "mode": "테스트 서버" if client.is_test else "실서비스"}
+    return {"ok": True, "slip_nos": result["slip_nos"], "mode": "테스트 서버" if client.is_test else "실서비스",
+            "replaced": bool(delete_task), "delete_task": delete_task}
 
 
 # ---------------------------------------------------------------- 이카운트 판매(거래명세서) 엑셀 가져오기

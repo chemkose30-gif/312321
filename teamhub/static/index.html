@@ -1113,6 +1113,7 @@ async function openQuoteForm(quote, task, template, docType) {
         close(); toast(`${D.label} ${r.quote_no} 저장됨`);
         if (andPrint) printQuote(r.id);
         go(state.view);
+        if (quote && r.ecount && (r.ecount.quotation || r.ecount.sale)) promptResend(r.id, r.ecount);
       } catch (err) { $('.err', bg).textContent = err.message; }
     };
     f.onsubmit = e => { e.preventDefault(); save(false); };
@@ -1142,7 +1143,8 @@ async function openQuoteView(id) {
       <div class="row" style="margin-top:8px">
         ${q.ecount_quote_slip ? `<span class="tag s-done">견적서 전송됨 ${esc(q.ecount_quote_slip)}</span>` : ''}
         ${q.ecount_sale_slip ? `<span class="tag s-done">판매 전송됨 ${esc(q.ecount_sale_slip)}</span>` : ''}
-        ${canEdit ? `${isSt ? '' : '<button class="btn sm" id="ecQ">견적서로 전송</button>'}<button class="btn sm primary" id="ecS">${isSt ? '이카운트 판매로 전송' : '판매로 전송'}</button>` : ''}
+        ${q.ecount_old_slips ? `<span class="tag p-urgent" title="이카운트에서 삭제해야 할 예전 전표">삭제할 예전 전표: ${esc(q.ecount_old_slips)}</span>` : ''}
+        ${canEdit ? `${isSt ? '' : `<button class="btn sm" id="ecQ">${q.ecount_quote_slip ? '견적서 다시 등록' : '견적서로 전송'}</button>`}<button class="btn sm primary" id="ecS">${q.ecount_sale_slip ? '판매 다시 등록' : isSt ? '이카운트 판매로 전송' : '판매로 전송'}</button>` : ''}
       </div></div>` : ''}
     <div class="actions">
       ${canEdit ? '<button class="btn danger" id="qDel">삭제</button><button class="btn" id="qEdit">수정</button>' : ''}
@@ -1878,21 +1880,39 @@ function attachSearch(input, search, render, pick) {
   if (modal) modal.addEventListener('scroll', close);
 }
 
+// 이카운트에 이미 등록된 문서를 TeamHub 에서 수정한 뒤: 다시 등록할지 묻기
+function promptResend(id, slips) {
+  const kinds = [['quotation', '견적서', slips.quotation], ['sale', '판매(거래명세서)', slips.sale]].filter(k => k[2]);
+  openModal(`<h2>이카운트에도 반영할까요?</h2>
+    <div style="font-size:14px;line-height:1.6">이 문서는 이카운트에 이미 등록돼 있어요 (${kinds.map(k => `${k[1]} 전표 <b>${esc(k[2])}</b>`).join(', ')}).<br>
+      이카운트는 외부에서 <b>수정·삭제가 안 되기 때문에</b>, 수정한 내용으로 <b>새 전표를 등록</b>하고<br>
+      예전 전표는 <b>"이카운트에서 삭제" 할 일</b>로 만들어 드려요. 이카운트에서 예전 전표만 지우면 끝이에요.</div>
+    <div class="actions"><button class="btn" data-close>나중에</button>
+      ${kinds.map(k => `<button class="btn primary" data-kind="${k[0]}">${k[1]} 다시 등록</button>`).join('')}</div>`, (bg, close) => {
+    $$('[data-kind]', bg).forEach(b => b.onclick = async () => {
+      close();
+      const [q, ec] = await Promise.all([api(`/api/quotes/${id}`), ecMaster()]);
+      openEcSend(q, b.dataset.kind, ec);
+    });
+  });
+}
+
 function openEcSend(q, kind, ec) {
   const isSale = kind === 'sale';
   const label = isSale ? '거래명세서(판매)' : '견적서';
   const already = isSale ? q.ecount_sale_slip : q.ecount_quote_slip;
-  openModal(`<h2>이카운트 ${label}로 전송</h2>
+  openModal(`<h2>${already ? `수정본으로 이카운트 ${label} 다시 등록` : `이카운트 ${label}로 전송`}</h2>
     <div class="muted">${esc(q.quote_no)} · ${esc(q.customer_name)} · 합계 ${won(q.grand_total)}원</div>
     ${ec.mode === 'test' ? '<div class="tag s-hold" style="margin-top:8px">테스트 서버 모드 — 실제 장부에는 들어가지 않습니다</div>' : ''}
-    ${already ? `<div class="err">이미 전송된 ${label}입니다 (전표 ${esc(already)}). 다시 보내면 이카운트에 한 건이 더 생깁니다.</div>` : ''}
+    ${already ? `<div class="desc" style="font-size:13px">지금 내용으로 <b>새 전표</b>를 등록합니다. 예전 전표 <b>${esc(already)}</b>는 이카운트에 그대로 남으니,
+      등록 후 생기는 <b>"[이카운트] 예전 전표 삭제"</b> 업무를 보고 이카운트에서 지워 주세요.</div>` : ''}
     <form>
       <label>${isSale ? '판매일자' : '견적일자'}</label><input type="date" name="io_date" value="${isSale ? todayStr() : esc(q.quote_date)}" required>
       <label>${isSale ? '출고 창고 *' : '창고 (선택)'}</label>
       <select name="wh_cd" ${isSale ? 'required' : ''}><option value="">${ec.warehouses.length ? '선택하세요' : '등록된 창고가 없습니다 (관리자: 🔗 이카운트 설정)'}</option>
-        ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${state.lastWh === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('')}</select>
+        ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${(q.ecount_wh || state.lastWh) === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('')}</select>
       <div class="err" id="ecErr"></div>
-      <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">${already ? '다시 전송' : '전송'}</button></div>
+      <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">${already ? '새 전표로 다시 등록' : '전송'}</button></div>
     </form>`, (bg, close) => {
     $('form', bg).onsubmit = async e => {
       e.preventDefault();
@@ -1901,7 +1921,7 @@ function openEcSend(q, kind, ec) {
       try {
         const r = await api(`/api/quotes/${q.id}/ecount`, {method: 'POST', body: {kind, wh_cd: f.wh_cd.value, io_date: f.io_date.value, force: !!already}});
         state.lastWh = f.wh_cd.value;
-        close(); toast(`이카운트 ${label} 등록 완료 ${r.slip_nos.length ? '(전표 ' + r.slip_nos.join(', ') + ')' : ''}`);
+        close(); toast(`이카운트 ${label} 등록 완료 ${r.slip_nos.length ? '(전표 ' + r.slip_nos.join(', ') + ')' : ''}${r.replaced ? ' · 예전 전표 삭제 할 일을 만들었어요' : ''}`);
         openQuoteView(q.id); if (state.view === 'quotes') renderQuotes();
       } catch (err) { $('#ecErr', bg).textContent = err.message; btn.disabled = false; btn.textContent = '다시 시도'; }
     };
