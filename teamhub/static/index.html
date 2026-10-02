@@ -597,7 +597,7 @@ async function renderMailin() {
         <div class="row" style="gap:6px"><b style="flex:1;min-width:0;cursor:pointer" data-open="${m.id}">${esc(m.subject || '(제목 없음)')}</b>
           ${m.status === 'new' ? `<button class="btn sm" data-st="done" data-id="${m.id}">✔ 처리완료</button><button class="btn sm" data-st="ignored" data-id="${m.id}">무시</button>`
             : `<button class="btn sm" data-st="new" data-id="${m.id}">되돌리기</button>`}</div>
-        <small class="muted">${m.watch_label ? `<span class="tag p-high" title="확인 담당: ${esc((d.watch_rules.find(r => m.watch_label.includes(r.label)) || {}).users || '')}">👔 ${esc(m.watch_label)}</span> ` : ''}<span class="tag s-todo">${esc(d.topics[m.topic] || '분류 전')}${(d.topic_people[m.topic] || []).length ? ' · ' + esc(d.topic_people[m.topic].join(', ')) : ''}</span>${m.private ? ' 🔒' : ''} ${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id || d.share_all ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
+        <small class="muted">${m.watch_label ? `<span class="tag p-high" title="확인 담당: ${esc((d.watch_rules.find(r => m.watch_label.includes(r.label)) || {}).users || '')}">👔 ${esc(m.watch_label)}</span> ` : ''}<span class="tag s-todo">${esc(d.topics[m.topic] || '분류 전')}${(d.topic_people[m.topic] || []).length ? ' · ' + esc(d.topic_people[m.topic].join(', ')) : ''}</span>${m.private ? ' 🔒' : ''} 보낸 사람 <b style="color:var(--text)" title="${esc(m.from_addr)}">${esc(m.from_name || m.from_addr)}</b> · ${esc(m.sent_at)}${m.owner_id || d.share_all ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
         ${m.summary ? `<div style="font-size:13px;margin-top:3px">${esc(m.summary)}</div>` : ''}
         ${m.candidates.length ? `<div class="row" style="gap:6px;margin-top:6px">${m.candidates.map((c, i) => candChip(c, `data-c="${m.id}:${i}"`)).join('')}</div>` : ''}
       </div>`).join('') : `<div class="empty">${total ? '해당하는 메일이 없습니다.' : '아직 받은 메일이 없습니다. ⚙ 메일 연결 방법을 확인하세요.'}</div>`}
@@ -668,7 +668,7 @@ function useCandidate(m, c, onSaved) {
 async function openMailItem(id) {
   const m = await api(`/api/mailin/${id}`);
   openModal(`<h2 style="word-break:break-all">${esc(m.subject || '(제목 없음)')}</h2>
-    <div class="muted">${esc(m.from_name)} &lt;${esc(m.from_addr)}&gt; · ${esc(m.sent_at)}</div>
+    <div class="muted">보낸 사람 <b style="color:var(--text)">${esc(m.from_name)}</b> &lt;${esc(m.from_addr)}&gt; · ${esc(m.sent_at)}</div>
     <div class="row" style="gap:8px;margin-top:8px;align-items:center"><span class="muted" style="font-size:12px">업무</span>
       <select id="miTopic" style="width:auto">${Object.entries(MAIL_TOPICS).map(([k, v]) => `<option value="${k}" ${m.topic === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       ${m.owner_id === state.me.id ? `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miPriv" style="width:auto" ${m.private ? 'checked' : ''}>🔒 나만 보기 (다른 직원과 공유 안 함)</label>`
