@@ -1216,6 +1216,7 @@ function openStatementImport(dt = 'statement') {
           <div class="qscroll"><table style="margin-top:8px"><thead><tr><th>일자</th><th>전표</th><th>거래처</th><th style="text-align:right">품목</th><th style="text-align:right">합계</th><th></th></tr></thead><tbody>
           ${r.preview.map(g => `<tr style="cursor:default"><td>${esc(g.date)}</td><td>${esc(g.slip || '-')}</td><td>${esc(g.customer)}</td><td class="money">${g.lines}</td><td class="money">${won(g.total)}</td><td>${g.duplicate ? '<span class="tag s-todo">이미 있음</span>' : ''}</td></tr>`).join('')}
           </tbody></table></div>${r.slips > r.preview.length ? `<small class="muted">… 외 ${r.slips - r.preview.length}건</small>` : ''}
+          ${r.vat_assumed ? '<div class="tag s-hold" style="margin-top:6px">파일에 금액 열이 없어 공급가액 = 수량 × 단가, 부가세 10%로 계산합니다</div>' : ''}
           <div class="muted" style="font-size:12px;margin-top:6px">인식한 열: ${esc(r.columns.join(', '))}</div>`;
         if (fresh > 0) { $('#impGo', bg).classList.remove('hidden'); $('#impGo', bg).textContent = `${fresh}건 가져오기`; }
       } catch (err) { $('#impRes', bg).innerHTML = ''; $('#impErr', bg).textContent = err.message; }

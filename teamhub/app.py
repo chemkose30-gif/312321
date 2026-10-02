@@ -1,5 +1,6 @@
 """TeamHub - 사내 캘린더 & 업무지시 시스템 (FastAPI + SQLite)."""
 import hashlib
+import re
 import json
 import os
 import secrets
@@ -1221,43 +1222,79 @@ def _num(v) -> float:
         return 0.0
 
 
+def _norm_header(h) -> str:
+    return re.sub(r"[\s.\-–—‐−_·]", "", str(h or "")).lower()
+
+
+def _map_sale_cols(cells: list) -> dict:
+    """열 이름 일부만 맞아도 인식 (예: 일자-No. / 견적일자 / 수량(kg) / 금액합계)."""
+    rules = [
+        ("slip", lambda h: ("일자" in h and "no" in h) or h in ("월/일", "월일") or any(k in h for k in ("전표번호", "견적번호"))),
+        ("vendor", lambda h: "구매처" in h),
+        ("cust_cd", lambda h: "거래처" in h and "코드" in h),
+        ("customer", lambda h: "거래처" in h and "코드" not in h),
+        ("date", lambda h: "일자" in h or h in ("일", "날짜") or any(k in h for k in ("판매일", "거래일", "견적일", "작성일"))),
+        ("prod_cd", lambda h: "품목" in h and "코드" in h),
+        ("name", lambda h: ("품목" in h or "품명" in h) and "코드" not in h and "그룹" not in h),
+        ("spec", lambda h: "규격" in h),
+        ("unit", lambda h: h.startswith("단위")),
+        ("qty", lambda h: h.startswith("수량")),
+        ("price", lambda h: "단가" in h),
+        ("total", lambda h: any(k in h for k in ("합계", "총액", "총금액", "견적금액"))),
+        ("supply", lambda h: "공급가액" in h or (h.startswith("금액") and "합계" not in h)),
+        ("vat", lambda h: "부가세" in h or "세액" in h or h.startswith("vat")),
+        ("note", lambda h: "적요" in h or "비고" in h),
+    ]
+    col = {}
+    for key, ok in rules:
+        for i, h in enumerate(cells):
+            if h and i not in col.values() and ok(h):
+                col[key] = i
+                break
+    return col
+
+
 def parse_sales_sheet(rows: list):
     """머리글을 찾아 열을 매핑하고, 전표(일자-No) 단위로 묶은 목록을 반환."""
-    import re
-    for hi, header in enumerate(rows[:40]):
-        cells = [str(h).replace(" ", "").replace("\n", "").lower() for h in header]
-        if not any("거래처" in h for h in cells) or not any(
-                h.startswith("수량") or any(k in h for k in ("공급가액", "금액", "합계", "단가")) for h in cells):
+    candidates = []
+    for hi in range(min(len(rows), 40)):
+        candidates.append((hi + 1, [_norm_header(h) for h in rows[hi]]))
+        if hi + 1 < len(rows):  # 두 줄로 된 머리글 (예: 금액 / 공급가액·부가세)
+            nxt = rows[hi + 1]
+            merged = [_norm_header(a) + _norm_header(nxt[i] if i < len(nxt) else "") for i, a in enumerate(rows[hi])]
+            candidates.append((hi + 2, merged))
+    for start, cells in candidates:
+        if not any("거래처" in h for h in cells):
             continue
-        col = {}
-        for key, names in SALE_COLS.items():
-            for i, h in enumerate(cells):
-                if i in col.values():
-                    continue
-                if key == "date" and ("일자-no" in h or "일자no" in h):
-                    continue
-                if key == "customer" and "코드" in h:
-                    continue
-                if key == "name" and "코드" in h:
-                    continue
-                if any(h == n or h.startswith(n) for n in names):
-                    col[key] = i
-                    break
-        if "customer" not in col or ("slip" not in col and "date" not in col):
-            break
+        col = _map_sale_cols(cells)
+        if "customer" not in col or ("slip" not in col and "date" not in col) or not (
+                {"qty", "supply", "total", "price"} & set(col)):
+            continue
+        hi = start - 1
         groups, order = {}, []
+        # 조회 기간(예: "회사명 : ○○ / 2000/01/01 ~ 2026/10/02")의 마지막 날짜 → 연도 없는 "11/16-1" 의 연도 추정용
+        end_date = None
+        for r in rows[:hi + 1]:
+            found = re.findall(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", " ".join(str(v or "") for v in r))
+            if found:
+                y, mo, d = found[-1]
+                end_date = (int(y), int(mo), int(d))
+        parsed = []
         for r in rows[hi + 1:]:
-            get = lambda k: (str(r[col[k]]).strip() if k in col and col[k] < len(r) and r[col[k]] is not None else "")
+            get = lambda k: (re.sub(r"\s+", " ", str(r[col[k]])).strip()
+                             if k in col and col[k] < len(r) and r[col[k]] is not None else "")
             cust = get("customer")
             if not cust or any(w in cust for w in ("합계", "소계", "총계")):
                 continue
             raw = get("slip") or get("date")
             m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[^\d-]*-\s*(\d+))?", raw)
-            if not m:
-                continue
-            date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-            no = m.group(4)
-            key = f"{date}|{no}" if no else f"{date}|{cust}"
+            if m:
+                ymd, no = (int(m.group(1)), int(m.group(2)), int(m.group(3))), m.group(4)
+            else:
+                m = re.search(r"^(\d{1,2})[./-](\d{1,2})(?:\s*-\s*(\d+))?", raw)
+                if not m:
+                    continue
+                ymd, no = (None, int(m.group(1)), int(m.group(2))), m.group(3)
             name = get("name")
             if not name and not get("prod_cd"):
                 continue
@@ -1266,23 +1303,46 @@ def parse_sales_sheet(rows: list):
             if "supply" in col and _num(get("supply")):
                 supply = _num(get("supply"))
             elif "total" in col and _num(get("total")):
-                # 공급가액 열이 없고 합계(부가세 포함)만 있는 양식 (예: 견적서조회)
+                # 공급가액 열이 없고 합계(부가세 포함)만 있는 양식
                 supply = _num(get("total")) - (vat or 0)
             else:
                 supply = round(qty * price)
                 if vat is None:
                     vat = int(supply * 0.1)
-            vat = vat or 0
+            note = get("note")
+            if get("vendor"):
+                note = (note + " / " if note else "") + "구매처: " + get("vendor")
+            parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "item": {
+                "prod_cd": get("prod_cd"), "name": name, "spec": get("spec"), "unit": get("unit"), "qty": qty,
+                "price": price, "supply": int(round(supply)), "vat": int(round(vat or 0)), "note": note}})
+        # 연도 없는 날짜: 목록이 날짜순이라고 보고 아래(최근)에서 위로 올라가며 월/일이 커지면 한 해 전으로
+        year = end_date[0] if end_date else datetime.now().year
+        prev = None
+        for p in reversed(parsed):
+            y, mo, d = p["ymd"]
+            if y is None:
+                if prev and (mo, d) > prev:
+                    year -= 1
+                elif prev is None and end_date and (mo, d) > end_date[1:]:
+                    year -= 1
+                p["ymd"] = (year, mo, d)
+            else:
+                year = y
+            prev = (p["ymd"][1], p["ymd"][2])
+        groups, order = {}, []
+        for p in parsed:
+            date = "%04d-%02d-%02d" % p["ymd"]
+            key = f"{date}|{p['no']}" if p["no"] else f"{date}|{p['cust']}"
             if key not in groups:
-                groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{no}" if no else "",
-                               "customer": cust, "cust_cd": get("cust_cd"), "items": []}
+                groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{p['no']}" if p["no"] else "",
+                               "customer": p["cust"], "cust_cd": p["cust_cd"], "items": []}
                 order.append(key)
-            groups[key]["items"].append({"prod_cd": get("prod_cd"), "name": name, "spec": get("spec"),
-                                         "unit": get("unit"), "qty": qty, "price": price,
-                                         "supply": int(round(supply)), "vat": int(round(vat)), "note": get("note")})
+            groups[key]["items"].append(p["item"])
         return [groups[k] for k in order], sorted(col)
-    raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/공급가액' 열을 찾지 못했습니다."
-                             " 이카운트 판매조회·견적서조회 화면에서 내려받은 엑셀을 그대로 올려주세요.")
+    seen = [" | ".join(str(v).strip() for v in r if str(v or "").strip())[:150] for r in rows[:12]
+            if any(str(v or "").strip() for v in r)][:5]
+    raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/금액' 열을 찾지 못했습니다."
+                             " 이 메시지를 캡처해서 보내주세요. 파일 앞부분: " + " // ".join(seen))
 
 
 def insert_import_items(c, qid: int, items: list):
@@ -1354,8 +1414,9 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
     preview = [{"date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
                 "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]}
                for g in slips[:8]]
+    vat_assumed = not ({"supply", "total", "vat"} & set(cols))
     return {"slips": len(slips), "lines": sum(len(g["items"]) for g in slips), "created": created,
-            "skipped": skipped, "updated": updated, "columns": cols, "preview": preview, "dry_run": dry_run}
+            "skipped": skipped, "updated": updated, "vat_assumed": vat_assumed, "columns": cols, "preview": preview, "dry_run": dry_run}
 
 
 @app.get("/api/ecount/logs")
