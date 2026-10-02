@@ -39,7 +39,7 @@ async def lifespan(_app):
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
-            if get_setting(c, "mail_topics_v", "") != "2":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
+            if get_setting(c, "mail_topics_v", "") != "3":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
                 for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
                                    " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():
                     c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
@@ -49,7 +49,7 @@ async def lifespan(_app):
                     if not t and u["name"].replace(" ", "") in MAIL_TOPIC_SEED:
                         t = MAIL_TOPIC_SEED[u["name"].replace(" ", "")]
                     c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
-                set_setting(c, "mail_topics_v", "2")
+                set_setting(c, "mail_topics_v", "3")
             for r in c.execute("SELECT id, subject, body FROM mail_items WHERE topic = '' AND status != 'merged'").fetchall():
                 c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
     except Exception as e:  # noqa: BLE001

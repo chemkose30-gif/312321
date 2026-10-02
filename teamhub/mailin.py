@@ -475,6 +475,11 @@ TOPICS = {
 }
 
 
+FREIGHT_RATE = (r"운임|해상\s*운임|항공\s*운임|(freight|ocean|sea|air)\s*(rate|cost|charge|quot\w*|offer)|"
+                r"rate\s*(request|inquiry|enquiry|quot\w*)|\bquot\w*\s+for\s+(freight|shipping)|shipping\s*(rate|cost|quot\w*)|"
+                r"all[\s\-]?in\s*rate")
+
+
 def topic_of(subject: str, text: str) -> str:
     """수입·통관(선적·B/L·통관) → 해외 메일이면 해외 영업 → 발주 문의(견적·발주·주문) → 회계·샘플 → 기타.
     제목(가중치 3) + 본문 앞부분에서 업무 낱말을 센다."""
@@ -482,6 +487,9 @@ def topic_of(subject: str, text: str) -> str:
     for k, pat in TOPICS.items():
         score[k] = 3 * len(re.findall(pat, subject or "", re.I)) + len(re.findall(pat, (text or "")[:4000], re.I))
     best = max(score, key=score.get)
+    # 운임(해상·항공 운임 견적·문의)은 해외 영업 담당 — 선적 낱말이 있어도 수입·통관보다 먼저
+    if re.search(FREIGHT_RATE, subject or "", re.I) or len(re.findall(FREIGHT_RATE, (text or "")[:4000], re.I)) >= 2:
+        return "overseas"
     if score[best] and best == "import":
         return "import"
     letters = re.findall(r"[A-Za-z가-힣]", f"{subject}\n{(text or '')[:4000]}")
