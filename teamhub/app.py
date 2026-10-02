@@ -215,6 +215,10 @@ def init_db():
                                 ("quotes", "customer_address", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
+        for q in c.execute("SELECT id FROM quotes WHERE title = '' AND note = '이카운트에서 가져옴'").fetchall():
+            names = [r["name"] for r in c.execute("SELECT name FROM quote_items WHERE quote_id = ? ORDER BY seq", (q["id"],))]
+            c.execute("UPDATE quotes SET title = ? WHERE id = ?", (auto_title(names), q["id"]))
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
             c.execute("INSERT INTO settings VALUES ('secret', ?)", (secrets.token_hex(32),))
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -1231,6 +1235,7 @@ def _map_sale_cols(cells: list) -> dict:
     rules = [
         ("slip", lambda h: ("일자" in h and "no" in h) or h in ("월/일", "월일") or any(k in h for k in ("전표번호", "견적번호"))),
         ("vendor", lambda h: "구매처" in h),
+        ("title", lambda h: "건명" in h or "제목" in h),
         ("cust_cd", lambda h: "거래처" in h and "코드" in h),
         ("customer", lambda h: "거래처" in h and "코드" not in h),
         ("date", lambda h: "일자" in h or h in ("일", "날짜") or any(k in h for k in ("판매일", "거래일", "견적일", "작성일"))),
@@ -1314,7 +1319,7 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             note = get("note")
             if get("vendor"):
                 note = (note + " / " if note else "") + "구매처: " + get("vendor")
-            parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "item": {
+            parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "title": get("title"), "item": {
                 "prod_cd": get("prod_cd"), "name": name, "spec": get("spec"), "unit": get("unit"), "qty": qty,
                 "price": price, "supply": int(round(supply)), "vat": int(round(vat or 0)), "note": note}})
         # 연도 없는 날짜: 목록이 날짜순이라고 보고 아래(최근)에서 위로 올라가며 월/일이 커지면 한 해 전으로
@@ -1340,14 +1345,25 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             key = f"{date}|{p['no']}" if p["no"] else f"{date}|{p['cust']}"
             if key not in groups:
                 groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{p['no']}" if p["no"] else "",
-                               "customer": p["cust"], "cust_cd": p["cust_cd"], "items": []}
+                               "customer": p["cust"], "cust_cd": p["cust_cd"], "title": p["title"], "items": []}
                 order.append(key)
             groups[key]["items"].append(p["item"])
+        for g in groups.values():
+            g["title"] = g["title"] or auto_title([i["name"] for i in g["items"]])
         return [groups[k] for k in order], sorted(col) + (["year_fixed"] if fixed_year else [])
     seen = [" | ".join(str(v).strip() for v in r if str(v or "").strip())[:150] for r in rows[:12]
             if any(str(v or "").strip() for v in r)][:5]
     raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/금액' 열을 찾지 못했습니다."
                              " 이 메시지를 캡처해서 보내주세요. 파일 앞부분: " + " // ".join(seen))
+
+
+def auto_title(names: list) -> str:
+    """건명이 없을 때 품목으로 만든다: '첫 품목 외 n건'."""
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    first = names[0] if len(names[0]) <= 40 else names[0][:40] + "…"
+    return first + (f" 외 {len(names) - 1}건" if len(names) > 1 else "")
 
 
 def insert_import_items(c, qid: int, items: list):
@@ -1412,19 +1428,20 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
             if dup:
                 # 덮어쓰기: 같은 전표로 가져왔던 문서의 품목/금액을 새 엑셀 내용으로 교체
                 qid = dup["id"]
-                c.execute("UPDATE quotes SET customer_name = ?, quote_date = ?, supply_total = ?, vat_total = ?,"
+                c.execute("UPDATE quotes SET customer_name = ?, quote_date = ?, title = ?, supply_total = ?, vat_total = ?,"
                           " grand_total = ?, updated_at = ? WHERE id = ?",
-                          (g["customer"], g["date"], supply_total, vat_total, supply_total + vat_total, ts, qid))
+                          (g["customer"], g["date"], g["title"], supply_total, vat_total, supply_total + vat_total,
+                           ts, qid))
                 c.execute("DELETE FROM quote_items WHERE quote_id = ?", (qid,))
                 insert_import_items(c, qid, g["items"])
                 updated += 1
                 continue
             quote_no = next_quote_no(c, g["date"], doc_type)
             cur = c.execute(
-                "INSERT INTO quotes (quote_no, doc_type, customer_name, cust_cd, quote_date, vat_mode, status, note,"
+                "INSERT INTO quotes (quote_no, doc_type, title, customer_name, cust_cd, quote_date, vat_mode, status, note,"
                 f" supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (quote_no, doc_type, g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
+                " VALUES (?, ?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (quote_no, doc_type, g["title"], g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
                  IMPORT_NOTE, supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
@@ -1433,7 +1450,7 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
     by_date = sorted(slips, key=lambda g: g["date"])
     pick = by_date if len(by_date) <= 10 else by_date[:4] + [None] + by_date[-5:]
     preview = [None if g is None else {
-        "date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
+        "date": g["date"], "slip": g["slip"], "customer": g["customer"], "title": g["title"], "lines": len(g["items"]),
         "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]} for g in pick]
     years = {}
     for g in slips:
