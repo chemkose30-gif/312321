@@ -1348,7 +1348,7 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
         client = ecount_client(c)
         emp_cd = ecount_cfg(c)["emp_cd"]
     lines = ecount.build_lines(dict(q), [dict(i) for i in items], q["cust_cd"], body.wh_cd,
-                               body.io_date or q["quote_date"], emp_cd)
+                               body.io_date or q["quote_date"], emp_cd, body.kind)
     try:
         result = client.save_slip(body.kind, lines)
     except ecount.EcountError as e:
@@ -1382,6 +1382,8 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
             if body.kind == "sale" and q["doc_type"] == "quote" and q["status"] in ("draft", "sent"):
                 c.execute("UPDATE quotes SET status = 'won' WHERE id = ?", (qid,))
         msg = "; ".join(result["messages"]) or ("" if result["ok"] else json.dumps(result["raw"], ensure_ascii=False)[:500])
+        if result.get("quota"):
+            msg = (msg + " · " if msg else "") + result["quota"]
         ecount_log(c, qid, body.kind, result["ok"], slips, msg, user)
     if not result["ok"]:
         raise HTTPException(400, f"이카운트가 {label} 등록을 거부했습니다: {msg}")

@@ -56,6 +56,16 @@ def _find(obj, key):
     return None
 
 
+def _maybe_json(v):
+    """이카운트는 ResultDetails/SlipNos 를 JSON '문자열'로 주기도 한다 → 실제 목록으로."""
+    if isinstance(v, str) and v.strip()[:1] in ("[", "{"):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v
+    return v
+
+
 def error_messages(resp) -> list:
     """이카운트 응답에서 사람이 읽을 오류 메시지를 모은다."""
     msgs = []
@@ -76,7 +86,10 @@ def error_messages(resp) -> list:
         walk(resp.get("Errors"))
         data = resp.get("Data")
         if isinstance(data, dict):
-            walk(data.get("ResultDetails"))
+            details = _maybe_json(data.get("ResultDetails"))
+            if isinstance(details, list):   # 성공한 묶음의 "OK" 문구는 오류가 아니므로 실패한 것만
+                details = [d for d in details if not (isinstance(d, dict) and d.get("IsSuccess"))]
+            walk(details)
     return list(dict.fromkeys(m.strip() for m in msgs if m.strip()))
 
 
@@ -204,12 +217,13 @@ class Client:
             success = int(str(data.get("SuccessCnt", "0") or 0))
         except ValueError:
             fail, success = 1, 0
-        slips = data.get("SlipNos") or []
+        slips = _maybe_json(data.get("SlipNos")) or []
         if isinstance(slips, str):
-            slips = [s for s in re.split(r"[,\s]+", slips) if s]
+            slips = [s for s in re.split(r"[,\s]+", slips.strip("[]\"' ")) if s.strip("\"'")]
+        slips = [str(x).strip("\"' ") for x in slips if str(x).strip("\"' ")]
         messages = error_messages(resp)
         ok = success > 0 and fail == 0 and not (isinstance(resp, dict) and resp.get("Error"))
-        return {"ok": ok, "slip_nos": [str(s) for s in slips], "messages": messages,
+        return {"ok": ok, "slip_nos": slips, "messages": messages, "quota": str(data.get("QUANTITY_INFO") or ""),
                 "raw": json.loads(self._safe(json.dumps(resp, ensure_ascii=False)))}
 
 
@@ -224,8 +238,14 @@ def get_client(cfg: dict) -> Client:
     return _client_cache["client"]
 
 
-def build_lines(q: dict, items: list, cust_cd: str, wh_cd: str, io_date: str, emp_cd: str = "") -> list:
+def build_lines(q: dict, items: list, cust_cd: str, wh_cd: str, io_date: str, emp_cd: str = "",
+                kind: str = "sale") -> list:
     """TeamHub 견적서 → 이카운트 BulkDatas 목록 (한 전표)."""
+    head = {}
+    if kind == "quotation":   # 견적서입력 상단 항목 (입력화면에 있는 항목만 반영됨)
+        head = {"TTL_CTT": (q.get("title") or "")[:200], "REF_DES": (q.get("customer_contact") or "")[:200],
+                "COLL_TERM": (q.get("payment_terms") or "")[:200], "AGREE_TERM": (q.get("valid_until") or "")[:200]}
+        head = {k: v for k, v in head.items() if v}
     lines = []
     for it in items:
         ln = {
@@ -242,6 +262,7 @@ def build_lines(q: dict, items: list, cust_cd: str, wh_cd: str, io_date: str, em
             "VAT_AMT": str(it["vat"]),
             "REMARKS": it["note"],
         }
+        ln.update(head)
         if wh_cd:
             ln["WH_CD"] = wh_cd
         if emp_cd:
