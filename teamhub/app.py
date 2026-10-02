@@ -3182,9 +3182,12 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
     """원본 메일을 읽어 저장. 전달한 사람(직원 메일 주소)으로 주인을 정한다. 같은 메일은 한 번만."""
     items = mailin.parse_raw(raw)
     emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
-    added, dup, touched = 0, 0, {}
+    added, dup, skipped, touched = 0, 0, 0, {}
     for it in items:
-        oid = owner_id or emails.get(it["forwarder"]) or emails.get(it["to"].split(",")[0].strip().lower())
+        if it["bulk"]:
+            skipped += 1
+            continue                     # 광고·뉴스레터·자동 발송 메일은 저장하지 않음
+        oid = owner_id or next((emails[a] for a in it["owners"] if a in emails), None)
         uniq = it["msg_id"] or hashlib.sha1(f"{it['from_addr']}|{it['subject']}|{it['sent_at']}".encode()).hexdigest()
         if c.execute("SELECT 1 FROM mail_items WHERE owner_id IS ? AND (fp = ? OR (msg_ref != '' AND msg_ref = ?))",
                      (oid, it["fp"], it["msg_id"])).fetchone():
@@ -3220,7 +3223,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
         threading.Thread(target=run_ai_queue, args=(ai_queue,), daemon=True).start()
     if added and not bulk:
         bl_watch_soon()
-    out = {"messages": len(items), "added": added, "duplicates": dup, "with_schedule": found}
+    out = {"messages": len(items), "added": added, "duplicates": dup, "skipped": skipped, "with_schedule": found}
     if bulk:
         out["heads"] = heads
     return out

@@ -69,14 +69,45 @@ def _sent_at(msg) -> datetime:
         return datetime.now()
 
 
+# 메일 주인(전달한 직원) 찾는 순서
+#  - '전달'·'첨부로 전달'한 메일: 보낸 사람(From)이 직원
+#  - 자동 전체 전달(원래 메일이 그대로 넘어옴): 받는 사람(To/Cc)·전달 표시 머리글 쪽이 직원
+FWD_ORDER = ("from", "resent-from", "x-forwarded-for", "x-forwarded-to", "delivered-to", "x-original-to", "to", "cc")
+REDIRECT_ORDER = ("resent-from", "x-forwarded-for", "x-forwarded-to", "delivered-to", "x-original-to", "to", "cc",
+                  "from", "return-path")
+
+
+def header_addrs(msg, order=FWD_ORDER) -> list:
+    """메일 주인 후보 주소들 (앞에 있을수록 우선)."""
+    out = []
+    for h in order:
+        for v in msg.get_all(h, []) or []:
+            for _, a in getaddresses([str(v)]):
+                a = a.lower().strip()
+                if a and a not in out:
+                    out.append(a)
+    return out
+
+
+def is_bulk(msg) -> bool:
+    """광고·뉴스레터·자동 발송 메일."""
+    prec = str(msg.get("precedence", "") or "").lower()
+    auto = str(msg.get("auto-submitted", "") or "").lower()
+    return bool(msg.get("list-unsubscribe") or msg.get("list-id") or prec in ("bulk", "list", "junk")
+                or (auto and auto != "no"))
+
+
 def split_messages(raw: bytes) -> list:
-    """원본 메일 → [(메일, 전달한 사람 주소)]. '첨부로 전달'한 메일이 여러 개면 각각 꺼낸다."""
+    """원본 메일 → [(메일, 주인 후보 주소들)]. '첨부로 전달'한 메일이 여러 개면 각각 꺼낸다."""
     outer = email.message_from_bytes(raw, policy=policy.default)
-    forwarder = parseaddr(str(outer.get("from", "")))[1].lower()
     inner = [p.get_payload()[0] if isinstance(p.get_payload(), list) else p.get_payload()
              for p in outer.walk() if p.get_content_type() == "message/rfc822"]
     inner = [m for m in inner if hasattr(m, "get")]
-    return [(m, forwarder) for m in inner] if inner else [(outer, forwarder)]
+    if inner:
+        owners = header_addrs(outer)
+        return [(m, owners + [a for a in header_addrs(m, REDIRECT_ORDER) if a not in owners]) for m in inner]
+    forwarded = re.match(r"^\s*(fw|fwd|전달)\s*[:：]", str(outer.get("subject", "") or ""), re.I)
+    return [(outer, header_addrs(outer, FWD_ORDER if forwarded else REDIRECT_ORDER))]
 
 
 def clean_subject(s: str) -> str:
@@ -268,7 +299,7 @@ def extract(subject: str, text: str, sent: datetime) -> list:
 def parse_raw(raw: bytes) -> list:
     """원본 메일 → 저장할 항목 [{msg_id, from_addr, from_name, subject, sent_at, body, candidates, forwarder}]"""
     items = []
-    for msg, forwarder in split_messages(raw):
+    for msg, owners in split_messages(raw):
         text = message_text(msg)
         subject = str(msg.get("subject", "") or "")
         name, addr = parseaddr(str(msg.get("from", "") or ""))
@@ -287,7 +318,7 @@ def parse_raw(raw: bytes) -> list:
         items.append({"msg_id": str(msg.get("message-id", "") or "").strip()[:250], "refs": refs[-20:], "fp": fp,
                       "from_addr": (addr or "").lower(), "from_name": name or addr or "",
                       "subject": subject[:300], "sent_at": sent.strftime("%Y-%m-%d %H:%M"),
-                      "body": text[:20000], "candidates": extract(subject, text, sent), "forwarder": forwarder,
+                      "body": text[:20000], "candidates": extract(subject, text, sent), "owners": owners, "bulk": is_bulk(msg),
                       "to": ", ".join(a for _, a in getaddresses([str(msg.get("to", "") or "")]))[:300]})
     return items
 
