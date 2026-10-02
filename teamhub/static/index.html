@@ -153,6 +153,7 @@ td.title{font-weight:600}
     <label>비밀번호</label>
     <input id="lgPass" type="password" autocomplete="current-password" required>
     <div class="err" id="lgErr"></div>
+    <div class="muted" style="font-size:12px">아이디/비밀번호 발급·변경은 관리자에게 요청하세요.</div>
     <button class="btn primary" style="width:100%;margin-top:8px">로그인</button>
   </form>
 </section>
@@ -172,7 +173,7 @@ td.title{font-weight:600}
       <button class="user-chip" id="userBtn"></button>
       <div class="dropdown notif-panel hidden" id="notifPanel"></div>
       <div class="dropdown hidden" id="userMenu">
-        <button id="pwBtn">🔑 비밀번호 변경</button>
+        <button id="pwBtn" class="admin-only">🔑 비밀번호 변경</button>
         <button id="logoutBtn">🚪 로그아웃</button>
       </div>
     </div>
@@ -672,11 +673,11 @@ function openUser(u) {
     <form>
       <div class="grid2">
         <div><label>이름</label><input name="name" value="${esc(u?.name)}" required></div>
-        <div><label>아이디</label><input name="username" value="${esc(u?.username)}" ${u ? 'disabled' : 'required'}></div>
+        <div><label>아이디 (영문/숫자 3~30자)</label><input name="username" value="${esc(u?.username)}" required autocomplete="off"></div>
         <div><label>부서</label><input name="dept" list="deptList" value="${esc(u?.dept)}"></div>
         <div><label>직급</label><input name="position" value="${esc(u?.position)}"></div>
         <div><label>권한</label><select name="role"><option value="member">직원</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>관리자</option></select></div>
-        <div><label>${u ? '비밀번호 초기화 (변경 시만 입력)' : '초기 비밀번호 (6자 이상)'}</label><input name="password" type="text" ${u ? '' : 'required minlength="6"'}></div>
+        <div><label>${u ? '새 비밀번호 (변경 시만 입력)' : '비밀번호 (6자 이상)'}</label><input name="password" type="text" minlength="6" autocomplete="off" ${u ? '' : 'required'}></div>
       </div>
       <datalist id="deptList">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist>
       <div class="err"></div>
@@ -688,13 +689,13 @@ function openUser(u) {
     const f = $('form', bg);
     f.onsubmit = async e => {
       e.preventDefault();
-      const body = {name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
+      const body = {username: f.username.value, name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
       try {
         if (u) {
           if (f.password.value) body.password = f.password.value;
           await api(`/api/users/${u.id}`, {method: 'PUT', body});
         } else {
-          await api('/api/users', {method: 'POST', body: {...body, username: f.username.value, password: f.password.value}});
+          await api('/api/users', {method: 'POST', body: {...body, password: f.password.value}});
         }
         close(); toast('저장되었습니다.'); renderUsers();
       } catch (err) { $('.err', bg).textContent = err.message; }

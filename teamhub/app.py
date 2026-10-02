@@ -196,7 +196,8 @@ def me(user: dict = Depends(current_user)):
 
 
 @app.put("/api/me/password")
-def change_password(body: PasswordIn, user: dict = Depends(current_user)):
+def change_password(body: PasswordIn, user: dict = Depends(admin_user)):
+    # 아이디/비밀번호 설정은 관리자 전용 (직원은 관리자에게 요청)
     if hash_pw(body.current_password, user["salt"]) != user["pw_hash"]:
         raise HTTPException(400, "현재 비밀번호가 올바르지 않습니다.")
     if len(body.new_password) < 6:
@@ -221,12 +222,19 @@ class UserIn(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     name: Optional[str] = None
     dept: Optional[str] = None
     position: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
+
+
+def check_username(username: str):
+    u = username.strip()
+    if not (3 <= len(u) <= 30) or not all(ch.isascii() and (ch.isalnum() or ch in "._-") for ch in u):
+        raise HTTPException(400, "아이디는 영문/숫자/._- 3~30자로 입력하세요.")
 
 
 @app.get("/api/users")
@@ -245,6 +253,7 @@ def list_users(user: dict = Depends(current_user)):
 def create_user(body: UserIn, _: dict = Depends(admin_user)):
     if body.role not in ("admin", "member"):
         raise HTTPException(400, "잘못된 권한입니다.")
+    check_username(body.username)
     if len(body.password) < 6:
         raise HTTPException(400, "비밀번호는 6자 이상이어야 합니다.")
     salt = secrets.token_hex(16)
@@ -265,6 +274,10 @@ def create_user(body: UserIn, _: dict = Depends(admin_user)):
 @app.put("/api/users/{uid}")
 def update_user(uid: int, body: UserUpdate, admin: dict = Depends(admin_user)):
     fields, values = [], []
+    if body.username is not None:
+        check_username(body.username)
+        fields.append("username = ?")
+        values.append(body.username.strip())
     for key in ("name", "dept", "position"):
         val = getattr(body, key)
         if val is not None:
@@ -290,7 +303,10 @@ def update_user(uid: int, body: UserUpdate, admin: dict = Depends(admin_user)):
         values += [hash_pw(body.password, salt), salt]
     with db() as c:
         if fields:
-            c.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", (*values, uid))
+            try:
+                c.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", (*values, uid))
+            except sqlite3.IntegrityError:
+                raise HTTPException(400, "이미 사용 중인 아이디입니다.")
         if body.active is False or body.password:
             c.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
         row = c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
