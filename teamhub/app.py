@@ -2142,6 +2142,19 @@ INV_COLS = ("sheet", "row_no", "item", "cas", "fema", "kind", "location", "info"
             "cost_krw", "cost_est", "stock_qty", "stock_amt")
 
 
+def file_date(filename: str) -> str:
+    """파일 이름의 날짜(재고 기준일): '재고 2026.10.01.xlsx', '재고_20261001', '261001' → 2026-10-01."""
+    stem = re.sub(r"\.\w+$", "", filename or "")
+    for pat in (r"(20\d{2})[.\-_ ]?(\d{1,2})[.\-_ ]?(\d{1,2})(?!\d)", r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)"):
+        for m in re.finditer(pat, stem):
+            y = int(m[1]) + (2000 if len(m[1]) == 2 else 0)
+            try:
+                return datetime(y, int(m[2]), int(m[3])).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    return ""
+
+
 def save_inventory(c, lots: list, filename: str, by: str) -> dict:
     c.execute("DELETE FROM inv_ships")
     c.execute("DELETE FROM inv_lots")
@@ -2152,7 +2165,8 @@ def save_inventory(c, lots: list, filename: str, by: str) -> dict:
         c.executemany("INSERT INTO inv_ships (lot_id, ship_date, customer, qty, price, note) VALUES (?, ?, ?, ?, ?, ?)",
                       [(cur.lastrowid, s["ship_date"], s["customer"], s["qty"], s["price"], s["note"]) for s in l["ships"]])
         n_ship += len(l["ships"])
-    meta = {"filename": filename, "uploaded_at": now(), "by": by, "lots": len(lots), "ships": n_ship}
+    meta = {"filename": filename, "file_date": file_date(filename), "uploaded_at": now(), "by": by,
+            "lots": len(lots), "ships": n_ship}
     set_setting(c, "inv_meta", json.dumps(meta, ensure_ascii=False))
     return meta
 
@@ -2195,6 +2209,11 @@ async def inventory_upload(file: UploadFile = File(...), dry_run: bool = False, 
     if dry_run:
         return {"lots": len(lots), "ships": sum(len(l["ships"]) for l in lots), "sheets": sorted({l["sheet"] for l in lots})}
     with db() as c:
+        cur = inv_meta(c)
+        new_d, cur_d = file_date(filename), cur.get("file_date", "")
+        if user["role"] == "auto" and new_d and cur_d and new_d < cur_d:
+            # 자동 업로드가 더 예전 날짜 파일을 올리려 하면 덮어쓰지 않음 (직접 올리기는 허용)
+            return {**cur, "skipped": f"이미 {cur_d} 재고가 올라가 있어 {filename} 은(는) 건너뜀"}
         return save_inventory(c, lots, filename, user["name"])
 
 

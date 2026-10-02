@@ -1506,7 +1506,8 @@ const isDead = l => /폐기|불용/.test(l.kind + ' ' + l.location);
 
 function invMetaLine(meta) {
   if (!meta || !meta.filename) return '<span class="muted">아직 올린 재고 엑셀이 없습니다.</span>';
-  return `<span class="muted" style="font-size:12px">기준 파일 <b>${esc(meta.filename)}</b> · ${esc((meta.uploaded_at || '').slice(0, 16))} · ${esc(meta.by || '')}</span>`;
+  const stale = meta.file_date && (new Date(todayStr()) - new Date(meta.file_date)) / 864e5 > 3;
+  return `<span class="muted" style="font-size:12px">${meta.file_date ? `재고 기준일 <b style="${stale ? 'color:#b91c1c' : ''}">${esc(meta.file_date)}</b>${stale ? ' (오래됨 — 자동 업로드 확인)' : ''} · ` : ''}파일 <b>${esc(meta.filename)}</b> · 올림 ${esc((meta.uploaded_at || '').slice(0, 16))} · ${esc(meta.by || '')}</span>`;
 }
 
 function openInvUpload(after) {
@@ -1540,11 +1541,20 @@ function openInvUpload(after) {
 async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
-  const script = key => `# TeamHub 재고 자동 업로드: 창고관리 폴더에서 가장 최근에 수정한 재고 엑셀을 올립니다
+  const script = key => `# TeamHub 재고 자동 업로드: 창고관리 폴더에서 파일 이름의 날짜가 가장 최근인 재고 엑셀을 올립니다
+# (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일을 올림. 날짜가 없으면 수정한 시각 기준)
 $dir = "Z:\\VOL1\\공유문서\\창고관리"
 $key = "${key || '(위에서 키 만들기)'}"
-$files = Get-ChildItem -Path "$dir\\*" -File -Include *.xlsx,*.xlsm | Where-Object { $_.Name -notlike '~$*' } |
-         Sort-Object LastWriteTime -Descending | Select-Object -First 5
+function Get-FileDate($name) {
+  if ($name -match '(20\\d{2})[.\\-_ ]?(\\d{1,2})[.\\-_ ]?(\\d{1,2})(?!\\d)') { return '{0}{1:D2}{2:D2}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3] }
+  if ($name -match '(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)') { return '20{0}{1}{2}' -f $Matches[1], $Matches[2], $Matches[3] }
+  return '00000000'
+}
+# 하위 폴더(예: 월별 폴더)까지 찾음
+$files = Get-ChildItem -LiteralPath $dir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+         Where-Object { $_.Extension -in '.xlsx', '.xlsm' -and $_.Name -notlike '~$*' } |
+         Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
+         Select-Object -First 5
 $tmp = Join-Path $env:TEMP "teamhub_inv.xlsx"   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
 foreach ($f in $files) {   # 재고 시트가 없는 파일이면 다음 파일로
   Copy-Item -LiteralPath $f.FullName $tmp -Force
