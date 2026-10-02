@@ -2929,7 +2929,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
 MAIL_IMPORT_DIR = Path(os.getenv("TEAMHUB_IMPORT_DIR", "/tmp/teamhub-mail-import"))
 
 
-def _iter_mailbox(path: Path, workdir: Path):
+def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
     """파일 → 메일 원본(bytes) 하나씩."""
     import mailbox
     import shutil
@@ -2954,18 +2954,26 @@ def _iter_mailbox(path: Path, workdir: Path):
             yield msg.as_bytes()
     elif name.endswith(".zip"):
         with zipfile.ZipFile(path) as z:
+            pwd = password.encode() if password else None
             for info in z.infolist():
                 low = info.filename.lower()
                 if info.is_dir() or not low.endswith((".eml", ".mbox", ".pst", ".ost")):
                     continue
                 target = workdir / "zip" / Path(info.filename).name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(info) as src, open(target, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                try:
+                    with z.open(info, pwd=pwd) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                except RuntimeError as e:          # 암호 걸린 zip
+                    raise RuntimeError("압축 파일 비밀번호가 필요합니다. 비밀번호 칸에 입력하세요." if "password required" in str(e)
+                                       else "압축 파일 비밀번호가 맞지 않습니다.") from e
+                except NotImplementedError as e:   # AES 방식 암호 (반디집·7-Zip 의 'AES' 선택)
+                    raise RuntimeError("이 압축 파일은 AES 방식 암호라 서버에서 풀 수 없습니다. PC에서 압축을 푼 뒤 안의"
+                                       " .pst/.mbox 파일을 올려 주세요.") from e
                 if low.endswith(".eml"):
                     yield target.read_bytes()
                 else:
-                    yield from _iter_mailbox(target, workdir / f"z{info.header_offset}")
+                    yield from _iter_mailbox(target, workdir / f"z{info.header_offset}", password)
                 target.unlink(missing_ok=True)
     else:
         yield path.read_bytes()
@@ -2978,7 +2986,7 @@ def _set_import(uid: int, **kw):
         set_setting(c, f"mail_import:{uid}", json.dumps(st, ensure_ascii=False))
 
 
-def run_mail_import(path: Path, uid: int, months: int):
+def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
     """백그라운드: 메일함 파일을 읽어 최근 N개월 메일만 저장 → 앞으로의 일정이 있는 쓰레드만 AI 분석 → 알림 한 번."""
     import shutil
     from email.parser import BytesHeaderParser
@@ -3003,7 +3011,7 @@ def run_mail_import(path: Path, uid: int, months: int):
         _set_import(uid, read=total, added=added, duplicates=dup, skipped_old=old)
 
     try:
-        for raw in _iter_mailbox(path, workdir):
+        for raw in _iter_mailbox(path, workdir, password):
             total += 1
             try:
                 d = parsedate_to_datetime(BytesHeaderParser().parsebytes(raw[:20000])["date"])
@@ -3038,7 +3046,8 @@ def run_mail_import(path: Path, uid: int, months: int):
 
 
 @app.post("/api/mailin/import")
-async def mailin_import(file: UploadFile = File(...), months: int = 3, user: dict = Depends(current_user)):
+async def mailin_import(file: UploadFile = File(...), months: int = 3, password: str = Form(""),
+                       user: dict = Depends(current_user)):
     """내 메일함 파일(.pst/.mbox/.zip/.eml)을 올리면 백그라운드에서 가져온다."""
     import shutil
     name = Path(file.filename or "mail").name
@@ -3056,7 +3065,8 @@ async def mailin_import(file: UploadFile = File(...), months: int = 3, user: dic
     months = max(1, min(int(months or 3), 24))
     _set_import(user["id"], status="running", file=name, size=path.stat().st_size, months=months, read=0, added=0,
                 duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="")
-    threading.Thread(target=run_mail_import, args=(path, user["id"], months), daemon=True).start()
+    # 비밀번호는 저장하지 않고 이번 가져오기에만 쓴다
+    threading.Thread(target=run_mail_import, args=(path, user["id"], months, password), daemon=True).start()
     return {"ok": True}
 
 
