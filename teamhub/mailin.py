@@ -320,6 +320,9 @@ def parse_raw(raw: bytes) -> list:
                       "from_addr": (addr or "").lower(), "from_name": name or addr or "",
                       "subject": subject[:300], "sent_at": sent.strftime("%Y-%m-%d %H:%M"),
                       "body": text[:20000], "candidates": extract(subject, text, sent), "owners": owners, "bulk": is_bulk(msg),
+                      "rcpt": (" ".join(str(v) for h in ("to", "cc", "x-gm-original-to", "x-original-to", "delivered-to",
+                                                          "resent-to", "x-forwarded-to")
+                                        for v in (msg.get_all(h, []) or [])) + " " + " ".join(owners))[:2000],
                       "to": ", ".join(a for _, a in getaddresses([str(msg.get("to", "") or "")]))[:300]})
     return items
 

@@ -54,6 +54,9 @@ async def lifespan(_app):
                         t += ",freight"
                     c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
                 set_setting(c, "mail_topics_v", "4")
+            if get_setting(c, "mail_watch_v", "") != "1":
+                recompute_watch(c)
+                set_setting(c, "mail_watch_v", "1")
             for r in c.execute("SELECT id, subject, body FROM mail_items WHERE topic = '' AND status != 'merged'").fetchall():
                 c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
     except Exception as e:  # noqa: BLE001
@@ -377,6 +380,9 @@ def init_db():
                                 ("mail_items", "topic", "TEXT NOT NULL DEFAULT ''"),
                                 ("mail_items", "topic_set", "INTEGER NOT NULL DEFAULT 0"),
                                 ("mail_items", "private", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mail_items", "rcpt", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "watchers", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "watch_label", "TEXT NOT NULL DEFAULT ''"),
                                 ("users", "mail_topics", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "hbl_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_cargo_no", "TEXT NOT NULL DEFAULT ''"),
@@ -3862,10 +3868,11 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
             continue                     # 같은 메일이 이미 있음 (첨부 전달·자동 전달로 두 번 온 경우 등)
         key = _thread_key(c, oid, it)
         cur = c.execute("INSERT OR IGNORE INTO mail_items (owner_id, uniq, from_addr, from_name, subject, sent_at, body,"
-                        " candidates, status, created_at, thread_key, msg_ref, fp)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?, ?)",
+                        " candidates, status, created_at, thread_key, msg_ref, fp, rcpt)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?, ?, ?)",
                         (oid, f"{oid or 0}:{uniq}", it["from_addr"], it["from_name"], it["subject"], it["sent_at"], it["body"],
-                         json.dumps(it["candidates"], ensure_ascii=False), now(), key, it["msg_id"], it["fp"]))
+                         json.dumps(it["candidates"], ensure_ascii=False), now(), key, it["msg_id"], it["fp"],
+                         it.get("rcpt", "")))
         if cur.rowcount:
             added += 1
             touched[key] = oid
@@ -3877,6 +3884,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
         if bulk:                         # 한꺼번에 가져오기: 알림·AI 는 다 끝난 뒤 한 번에
             heads.append(head_id)
             continue
+        notify_watchers(c, head_id)
         if ai_mail.enabled() and (cands or foreign):
             c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (head_id,))
             ai_queue.append(head_id)
@@ -4093,6 +4101,78 @@ def merge_rule_candidates(rows) -> list:
     return sorted(merged.values(), key=lambda c: ({"ship": 0, "event": 1, "task": 2}[c["kind"]], c["date"]))[:12]
 
 
+# ---- 받는 사람별 확인 담당: 예) 김건동 이사에게 온 메일 → 조정무·이수철·심혜지가 확인
+MAIL_WATCH_SEED = [{"label": "김건동 이사", "match": "김건동", "users": "조정무,이수철,심혜지"}]
+
+
+def watch_rules(c) -> list:
+    raw = get_setting(c, "mail_watch", "")
+    if not raw:
+        rules = [dict(r) for r in MAIL_WATCH_SEED]
+        for r in rules:                  # 직원관리에 그 사람 메일 주소가 있으면 같이 찾음
+            for u in c.execute("SELECT email FROM users WHERE REPLACE(name, ' ', '') = ? AND email != ''",
+                               (r["match"].split(",")[0].strip(),)):
+                r["match"] += f", {u['email']}"
+        set_setting(c, "mail_watch", json.dumps(rules, ensure_ascii=False))
+        return rules
+    try:
+        return json.loads(raw) or []
+    except ValueError:
+        return []
+
+
+def watch_match(c, rows) -> tuple:
+    """쓰레드 메일들의 받는 사람(To·Cc·전달 주소)에 규칙의 이름·주소가 있으면 → ('김건동 이사', [확인할 직원 id])"""
+    rcpt = " ".join(str(r["rcpt"] or "") for r in rows).lower()
+    if not rcpt.strip():
+        return "", []
+    labels, ids = [], []
+    names = {r["name"].replace(" ", ""): r["id"] for r in c.execute("SELECT id, name FROM users WHERE active = 1")}
+    for rule in watch_rules(c):
+        terms = [t.strip().lower() for t in str(rule.get("match", "")).split(",") if t.strip()]
+        if any(t in rcpt for t in terms):
+            labels.append(rule.get("label") or terms[0])
+            for n in str(rule.get("users", "")).split(","):
+                uid = names.get(n.strip().replace(" ", ""))
+                if uid and uid not in ids:
+                    ids.append(uid)
+    return ", ".join(labels), ids
+
+
+def notify_watchers(c, head_id: int):
+    m = c.execute("SELECT * FROM mail_items WHERE id = ?", (head_id,)).fetchone()
+    if not m or not m["watchers"] or m["private"]:
+        return
+    for uid in [int(x) for x in m["watchers"].strip(",").split(",") if x]:
+        notify(c, uid, f"📩 [{m['watch_label']}] 메일: {m['subject'][:50]} — {m['from_name'][:30]}")
+
+
+def recompute_watch(c):
+    for r in c.execute("SELECT thread_key FROM mail_items WHERE status != 'merged'").fetchall():
+        rows = thread_rows(c, r["thread_key"])
+        label, ids = watch_match(c, rows)
+        c.execute("UPDATE mail_items SET watchers = ?, watch_label = ?,"
+                  " status = CASE WHEN ? != '' AND status = 'none' THEN 'new' ELSE status END"
+                  " WHERE thread_key = ? AND status != 'merged'",
+                  ("," + ",".join(map(str, ids)) + "," if ids else "", label, label, r["thread_key"]))
+
+
+@app.get("/api/mailin/watch")
+def get_mail_watch(_: dict = Depends(current_user)):
+    with db() as c:
+        return {"rules": watch_rules(c)}
+
+
+@app.put("/api/mailin/watch")
+def put_mail_watch(body: dict, _: dict = Depends(admin_user)):
+    rules = [{"label": str(r.get("label", "")).strip()[:40], "match": str(r.get("match", "")).strip()[:300],
+              "users": str(r.get("users", "")).strip()[:300]} for r in (body.get("rules") or []) if str(r.get("match", "")).strip()]
+    with db() as c:
+        set_setting(c, "mail_watch", json.dumps(rules, ensure_ascii=False))
+        recompute_watch(c)
+    return {"rules": rules}
+
+
 def refresh_thread(c, key: str):
     """쓰레드의 대표(가장 최근 메일)를 정하고 규칙 방식 후보를 다시 계산. → (대표 id, 후보, 해외메일 여부)"""
     rows = thread_rows(c, key)
@@ -4115,11 +4195,15 @@ def refresh_thread(c, key: str):
         topic, topic_set = mailin.topic_of(head["subject"], "\n".join(mailin.own_text(r["body"]) or r["body"][:2000]
                                                                        for r in rows[-5:])), 0
     private = prev["private"] if prev is not None else 0
+    label, watchers = watch_match(c, rows)
+    if watchers and status == "none":
+        status = "new"                   # 확인 담당이 정해진 사람(예: 김건동 이사)에게 온 메일은 일정이 없어도 '확인할 것'
     c.execute("UPDATE mail_items SET status = 'merged' WHERE thread_key = ? AND id != ?", (key, head["id"]))
     c.execute("UPDATE mail_items SET status = ?, t_candidates = ?, t_count = ?, summary = CASE WHEN ? != '' THEN ? ELSE summary END,"
-              " topic = ?, topic_set = ?, private = ? WHERE id = ?",
+              " topic = ?, topic_set = ?, private = ?, watchers = ?, watch_label = ? WHERE id = ?",
               (status, json.dumps(cands, ensure_ascii=False), len(rows), prev["summary"] if prev else "",
-               prev["summary"] if prev else "", topic, topic_set, private, head["id"]))
+               prev["summary"] if prev else "", topic, topic_set, private,
+               "," + ",".join(map(str, watchers)) + "," if watchers else "", label, head["id"]))
     return head["id"], cands, ai_mail.is_foreign(head["body"])
 
 
@@ -4249,7 +4333,7 @@ def mail_visible(user: dict):
     # 아니면 본인 메일 + 내가 맡은 업무로 분류된 다른 사람 메일. 관리자는 주인을 못 찾은 메일도 본다.
     if mail_share_all():
         return "(m.owner_id IS ? OR m.private = 0)", [user["id"]]
-    clause, params = "m.owner_id = ?", [user["id"]]
+    clause, params = "m.owner_id = ? OR m.watchers LIKE ?", [user["id"], f"%,{user['id']},%"]
     tops = user_topics(user)
     if tops:
         clause += f" OR (m.private = 0 AND m.topic IN ({', '.join('?' * len(tops))}))"
@@ -4269,7 +4353,7 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
     clause, params = mail_visible(user)
     sql = (f"SELECT m.id, m.owner_id, m.from_addr, m.from_name, m.subject, m.sent_at, m.t_candidates AS candidates,"
            f" m.status, m.summary, m.ai_status, m.t_count, m.translation != '' AS translated, m.topic, m.topic_set,"
-           f" m.private, u.name AS owner_name FROM mail_items m LEFT JOIN users u ON u.id = m.owner_id"
+           f" m.private, m.watch_label, m.watchers, u.name AS owner_name FROM mail_items m LEFT JOIN users u ON u.id = m.owner_id"
            f" WHERE {clause} AND m.status != 'merged'")
     if status in ("new", "done", "ignored", "none"):
         sql += " AND m.status = ?"
@@ -4279,8 +4363,8 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
         params.append(user["id"])
     elif topic == "assigned":
         tops = user_topics(user) or ["-"]
-        sql += f" AND m.topic IN ({', '.join('?' * len(tops))})"
-        params += tops
+        sql += f" AND (m.topic IN ({', '.join('?' * len(tops))}) OR m.watchers LIKE ?)"
+        params += tops + [f"%,{user['id']},%"]
     elif topic in MAIL_TOPICS:
         sql += " AND m.topic = ?"
         params.append(topic)
@@ -4293,12 +4377,15 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
         rows = [dict(r) for r in c.execute(sql + " ORDER BY m.sent_at DESC LIMIT 300", params)]
         vc, vp = mail_visible(user)
         counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {vc} GROUP BY 1", vp)}
+        rules = watch_rules(c)
         tcounts = {r[0]: r[1] for r in c.execute(f"SELECT m.topic, COUNT(*) FROM mail_items m WHERE {vc}"
                                                   " AND m.status = 'new' GROUP BY 1", vp)}
         for r in rows:        # 그 사이 등록된 입고예정과 다시 맞춰 봄 (자동 등록된 B/L 등)
             r["candidates"] = match_shipments(c, json.loads(r["candidates"] or "[]"), r["subject"])
     return {"items": rows, "counts": counts, "ai": ai_mail.enabled(), "topics": MAIL_TOPICS, "my_topics": user_topics(user),
-            "share_all": mail_share_all(), "topic_people": topic_people(),
+            "share_all": mail_share_all(), "topic_people": topic_people(), "watch_rules": rules,
+            "my_watch": [r["label"] for r in rules if user["name"].replace(" ", "") in
+                         [n.strip().replace(" ", "") for n in r["users"].split(",")]],
             "topic_counts": tcounts}
 
 
