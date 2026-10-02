@@ -1207,8 +1207,9 @@ SALE_COLS = {
     "unit": ("단위",),
     "qty": ("수량",),
     "price": ("단가",),
-    "supply": ("공급가액",),
-    "vat": ("부가세",),
+    "total": ("합계금액", "금액합계", "견적금액", "총금액", "합계", "총액"),
+    "supply": ("공급가액", "금액"),
+    "vat": ("부가세", "세액", "vat"),
     "note": ("적요", "비고"),
 }
 
@@ -1260,8 +1261,17 @@ def parse_sales_sheet(rows: list):
             if not name and not get("prod_cd"):
                 continue
             qty, price = _num(get("qty")), _num(get("price"))
-            supply = _num(get("supply")) if "supply" in col else round(qty * price)
-            vat = _num(get("vat")) if "vat" in col else int(supply * 0.1)
+            vat = _num(get("vat")) if "vat" in col else None
+            if "supply" in col and _num(get("supply")):
+                supply = _num(get("supply"))
+            elif "total" in col and _num(get("total")):
+                # 공급가액 열이 없고 합계(부가세 포함)만 있는 양식 (예: 견적서조회)
+                supply = _num(get("total")) - (vat or 0)
+            else:
+                supply = round(qty * price)
+                if vat is None:
+                    vat = int(supply * 0.1)
+            vat = vat or 0
             if key not in groups:
                 groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{no}" if no else "",
                                "customer": cust, "cust_cd": get("cust_cd"), "items": []}
@@ -1274,6 +1284,16 @@ def parse_sales_sheet(rows: list):
                              " 이카운트 판매조회·견적서조회 화면에서 내려받은 엑셀을 그대로 올려주세요.")
 
 
+def insert_import_items(c, qid: int, items: list):
+    for seq, it in enumerate(items, 1):
+        c.execute(
+            "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (qid, seq, it["prod_cd"], it["name"], it["spec"], it["unit"], it["qty"], it["price"],
+             it["supply"], it["vat"], it["note"]),
+        )
+
+
 @app.post("/api/statements/import")
 async def import_statements(file: UploadFile = File(...), dry_run: bool = True, user: dict = Depends(admin_user)):
     return await import_docs(file, "statement", dry_run, user)
@@ -1281,34 +1301,44 @@ async def import_statements(file: UploadFile = File(...), dry_run: bool = True, 
 
 @app.post("/api/docs/import")
 async def import_docs_api(file: UploadFile = File(...), doc_type: str = "statement", dry_run: bool = True,
-                          user: dict = Depends(admin_user)):
+                          overwrite: bool = False, user: dict = Depends(admin_user)):
     if doc_type not in DOC_TYPES:
         raise HTTPException(400, "잘못된 문서 종류입니다.")
-    return await import_docs(file, doc_type, dry_run, user)
+    return await import_docs(file, doc_type, dry_run, user, overwrite)
 
 
-async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict):
+async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict, overwrite: bool = False):
     """이카운트 판매조회(거래명세서) / 견적서조회(견적서) 엑셀 가져오기."""
     slip_col = "ecount_sale_slip" if doc_type == "statement" else "ecount_quote_slip"
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
     slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data))
-    created = skipped = 0
+    created = skipped = updated = 0
     with db() as c:
         cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
         for g in slips:
             dup = g["slip"] and c.execute(
-                f"SELECT 1 FROM quotes WHERE doc_type = ? AND {slip_col} = ?", (doc_type, g["slip"])).fetchone()
+                f"SELECT id FROM quotes WHERE doc_type = ? AND {slip_col} = ?", (doc_type, g["slip"])).fetchone()
             g["duplicate"] = bool(dup)
-            if dup:
+            supply_total = sum(i["supply"] for i in g["items"])
+            vat_total = sum(i["vat"] for i in g["items"])
+            if dup and not overwrite:
                 skipped += 1
                 continue
             if dry_run:
                 continue
             ts = now()
-            supply_total = sum(i["supply"] for i in g["items"])
-            vat_total = sum(i["vat"] for i in g["items"])
+            if dup:
+                # 덮어쓰기: 같은 전표로 가져왔던 문서의 품목/금액을 새 엑셀 내용으로 교체
+                qid = dup["id"]
+                c.execute("UPDATE quotes SET customer_name = ?, quote_date = ?, supply_total = ?, vat_total = ?,"
+                          " grand_total = ?, updated_at = ? WHERE id = ?",
+                          (g["customer"], g["date"], supply_total, vat_total, supply_total + vat_total, ts, qid))
+                c.execute("DELETE FROM quote_items WHERE quote_id = ?", (qid,))
+                insert_import_items(c, qid, g["items"])
+                updated += 1
+                continue
             quote_no = next_quote_no(c, g["date"], doc_type)
             cur = c.execute(
                 "INSERT INTO quotes (quote_no, doc_type, customer_name, cust_cd, quote_date, vat_mode, status, note,"
@@ -1318,19 +1348,13 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
                  "이카운트에서 가져옴", supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
-            for seq, it in enumerate(g["items"], 1):
-                c.execute(
-                    "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (cur.lastrowid, seq, it["prod_cd"], it["name"], it["spec"], it["unit"], it["qty"], it["price"],
-                     it["supply"], it["vat"], it["note"]),
-                )
+            insert_import_items(c, cur.lastrowid, g["items"])
             created += 1
     preview = [{"date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
                 "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]}
                for g in slips[:8]]
     return {"slips": len(slips), "lines": sum(len(g["items"]) for g in slips), "created": created,
-            "skipped": skipped, "columns": cols, "preview": preview, "dry_run": dry_run}
+            "skipped": skipped, "updated": updated, "columns": cols, "preview": preview, "dry_run": dry_run}
 
 
 @app.get("/api/ecount/logs")
