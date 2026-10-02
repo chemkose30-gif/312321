@@ -1254,7 +1254,7 @@ def _map_sale_cols(cells: list) -> dict:
     return col
 
 
-def parse_sales_sheet(rows: list):
+def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
     """머리글을 찾아 열을 매핑하고, 전표(일자-No) 단위로 묶은 목록을 반환."""
     candidates = []
     for hi in range(min(len(rows), 40)):
@@ -1273,12 +1273,14 @@ def parse_sales_sheet(rows: list):
         hi = start - 1
         groups, order = {}, []
         # 조회 기간(예: "회사명 : ○○ / 2000/01/01 ~ 2026/10/02")의 마지막 날짜 → 연도 없는 "11/16-1" 의 연도 추정용
-        end_date = None
+        end_date = start_date = None
         for r in rows[:hi + 1]:
             found = re.findall(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", " ".join(str(v or "") for v in r))
             if found:
-                y, mo, d = found[-1]
-                end_date = (int(y), int(mo), int(d))
+                start_date = tuple(int(x) for x in found[0])
+                end_date = tuple(int(x) for x in found[-1])
+        # 연도를 확실히 알 수 있으면 고정: 직접 지정 > 조회기간이 한 해 안
+        fixed_year = force_year or (end_date[0] if end_date and start_date and start_date[0] == end_date[0] else None)
         parsed = []
         for r in rows[hi + 1:]:
             get = lambda k: (re.sub(r"\s+", " ", str(r[col[k]])).strip()
@@ -1320,6 +1322,9 @@ def parse_sales_sheet(rows: list):
         prev = None
         for p in reversed(parsed):
             y, mo, d = p["ymd"]
+            if y is None and fixed_year:
+                p["ymd"] = (fixed_year, mo, d)
+                continue
             if y is None:
                 if prev and (mo, d) > prev:
                     year -= 1
@@ -1338,7 +1343,7 @@ def parse_sales_sheet(rows: list):
                                "customer": p["cust"], "cust_cd": p["cust_cd"], "items": []}
                 order.append(key)
             groups[key]["items"].append(p["item"])
-        return [groups[k] for k in order], sorted(col)
+        return [groups[k] for k in order], sorted(col) + (["year_fixed"] if fixed_year else [])
     seen = [" | ".join(str(v).strip() for v in r if str(v or "").strip())[:150] for r in rows[:12]
             if any(str(v or "").strip() for v in r)][:5]
     raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/금액' 열을 찾지 못했습니다."
@@ -1362,19 +1367,33 @@ async def import_statements(file: UploadFile = File(...), dry_run: bool = True, 
 
 @app.post("/api/docs/import")
 async def import_docs_api(file: UploadFile = File(...), doc_type: str = "statement", dry_run: bool = True,
-                          overwrite: bool = False, user: dict = Depends(admin_user)):
+                          overwrite: bool = False, year: Optional[int] = None, user: dict = Depends(admin_user)):
     if doc_type not in DOC_TYPES:
         raise HTTPException(400, "잘못된 문서 종류입니다.")
-    return await import_docs(file, doc_type, dry_run, user, overwrite)
+    return await import_docs(file, doc_type, dry_run, user, overwrite, year)
 
 
-async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict, overwrite: bool = False):
+IMPORT_NOTE = "이카운트에서 가져옴"
+
+
+@app.delete("/api/docs/imported")
+def delete_imported(doc_type: str, _: dict = Depends(admin_user)):
+    """엑셀로 가져온 문서(비고가 '이카운트에서 가져옴' 그대로인 것)를 모두 삭제 — 잘못 가져왔을 때 다시 하기용."""
+    if doc_type not in DOC_TYPES:
+        raise HTTPException(400, "잘못된 문서 종류입니다.")
+    with db() as c:
+        n = c.execute("DELETE FROM quotes WHERE doc_type = ? AND note = ?", (doc_type, IMPORT_NOTE)).rowcount
+    return {"deleted": n}
+
+
+async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict, overwrite: bool = False,
+                      year: Optional[int] = None):
     """이카운트 판매조회(거래명세서) / 견적서조회(견적서) 엑셀 가져오기."""
     slip_col = "ecount_sale_slip" if doc_type == "statement" else "ecount_quote_slip"
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
-    slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data))
+    slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data), year)
     created = skipped = updated = 0
     with db() as c:
         cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
@@ -1406,7 +1425,7 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
                 f" supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (quote_no, doc_type, g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
-                 "이카운트에서 가져옴", supply_total, vat_total, supply_total + vat_total, g["slip"],
+                 IMPORT_NOTE, supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
             insert_import_items(c, cur.lastrowid, g["items"])

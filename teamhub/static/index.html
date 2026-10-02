@@ -1188,31 +1188,41 @@ function openStatementImport(dt = 'statement') {
   const isSt = dt === 'statement', D = DOC[dt];
   openModal(`<h2>📥 이카운트 ${isSt ? '거래명세서(판매)' : '견적서'} 가져오기</h2>
     <div class="desc" style="font-size:13px">이카운트는 지난 ${isSt ? '판매' : '견적서'}를 조회하는 API를 제공하지 않아, <b>엑셀 파일</b>로 가져옵니다.<br>
-      1. 이카운트 → 영업관리 → <b>${isSt ? '판매조회</b> (또는 판매현황)' : '견적서조회</b>'} 화면에서 기간을 정해 조회<br>
+      1. 이카운트 → 영업관리 → <b>${isSt ? '판매조회</b> (또는 판매현황)' : '견적서조회</b>'} 화면에서 <b>기간을 1년 단위</b>로 정해 조회 (예: 2026/01/01 ~ 2026/12/31)<br>
       2. 화면의 <b>[Excel]</b> 버튼으로 내려받기 (거래처명·일자-No.·품목·수량·단가·공급가액·부가세 열이 보이게)<br>
-      3. 아래에 그 파일을 올리면 미리보기 후 가져옵니다. 이미 가져온 전표(같은 일자-No.)는 건너뜁니다.</div>
+      3. 아래에 그 파일을 올리면 미리보기 후 가져옵니다. 이미 가져온 전표(같은 일자-No.)는 건너뜁니다. 여러 해는 해마다 따로 올리세요.</div>
+    <div class="row" style="margin-bottom:8px"><label style="margin:0">연도</label>
+      <select id="impYear" style="width:auto"><option value="">자동 (엑셀 조회기간 기준)</option>
+        ${Array.from({length: 12}, (_, i) => new Date().getFullYear() - i).map(y => `<option value="${y}">${y}년으로 지정</option>`).join('')}</select>
+      <span class="muted" style="font-size:12px">엑셀 날짜에 연도가 없으면(예: 11/16-1) 이 연도로 넣습니다</span></div>
     <input type="file" id="impFile" accept=".xlsx,.csv">
     <label style="display:flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="impOver" style="width:auto"> 이미 가져온 문서도 이 파일 내용으로 덮어쓰기 (금액이 잘못 들어간 경우)</label>
     <div id="impRes" style="margin-top:12px"></div>
     <div class="err" id="impErr"></div>
-    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary hidden" id="impGo">가져오기</button></div>`, (bg, close) => {
+    <div class="actions"><button class="btn danger" id="impClear">가져온 ${D.label} 모두 지우기</button><span class="spacer"></span><button class="btn" data-close>닫기</button><button class="btn primary hidden" id="impGo">가져오기</button></div>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
     const send = async (dry) => {
       const file = $('#impFile', bg).files[0]; if (!file) return;
       const fd = new FormData(); fd.append('file', file);
-      const res = await fetch(`/api/docs/import?doc_type=${dt}&dry_run=${dry}&overwrite=${$('#impOver', bg).checked}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const yr = $('#impYear', bg).value;
+      const res = await fetch(`/api/docs/import?doc_type=${dt}&dry_run=${dry}&overwrite=${$('#impOver', bg).checked}${yr ? '&year=' + yr : ''}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || '가져오기 실패');
       return data;
     };
-    $('#impOver', bg).onchange = () => $('#impFile', bg).dispatchEvent(new Event('change'));
+    $('#impOver', bg).onchange = $('#impYear', bg).onchange = () => $('#impFile', bg).dispatchEvent(new Event('change'));
+    $('#impClear', bg).onclick = async () => {
+      if (!confirm(`엑셀로 가져온 ${D.label}를 모두 지울까요? (직접 작성한 ${D.label}와, 가져온 뒤 비고를 고친 것은 지우지 않습니다)`)) return;
+      const r = await api(`/api/docs/imported?doc_type=${dt}`, {method: 'DELETE'});
+      toast(`${r.deleted}건을 지웠습니다.`); renderQuotes(); $('#impFile', bg).dispatchEvent(new Event('change'));
+    };
     $('#impFile', bg).onchange = async () => {
       $('#impErr', bg).textContent = ''; $('#impRes', bg).innerHTML = '<span class="muted">읽는 중…</span>'; $('#impGo', bg).classList.add('hidden');
       try {
         const r = await send(true);
         const over = $('#impOver', bg).checked;
         const fresh = over ? r.slips : r.slips - r.skipped;
-        $('#impRes', bg).innerHTML = `${r.period.length ? `<div style="margin-bottom:6px">기간 <b>${esc(r.period[0])} ~ ${esc(r.period[1])}</b> · 연도별 ${Object.entries(r.years).sort().map(([y, n]) => `<b>${y}년</b> ${n}건`).join(', ')}</div>` : ''}<b>전표 ${r.slips}건 (품목 ${r.lines}줄)</b> 확인 · ${over ? '가져오기/덮어쓰기' : '새로 가져올 것'} <b>${fresh}건</b>${!over && r.skipped ? ` · 이미 있음 ${r.skipped}건` : ''}
+        $('#impRes', bg).innerHTML = `${r.period.length ? `<div style="margin-bottom:6px">${r.columns.includes('year_fixed') ? '<span class="tag s-done">연도 고정</span> ' : '<span class="tag s-hold">연도 추정</span> '}기간 <b>${esc(r.period[0])} ~ ${esc(r.period[1])}</b> · 연도별 ${Object.entries(r.years).sort().map(([y, n]) => `<b>${y}년</b> ${n}건`).join(', ')}</div>` : ''}<b>전표 ${r.slips}건 (품목 ${r.lines}줄)</b> 확인 · ${over ? '가져오기/덮어쓰기' : '새로 가져올 것'} <b>${fresh}건</b>${!over && r.skipped ? ` · 이미 있음 ${r.skipped}건` : ''}
           <div class="qscroll"><table style="margin-top:8px"><thead><tr><th>일자</th><th>전표</th><th>거래처</th><th style="text-align:right">품목</th><th style="text-align:right">합계</th><th></th></tr></thead><tbody>
           ${r.preview.map(g => !g ? '<tr style="cursor:default"><td colspan="6" class="muted" style="text-align:center">⋯</td></tr>' : `<tr style="cursor:default"><td>${esc(g.date)}</td><td>${esc(g.slip || '-')}</td><td>${esc(g.customer)}</td><td class="money">${g.lines}</td><td class="money">${won(g.total)}</td><td>${g.duplicate ? '<span class="tag s-todo">이미 있음</span>' : ''}</td></tr>`).join('')}
           </tbody></table></div>
