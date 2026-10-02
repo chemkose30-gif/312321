@@ -43,9 +43,10 @@ STATUS_LABEL = {"todo": "대기", "doing": "진행중", "done": "완료", "hold"
 # ---------------------------------------------------------------- DB
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA synchronous = NORMAL")
     try:
         yield conn
         conn.commit()
@@ -219,6 +220,18 @@ def init_db():
         for q in c.execute("SELECT id FROM quotes WHERE title = '' AND note = '이카운트에서 가져옴'").fetchall():
             names = [r["name"] for r in c.execute("SELECT name FROM quote_items WHERE quote_id = ? ORDER BY seq", (q["id"],))]
             c.execute("UPDATE quotes SET title = ? WHERE id = ?", (auto_title(names), q["id"]))
+        # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
+        c.execute("PRAGMA journal_mode = WAL")
+        c.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_quote_items_quote ON quote_items(quote_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_quotes_type_date ON quotes(doc_type, quote_date DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_quotes_source ON quotes(source_id);
+            CREATE INDEX IF NOT EXISTS idx_quotes_sale_slip ON quotes(ecount_sale_slip);
+            CREATE INDEX IF NOT EXISTS idx_quotes_quote_slip ON quotes(ecount_quote_slip);
+            CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+            CREATE INDEX IF NOT EXISTS idx_mail_log_task ON mail_log(task_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+        """)
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
             c.execute("INSERT INTO settings VALUES ('secret', ?)", (secrets.token_hex(32),))
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -870,16 +883,21 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
                                   params).fetchone()
         years = [r[0] for r in c.execute(
             "SELECT DISTINCT substr(quote_date, 1, 4) FROM quotes WHERE doc_type = ? ORDER BY 1 DESC", (doc_type,))]
+        # 1) 이 페이지에 들어갈 문서 id 만 먼저 고르고  2) 그 30건에 대해서만 품목 요약을 계산
+        ids = [r[0] for r in c.execute(
+            f"SELECT qt.id FROM quotes qt{cond} ORDER BY qt.quote_date DESC, qt.id DESC LIMIT ? OFFSET ?",
+            (*params, size, (page - 1) * size))]
+        marks = ",".join("?" * len(ids)) or "NULL"
         rows = c.execute(
             "SELECT qt.*, u.name AS creator_name,"
             " (SELECT name FROM quote_items qi WHERE qi.quote_id = qt.id ORDER BY seq LIMIT 1) AS first_item,"
-            " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = qt.id) AS item_count,"
-            " (SELECT SUM(qty) FROM quote_items qi WHERE qi.quote_id = qt.id) AS total_qty,"
-            " (SELECT CASE WHEN COUNT(DISTINCT unit) = 1 THEN MAX(unit) ELSE '' END FROM quote_items qi"
-            "  WHERE qi.quote_id = qt.id) AS qty_unit"
-            f" FROM quotes qt JOIN users u ON u.id = qt.created_by{cond}"
-            " ORDER BY qt.quote_date DESC, qt.id DESC LIMIT ? OFFSET ?",
-            (*params, size, (page - 1) * size),
+            " s.item_count, s.total_qty, s.qty_unit"
+            " FROM quotes qt JOIN users u ON u.id = qt.created_by"
+            " LEFT JOIN (SELECT quote_id, COUNT(*) AS item_count, SUM(qty) AS total_qty,"
+            "   CASE WHEN COUNT(DISTINCT unit) = 1 THEN MAX(unit) ELSE '' END AS qty_unit"
+            f"   FROM quote_items WHERE quote_id IN ({marks}) GROUP BY quote_id) s ON s.quote_id = qt.id"
+            f" WHERE qt.id IN ({marks}) ORDER BY qt.quote_date DESC, qt.id DESC",
+            (*ids, *ids),
         ).fetchall()
     return {"items": [dict(r) for r in rows], "total": total, "amount": amount, "page": page, "size": size,
             "pages": max(1, (total + size - 1) // size), "years": years}
