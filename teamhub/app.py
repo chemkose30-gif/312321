@@ -7,7 +7,7 @@ import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -175,6 +175,25 @@ def init_db():
                 note TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_quotes_task ON quotes(task_id);
+            CREATE TABLE IF NOT EXISTS shipments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item TEXT NOT NULL,
+                spec TEXT NOT NULL DEFAULT '',
+                supplier TEXT NOT NULL DEFAULT '',
+                customer TEXT NOT NULL DEFAULT '',
+                qty REAL NOT NULL DEFAULT 0,
+                unit TEXT NOT NULL DEFAULT '',
+                eta TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'ordered',
+                bl_no TEXT NOT NULL DEFAULT '',
+                warehouse TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                arrived_at TEXT,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_shipments_eta ON shipments(eta);
             CREATE TABLE IF NOT EXISTS ecount_products (
                 code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', spec TEXT NOT NULL DEFAULT '',
                 unit TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0
@@ -506,7 +525,12 @@ def list_events(start: str, end: str, user: dict = Depends(current_user)):
             " WHERE (t.assignee_id = ? OR t.assigner_id = ?) AND t.due_date BETWEEN ? AND ?",
             (user["id"], user["id"], start, end),
         ).fetchall()
-    return {"events": [dict(r) for r in events], "tasks": [dict(r) for r in tasks]}
+        ships = c.execute(
+            "SELECT id, item, supplier, qty, unit, eta, status FROM shipments WHERE eta BETWEEN ? AND ? ORDER BY eta",
+            (start, end),
+        ).fetchall()
+    return {"events": [dict(r) for r in events], "tasks": [dict(r) for r in tasks],
+            "shipments": [dict(r) for r in ships]}
 
 
 @app.post("/api/events")
@@ -1609,6 +1633,108 @@ def ecount_logs(_: dict = Depends(admin_user)):
     return [dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------- 입고 예정
+SHIP_STATUSES = ("ordered", "shipped", "customs", "arrived")
+
+
+class ShipmentIn(BaseModel):
+    item: str
+    spec: str = ""
+    supplier: str = ""
+    customer: str = ""
+    qty: float = 0
+    unit: str = ""
+    eta: str
+    status: str = "ordered"
+    bl_no: str = ""
+    warehouse: str = ""
+    note: str = ""
+
+
+SHIP_FIELDS = ("item", "spec", "supplier", "customer", "qty", "unit", "eta", "status", "bl_no", "warehouse", "note")
+
+
+def check_shipment(b: ShipmentIn):
+    if not b.item.strip():
+        raise HTTPException(400, "품목을 입력하세요.")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", b.eta or ""):
+        raise HTTPException(400, "예상 입고일을 입력하세요.")
+    if b.status not in SHIP_STATUSES:
+        raise HTTPException(400, "잘못된 상태입니다.")
+
+
+def ship_values(b: ShipmentIn):
+    return [getattr(b, f).strip() if isinstance(getattr(b, f), str) else getattr(b, f) for f in SHIP_FIELDS]
+
+
+@app.get("/api/shipments")
+def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current_user)):
+    where, params = [], []
+    if view == "open":
+        where.append("s.status != 'arrived'")
+    elif view == "arrived":
+        where.append("s.status = 'arrived'")
+    if q:
+        where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ?)")
+        params += [f"%{q}%"] * 4
+    order = "s.eta DESC, s.id DESC" if view == "arrived" else "s.eta, s.id"
+    with db() as c:
+        rows = c.execute(
+            "SELECT s.*, u.name AS creator_name FROM shipments s JOIN users u ON u.id = s.created_by"
+            + (" WHERE " + " AND ".join(where) if where else "") + f" ORDER BY {order} LIMIT 300", params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/shipments")
+def create_shipment(body: ShipmentIn, user: dict = Depends(current_user)):
+    check_shipment(body)
+    ts = now()
+    with db() as c:
+        cur = c.execute(
+            f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
+            f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, ?, ?, ?, ?)",
+            (*ship_values(body), ts if body.status == "arrived" else None, user["id"], ts, ts))
+    return {"id": cur.lastrowid}
+
+
+@app.put("/api/shipments/{sid}")
+def update_shipment(sid: int, body: ShipmentIn, user: dict = Depends(current_user)):
+    check_shipment(body)
+    with db() as c:
+        old = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
+        if not old:
+            raise HTTPException(404, "입고 예정을 찾을 수 없습니다.")
+        arrived_at = old["arrived_at"] if body.status == "arrived" else None
+        if body.status == "arrived" and not arrived_at:
+            arrived_at = now()
+        c.execute(f"UPDATE shipments SET {', '.join(f + ' = ?' for f in SHIP_FIELDS)}, arrived_at = ?, updated_at = ?"
+                  " WHERE id = ?", (*ship_values(body), arrived_at, now(), sid))
+    return {"ok": True}
+
+
+@app.patch("/api/shipments/{sid}/status")
+def shipment_status(sid: int, body: dict, user: dict = Depends(current_user)):
+    st = body.get("status")
+    if st not in SHIP_STATUSES:
+        raise HTTPException(400, "잘못된 상태입니다.")
+    with db() as c:
+        c.execute("UPDATE shipments SET status = ?, arrived_at = ?, updated_at = ? WHERE id = ?",
+                  (st, now() if st == "arrived" else None, now(), sid))
+    return {"ok": True}
+
+
+@app.delete("/api/shipments/{sid}")
+def delete_shipment(sid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        old = c.execute("SELECT created_by FROM shipments WHERE id = ?", (sid,)).fetchone()
+        if not old:
+            raise HTTPException(404, "입고 예정을 찾을 수 없습니다.")
+        if old["created_by"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(403, "등록한 사람 또는 관리자만 삭제할 수 있습니다.")
+        c.execute("DELETE FROM shipments WHERE id = ?", (sid,))
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- Notifications / Dashboard
 @app.get("/api/notifications")
 def list_notifications(user: dict = Depends(current_user)):
@@ -1661,7 +1787,17 @@ def dashboard(user: dict = Depends(current_user)):
             " LIMIT 8",
             (user["id"],),
         ).fetchall()
+    week_end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    with db() as c:
+        ships_today = c.execute("SELECT * FROM shipments WHERE eta = ? ORDER BY status = 'arrived', id", (today,)).fetchall()
+        ships_week = c.execute("SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND status != 'arrived' ORDER BY eta",
+                               (today, week_end)).fetchall()
+        ships_late = c.execute("SELECT * FROM shipments WHERE eta < ? AND status != 'arrived' ORDER BY eta",
+                               (today,)).fetchall()
     return {
+        "ships_today": [dict(r) for r in ships_today],
+        "ships_week": [dict(r) for r in ships_week],
+        "ships_late": [dict(r) for r in ships_late],
         "today": today,
         "counts": {s: counts.get(s, 0) for s in STATUSES},
         "overdue": overdue,
