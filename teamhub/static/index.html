@@ -622,6 +622,7 @@ async function openTask(id) {
     ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ''}
     <label>진행 상태</label>
     <div class="status-btns">${Object.entries(STATUS).map(([k, v]) => `<button data-st="${k}" class="${t.status === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+    ${t.mails.length ? `<label>📧 메일 기록</label><div style="font-size:12px">${t.mails.map(l => `<div class="row" style="gap:6px;padding:3px 0" title="${esc(l.error)}">${MAIL_RESULT(l.result)}<span class="muted">${esc(l.created_at.slice(5, 16))}</span> ${MAIL_KIND(l.kind)} → ${esc(l.recipient)}</div>`).join('')}</div>` : ''}
     <label>코멘트 (${t.comments.length})</label>
     <div>${t.comments.map(c => `<div class="comment"><span class="who">${esc(c.user_name)}</span><span class="when">${esc(c.created_at.slice(0, 16))}</span><div class="body">${esc(c.body)}</div></div>`).join('') || '<div class="muted" style="padding:6px 0">아직 코멘트가 없습니다.</div>'}</div>
     <form id="cForm" class="row" style="margin-top:8px;flex-wrap:nowrap"><input name="body" placeholder="진행 상황, 질문 등을 남기세요" required><button class="btn primary">등록</button></form>
@@ -657,14 +658,38 @@ async function renderUsers() {
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">직원관리</h3><span class="muted">${state.users.filter(u => u.active).length}명 재직</span>
       <span class="spacer"></span><button class="btn primary" id="uNew">+ 직원 등록</button></div>
-    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th>권한</th><th>상태</th></tr></thead><tbody>
+    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th class="hide-m">메일</th><th>권한</th><th>상태</th></tr></thead><tbody>
     ${state.users.map(u => `<tr data-u="${u.id}" style="${u.active ? '' : 'opacity:.5'}">
-      <td class="title">${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.dept)}</td><td class="hide-m">${esc(u.position)}</td>
+      <td class="title">${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.dept)}</td><td class="hide-m">${esc(u.position)}</td><td class="hide-m">${u.email ? esc(u.email) : '<span class="muted">미등록</span>'}</td>
       <td>${u.role === 'admin' ? '<span class="tag p-high">관리자</span>' : '<span class="tag p-low">직원</span>'}</td>
       <td>${u.active ? '<span class="tag s-done">재직</span>' : '<span class="tag s-todo">비활성</span>'}</td></tr>`).join('')}
-    </tbody></table></div>`;
+    </tbody></table></div>
+    <div class="card" style="margin-top:16px" id="mailCard"><h3>📧 Outlook 메일 연동</h3><div class="muted">불러오는 중…</div></div>`;
   $('#uNew').onclick = () => openUser();
+  renderMailCard();
   $$('tbody tr').forEach(tr => tr.onclick = () => openUser(state.users.find(u => u.id == tr.dataset.u)));
+}
+
+const MAIL_KIND = k => ({assigned: '업무 지시', reminder: '리마인더', summary: '지연 요약'})[k] || (k.startsWith('status:') ? `상태 변경(${STATUS[k.slice(7)]})` : k);
+const MAIL_RESULT = r => ({sent: '<span class="tag s-done">발송</span>', failed: '<span class="tag p-urgent">실패</span>', skipped: '<span class="tag s-todo">미설정</span>'})[r] || esc(r);
+
+async function renderMailCard() {
+  const m = await api('/api/mail/status');
+  const noMail = state.users.filter(u => u.active && !u.email).length;
+  $('#mailCard').innerHTML = `<h3>📧 Outlook 메일 연동</h3>
+    <div class="row" style="margin-bottom:8px">${m.enabled ? '<span class="tag s-done">연동됨</span>' : '<span class="tag p-urgent">미설정</span>'}
+      <span class="muted">${m.enabled ? `발신: ${esc(m.from)} (${esc(m.host)})` : 'README의 "Outlook 메일 연동" 설정 후 서버를 다시 시작하세요.'}</span></div>
+    <div class="muted" style="margin-bottom:10px">업무 지시 시 담당자에게 메일 발송(메일에서 진행/완료 처리 가능) · 상태 변경 시 상대방에게 메일 · 매일 ${m.reminder_hour}시 마감/지연 리마인더${m.last_reminder ? ` (최근 ${esc(m.last_reminder)})` : ''}
+      ${noMail ? `<br><b style="color:var(--warn)">메일 주소가 없는 직원 ${noMail}명은 메일을 받지 못합니다.</b>` : ''}</div>
+    <form class="row" id="mailTest" style="flex-wrap:nowrap"><input name="to" type="email" placeholder="테스트 받을 메일 주소" value="${esc(state.me.email || '')}" required style="max-width:300px"><button class="btn">테스트 메일 보내기</button></form>
+    ${m.logs.length ? `<table style="margin-top:12px"><thead><tr><th>시간</th><th>종류</th><th>받는 사람</th><th class="hide-m">제목</th><th>결과</th></tr></thead><tbody>
+      ${m.logs.map(l => `<tr title="${esc(l.error)}"><td>${esc(l.created_at.slice(5, 16))}</td><td>${MAIL_KIND(l.kind)}</td><td>${esc(l.recipient)}</td><td class="hide-m">${esc(l.subject)}</td><td>${MAIL_RESULT(l.result)}</td></tr>`).join('')}
+    </tbody></table>` : ''}`;
+  $('#mailTest').onsubmit = async e => {
+    e.preventDefault();
+    try { await api('/api/mail/test', {method: 'POST', body: {to: e.target.to.value}}); toast('테스트 메일을 보냈습니다.'); }
+    catch (err) { toast(err.message); }
+  };
 }
 
 function openUser(u) {
@@ -676,6 +701,7 @@ function openUser(u) {
         <div><label>아이디 (영문/숫자 3~30자)</label><input name="username" value="${esc(u?.username)}" required autocomplete="off"></div>
         <div><label>부서</label><input name="dept" list="deptList" value="${esc(u?.dept)}"></div>
         <div><label>직급</label><input name="position" value="${esc(u?.position)}"></div>
+        <div style="grid-column:1/-1"><label>Outlook 메일 주소 (업무 알림 수신)</label><input name="email" type="email" value="${esc(u?.email)}" placeholder="name@company.com"></div>
         <div><label>권한</label><select name="role"><option value="member">직원</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>관리자</option></select></div>
         <div><label>${u ? '새 비밀번호 (변경 시만 입력)' : '비밀번호 (6자 이상)'}</label><input name="password" type="text" minlength="6" autocomplete="off" ${u ? '' : 'required'}></div>
       </div>
@@ -689,7 +715,7 @@ function openUser(u) {
     const f = $('form', bg);
     f.onsubmit = async e => {
       e.preventDefault();
-      const body = {username: f.username.value, name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
+      const body = {username: f.username.value, email: f.email.value, name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
       try {
         if (u) {
           if (f.password.value) body.password = f.password.value;

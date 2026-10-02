@@ -8,15 +8,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+import html
+from contextlib import asynccontextmanager
+
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Form, Header, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
+
+import mailer
 
 BASE_DIR = Path(__file__).parent
 DB_PATH = os.getenv("TEAMHUB_DB", str(BASE_DIR / "teamhub.db"))
 
-app = FastAPI(title="TeamHub", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app):
+    mailer.start_scheduler(run_daily_reminders)
+    yield
+
+
+app = FastAPI(title="TeamHub", version="1.1.0", lifespan=lifespan)
 
 PRIORITIES = ("low", "normal", "high", "urgent")
 STATUSES = ("todo", "doing", "done", "hold")
@@ -107,12 +119,31 @@ def init_db():
                 is_read INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS mail_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                result TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_assigner ON tasks(assigner_id);
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start);
             CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
             """
         )
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        if "email" not in cols:
+            c.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+        if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
+            c.execute("INSERT INTO settings VALUES ('secret', ?)", (secrets.token_hex(32),))
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             salt = secrets.token_hex(16)
             pw = os.getenv("TEAMHUB_ADMIN_PASSWORD", "admin1234")
@@ -121,6 +152,16 @@ def init_db():
                 " VALUES ('admin', '관리자', '경영지원', '관리자', 'admin', ?, ?, ?)",
                 (hash_pw(pw, salt), salt, now()),
             )
+
+
+def get_setting(c, key: str, default: str = "") -> str:
+    row = c.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(c, key: str, value: str):
+    c.execute("INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+              (key, value))
 
 
 def notify(c, user_id: int, message: str, task_id: Optional[int] = None):
@@ -217,6 +258,7 @@ class UserIn(BaseModel):
     name: str
     dept: str = ""
     position: str = ""
+    email: str = ""
     role: str = "member"
     password: str
 
@@ -226,6 +268,7 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     dept: Optional[str] = None
     position: Optional[str] = None
+    email: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
@@ -260,10 +303,10 @@ def create_user(body: UserIn, _: dict = Depends(admin_user)):
     with db() as c:
         try:
             cur = c.execute(
-                "INSERT INTO users (username, name, dept, position, role, pw_hash, salt, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users (username, name, dept, position, email, role, pw_hash, salt, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (body.username.strip(), body.name.strip(), body.dept.strip(), body.position.strip(),
-                 body.role, hash_pw(body.password, salt), salt, now()),
+                 body.email.strip(), body.role, hash_pw(body.password, salt), salt, now()),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, "이미 사용 중인 아이디입니다.")
@@ -278,7 +321,7 @@ def update_user(uid: int, body: UserUpdate, admin: dict = Depends(admin_user)):
         check_username(body.username)
         fields.append("username = ?")
         values.append(body.username.strip())
-    for key in ("name", "dept", "position"):
+    for key in ("name", "dept", "position", "email"):
         val = getattr(body, key)
         if val is not None:
             fields.append(f"{key} = ?")
@@ -426,8 +469,8 @@ class CommentIn(BaseModel):
 
 
 TASK_SELECT = (
-    "SELECT t.*, r.name AS assigner_name, r.dept AS assigner_dept,"
-    " a.name AS assignee_name, a.dept AS assignee_dept,"
+    "SELECT t.*, r.name AS assigner_name, r.dept AS assigner_dept, r.email AS assigner_email,"
+    " a.name AS assignee_name, a.dept AS assignee_dept, a.email AS assignee_email,"
     " (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) AS comment_count"
     " FROM tasks t JOIN users r ON r.id = t.assigner_id JOIN users a ON a.id = t.assignee_id"
 )
@@ -491,6 +534,12 @@ def create_task(body: TaskIn, user: dict = Depends(current_user)):
             ids.append(cur.lastrowid)
             if aid != user["id"]:
                 notify(c, aid, f"{user['name']}님이 업무를 지시했습니다: {body.title.strip()}", cur.lastrowid)
+        secret = get_setting(c, "secret")
+        rows = [c.execute(TASK_SELECT + " WHERE t.id = ?", (i,)).fetchone() for i in ids]
+    for t in rows:
+        if t["assignee_id"] != user["id"]:
+            subject, body_html = mailer.assigned_mail(secret, t)
+            mailer.send_async(db, t["assignee_email"], subject, body_html, t["id"], "assigned")
     return {"ids": ids}
 
 
@@ -505,7 +554,11 @@ def get_task(tid: int, user: dict = Depends(current_user)):
         ).fetchall()
         c.execute("UPDATE notifications SET is_read = 1 WHERE task_id = ? AND user_id = ?",
                   (tid, user["id"]))
-    return {**dict(t), "comments": [dict(r) for r in comments]}
+        mails = c.execute(
+            "SELECT kind, recipient, subject, result, error, created_at FROM mail_log"
+            " WHERE task_id = ? ORDER BY id DESC LIMIT 20", (tid,),
+        ).fetchall()
+    return {**dict(t), "comments": [dict(r) for r in comments], "mails": [dict(r) for r in mails]}
 
 
 @app.patch("/api/tasks/{tid}")
@@ -524,24 +577,37 @@ def update_task(tid: int, body: TaskUpdate, user: dict = Depends(current_user)):
                 raise HTTPException(400, "잘못된 우선순위입니다.")
             fields.append(f"{key} = ?")
             values.append(val or None if key == "due_date" else val)
+        if body.status is not None and body.status not in STATUSES:
+            raise HTTPException(400, "잘못된 상태입니다.")
+        if fields:
+            fields.append("updated_at = ?")
+            values.append(now())
+            c.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", (*values, tid))
+        mail = None
         if body.status is not None:
-            if body.status not in STATUSES:
-                raise HTTPException(400, "잘못된 상태입니다.")
-            fields.append("status = ?")
-            values.append(body.status)
-            fields.append("completed_at = ?")
-            values.append(now() if body.status == "done" else None)
-        if not fields:
-            return {"ok": True}
-        fields.append("updated_at = ?")
-        values.append(now())
-        c.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = ?", (*values, tid))
-        if body.status is not None and body.status != t["status"]:
-            target = t["assigner_id"] if user["id"] == t["assignee_id"] else t["assignee_id"]
-            if target != user["id"]:
-                notify(c, target, f"{user['name']}님이 '{t['title']}' 업무를"
-                       f" [{STATUS_LABEL[body.status]}](으)로 변경했습니다.", tid)
+            mail = change_status(c, t, user, body.status)
+    if mail:
+        mailer.send_async(db, *mail)
     return {"ok": True}
+
+
+def change_status(c, t, actor: dict, status: str, via_mail: bool = False):
+    """업무 상태를 바꾸고 상대방에게 알림을 남긴다. 보낼 메일(to, subject, html, task_id, kind)을 반환."""
+    if status == t["status"]:
+        return None
+    c.execute("UPDATE tasks SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+              (status, now() if status == "done" else None, now(), t["id"]))
+    target_is_assigner = actor["id"] == t["assignee_id"]
+    target = t["assigner_id"] if target_is_assigner else t["assignee_id"]
+    if target == actor["id"]:
+        return None
+    how = " (메일에서 처리)" if via_mail else ""
+    notify(c, target, f"{actor['name']}님이 '{t['title']}' 업무를"
+           f" [{STATUS_LABEL[status]}](으)로 변경했습니다{how}.", t["id"])
+    updated = c.execute(TASK_SELECT + " WHERE t.id = ?", (t["id"],)).fetchone()
+    subject, body_html = mailer.status_mail(updated, actor["name"], status, via_mail)
+    to = t["assigner_email"] if target_is_assigner else t["assignee_email"]
+    return (to, subject, body_html, t["id"], f"status:{status}")
 
 
 @app.delete("/api/tasks/{tid}")
@@ -629,6 +695,106 @@ def dashboard(user: dict = Depends(current_user)):
         "today_events": [dict(r) for r in today_events],
         "my_tasks": [dict(r) for r in my_tasks],
     }
+
+
+# ---------------------------------------------------------------- Outlook 메일 연동
+def mail_page(title: str, body: str, ok: bool = True) -> HTMLResponse:
+    color = "#16a34a" if ok else "#dc2626"
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>TeamHub</title></head>
+<body style="font-family:'Malgun Gothic',sans-serif;background:#f4f6fb;margin:0;padding:40px 16px">
+<div style="max-width:440px;margin:0 auto;background:#fff;border-radius:12px;padding:28px;box-shadow:0 4px 16px rgba(0,0,0,.06)">
+<div style="color:#2563eb;font-weight:800;font-size:18px;margin-bottom:12px">TeamHub</div>
+<h2 style="color:{color};margin:0 0 12px">{html.escape(title)}</h2>{body}
+<p style="margin-top:20px"><a href="/">TeamHub 열기 →</a></p></div></body></html>""")
+
+
+def mail_task_lookup(tid: int, u: int, s: str, sig: str):
+    with db() as c:
+        secret = get_setting(c, "secret")
+        if s not in STATUSES or not mailer.verify(secret, tid, u, s, sig):
+            return None, None
+        t = c.execute(TASK_SELECT + " WHERE t.id = ?", (tid,)).fetchone()
+        actor = c.execute("SELECT * FROM users WHERE id = ? AND active = 1", (u,)).fetchone()
+    if not t or not actor or t["assignee_id"] != u:
+        return None, None
+    return t, dict(actor)
+
+
+@app.get("/mail/task/{tid}", response_class=HTMLResponse)
+def mail_task_confirm(tid: int, u: int, s: str, sig: str):
+    # 메일 보안 스캐너(Safe Links)가 링크를 미리 열어도 상태가 바뀌지 않도록 GET 은 확인 화면만 보여준다.
+    t, _actor = mail_task_lookup(tid, u, s, sig)
+    if not t:
+        return mail_page("유효하지 않은 링크입니다", "<p>업무가 삭제되었거나 링크가 올바르지 않습니다.</p>", ok=False)
+    label = STATUS_LABEL[s]
+    return mail_page(f"업무를 [{label}](으)로 변경할까요?", f"""
+<p><b>{html.escape(t['title'])}</b><br><small>지시: {html.escape(t['assigner_name'])} · 현재 상태: {STATUS_LABEL[t['status']]}</small></p>
+<form method="post"><input type="hidden" name="u" value="{u}"><input type="hidden" name="s" value="{s}">
+<input type="hidden" name="sig" value="{html.escape(sig)}">
+<button style="background:#2563eb;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;font-weight:bold;cursor:pointer">
+[{label}] 처리하기</button></form>""")
+
+
+@app.post("/mail/task/{tid}", response_class=HTMLResponse)
+def mail_task_apply(tid: int, u: int = Form(...), s: str = Form(...), sig: str = Form(...)):
+    t, actor = mail_task_lookup(tid, u, s, sig)
+    if not t:
+        return mail_page("유효하지 않은 링크입니다", "<p>업무가 삭제되었거나 링크가 올바르지 않습니다.</p>", ok=False)
+    with db() as c:
+        mail = change_status(c, t, actor, s, via_mail=True)
+    if mail:
+        mailer.send_async(db, *mail)
+    return mail_page(f"[{STATUS_LABEL[s]}] 처리되었습니다",
+                     f"<p><b>{html.escape(t['title'])}</b></p><p>{html.escape(t['assigner_name'])}님에게 알림이 전송되었습니다.</p>")
+
+
+class MailTestIn(BaseModel):
+    to: str
+
+
+@app.get("/api/mail/status")
+def mail_status(_: dict = Depends(admin_user)):
+    with db() as c:
+        logs = c.execute("SELECT * FROM mail_log ORDER BY id DESC LIMIT 30").fetchall()
+        last = get_setting(c, "last_reminder")
+    return {**mailer.status_info(), "last_reminder": last, "logs": [dict(r) for r in logs]}
+
+
+@app.post("/api/mail/test")
+def mail_test(body: MailTestIn, _: dict = Depends(admin_user)):
+    if not mailer.enabled():
+        raise HTTPException(400, "메일 설정이 없습니다. README 의 Outlook 연동 설정을 확인하세요.")
+    try:
+        mailer._send(body.to.strip(), "[TeamHub] 테스트 메일",
+                     mailer._layout("테스트 메일", "<p>Outlook 메일 연동이 정상 동작합니다.</p>"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"발송 실패: {e}")
+    return {"ok": True}
+
+
+def run_daily_reminders(today: str):
+    """하루 한 번: 담당자에게 마감 임박/지연 업무, 지시자에게 지연 업무 요약 메일."""
+    with db() as c:
+        if get_setting(c, "last_reminder") == today:
+            return
+        set_setting(c, "last_reminder", today)
+        secret = get_setting(c, "secret")
+        open_rows = c.execute(
+            TASK_SELECT + " WHERE t.status != 'done' AND t.due_date IS NOT NULL AND t.due_date <= ?"
+            " ORDER BY t.due_date", (today,),
+        ).fetchall()
+    by_assignee, by_assigner = {}, {}
+    for t in open_rows:
+        by_assignee.setdefault(t["assignee_id"], []).append(t)
+        if t["due_date"] < today and t["assigner_id"] != t["assignee_id"]:
+            by_assigner.setdefault(t["assigner_id"], []).append(t)
+    for tasks in by_assignee.values():
+        subject, body_html = mailer.reminder_mail(secret, tasks[0]["assignee_name"], tasks, today)
+        mailer.send_async(db, tasks[0]["assignee_email"], subject, body_html, None, "reminder")
+    for tasks in by_assigner.values():
+        subject, body_html = mailer.assigner_summary_mail(tasks[0]["assigner_name"], tasks, today)
+        mailer.send_async(db, tasks[0]["assigner_email"], subject, body_html, None, "summary")
 
 
 # ---------------------------------------------------------------- Frontend
