@@ -1645,6 +1645,42 @@ def ecount_logs(_: dict = Depends(admin_user)):
     return [dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------- 매출(납품) 분석
+@app.get("/api/analytics/sales")
+def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(admin_user)):
+    """거래명세서(발행·출고완료) 기준 거래처별 월별/연별 납품금액."""
+    col = "grand_total" if basis == "total" else "supply_total"
+    base = f"FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
+    with db() as c:
+        years = [int(r[0]) for r in c.execute(f"SELECT DISTINCT substr(quote_date, 1, 4) {base} ORDER BY 1")]
+        if not years:
+            return {"years": [], "year": None, "monthly": {}, "customers": [], "yearly": {}}
+        year = year if year in years else years[-1]
+        monthly = {}  # {연도: [1~12월 합계]}
+        for y in (year, year - 1):
+            arr = [0] * 12
+            for m, v in c.execute(f"SELECT CAST(substr(quote_date, 6, 2) AS INT), SUM({col}) {base}"
+                                  " AND substr(quote_date, 1, 4) = ? GROUP BY 1", (str(y),)):
+                arr[m - 1] = v or 0
+            monthly[y] = arr
+        # 거래처 × (기준연도 월별, 전년도 월별)
+        cust = {}
+        for name, y, m, v in c.execute(
+                f"SELECT customer_name, CAST(substr(quote_date, 1, 4) AS INT), CAST(substr(quote_date, 6, 2) AS INT),"
+                f" SUM({col}) {base} AND substr(quote_date, 1, 4) IN (?, ?) GROUP BY 1, 2, 3", (str(year), str(year - 1))):
+            e = cust.setdefault(name, {"name": name, "cur": [0] * 12, "prev": [0] * 12})
+            (e["cur"] if y == year else e["prev"])[m - 1] = v or 0
+        # 거래처 × 연도 합계
+        yearly = {}
+        for name, y, v in c.execute(f"SELECT customer_name, CAST(substr(quote_date, 1, 4) AS INT), SUM({col}) {base}"
+                                    " GROUP BY 1, 2"):
+            yearly.setdefault(name, {})[y] = v or 0
+        year_totals = {y: v or 0 for y, v in c.execute(
+            f"SELECT CAST(substr(quote_date, 1, 4) AS INT), SUM({col}) {base} GROUP BY 1")}
+    return {"years": years, "year": year, "monthly": monthly, "customers": list(cust.values()),
+            "yearly": yearly, "year_totals": year_totals}
+
+
 # ---------------------------------------------------------------- 입고 예정
 SHIP_STATUSES = ("ordered", "shipped", "customs", "arrived")
 

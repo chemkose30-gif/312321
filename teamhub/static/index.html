@@ -154,6 +154,19 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
 .ev.ship.done{text-decoration:line-through;color:var(--muted)}
 .dday{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:#f3f4f6}
 .dday.late{background:#fee2e2;color:#b91c1c}.dday.today{background:#dbeafe;color:#1d4ed8}
+.viz{--series-1:#2a78d6;--series-2:#eb6834;--grid:#ececea;--axis:#6b7280;--ink:#1f2937;--ink-2:#52514e;--surface:#fff}
+.viz-wrap{position:relative}
+.viz-wrap svg{display:block;width:100%;overflow:visible}
+.viz-legend{display:flex;gap:16px;font-size:12px;color:var(--ink-2);margin:4px 0 8px;flex-wrap:wrap}
+.viz-legend i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.viz-tip{position:absolute;pointer-events:none;background:#111827;color:#fff;font-size:12px;padding:8px 10px;border-radius:8px;white-space:nowrap;z-index:5;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+.viz-tip .sw{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.an-table td,.an-table th{padding:6px 6px;font-size:12px;white-space:nowrap}
+.an-table td.num,.an-table th.num{text-align:right;font-variant-numeric:tabular-nums}
+.an-table tr.sel{background:var(--primary-weak)}
+.an-table td:first-child,.an-table th:first-child{position:sticky;left:0;background:#fff;z-index:1;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.an-table tr.sel td:first-child{background:var(--primary-weak)}
+.up{color:#15803d;font-weight:700}.down{color:#b91c1c;font-weight:700}
 /* ---------- responsive */
 @media (max-width:860px){
   header{padding:0 12px;gap:8px}
@@ -202,6 +215,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="quotes">🧾 견적서</button>
       <button data-view="statements">📄 거래명세서</button>
       <button data-view="shipments">🚢 입고예정</button>
+      <button data-view="analytics" class="admin-only">📊 매출분석</button>
       <button data-view="users" class="admin-only">👥 직원관리</button>
     </nav>
     <div class="hdr-right">
@@ -338,10 +352,10 @@ async function boot() {
 // ===================================================== nav / dropdowns
 $$('#nav button').forEach(b => b.onclick = () => go(b.dataset.view));
 function go(view) {
-  if (view === 'users' && state.me.role !== 'admin') view = 'dashboard';
+  if ((view === 'users' || view === 'analytics') && state.me.role !== 'admin') view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, users: renderUsers})[view]();
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, analytics: renderAnalytics, users: renderUsers})[view]();
 }
 
 $('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
@@ -1426,6 +1440,153 @@ async function openShipment(id, day) {
       await api(`/api/shipments/${sh.id}`, {method: 'DELETE'}); close(); toast('삭제되었습니다.'); go(state.view);
     };
   });
+}
+
+// ===================================================== 매출(납품) 분석
+const krw = v => {  // 축/요약용 짧은 금액
+  const a = Math.abs(v);
+  if (a >= 1e8) return (v / 1e8).toFixed(a >= 1e10 ? 0 : 1).replace(/\.0$/, '') + '억';
+  if (a >= 1e4) return Math.round(v / 1e4).toLocaleString('ko-KR') + '만';
+  return Math.round(v).toLocaleString('ko-KR');
+};
+const man = v => v ? Math.round(v / 1e4).toLocaleString('ko-KR') : '-';   // 표: 만원 단위
+const sum = a => a.reduce((x, y) => x + y, 0);
+function deltaHtml(cur, prev) {
+  if (!prev) return cur ? '<span class="muted">신규</span>' : '<span class="muted">-</span>';
+  const r = (cur - prev) / prev * 100;
+  return r >= 0 ? `<span class="up">▲ ${r.toFixed(1)}%</span>` : `<span class="down">▼ ${Math.abs(r).toFixed(1)}%</span>`;
+}
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+
+// 꺾은선 (최대 3계열) + 십자선 툴팁
+function lineChart(box, labels, series) {
+  const W = Math.max(box.clientWidth, 320), H = 280, L = 56, R = 64, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
+  const max = niceMax(Math.max(1, ...series.flatMap(s => s.values)));
+  const x = i => L + (labels.length === 1 ? iw / 2 : i * iw / (labels.length - 1)), y = v => T + ih - v / max * ih;
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = y(v);
+    g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--grid)"/><text x="${L - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="var(--axis)">${krw(v)}</text>`;
+  }
+  labels.forEach((l, i) => g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--axis)">${l}</text>`);
+  series.forEach(s => {
+    g += `<path d="${s.values.map((v, i) => (i ? 'L' : 'M') + x(i) + ' ' + y(v)).join('')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    s.values.forEach((v, i) => g += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/>`);
+    const li = s.values.length - 1;  // 끝 직접 라벨 (글자색은 본문색)
+    g += `<text x="${x(li) + 8}" y="${y(s.values[li]) + 4}" font-size="11" fill="var(--ink-2)">${esc(s.name)}</text>`;
+  });
+  box.innerHTML = `<div class="viz-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>
+    <div class="viz-wrap"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="월별 납품금액">${g}
+      <line class="xh" y1="${T}" y2="${T + ih}" stroke="var(--axis)" stroke-dasharray="3 3" visibility="hidden"/>
+      <rect x="${L}" y="${T}" width="${iw}" height="${ih}" fill="transparent" class="hit"/></svg><div class="viz-tip" hidden></div></div>`;
+  const svg = $('svg', box), tip = $('.viz-tip', box), xh = $('.xh', box);
+  $('.hit', box).addEventListener('mousemove', e => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const i = Math.max(0, Math.min(labels.length - 1, Math.round((px - L) / (iw / Math.max(1, labels.length - 1)))));
+    xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.setAttribute('visibility', 'visible');
+    const [a, b] = series;
+    tip.innerHTML = `<b>${labels[i]}</b><br>` + series.map(s => `<span class="sw" style="background:${s.color}"></span>${esc(s.name)} ${won(s.values[i])}원`).join('<br>')
+      + (b ? `<br>${deltaHtml(a.values[i], b.values[i]).replace(/class="(up|down)"/, 'style="font-weight:700"')}` : '');
+    tip.hidden = false;
+    const tx = x(i) * r.width / W;
+    tip.style.left = Math.min(tx + 12, r.width - tip.offsetWidth - 4) + 'px';
+    tip.style.top = '30px';
+  });
+  $('.hit', box).addEventListener('mouseleave', () => { tip.hidden = true; xh.setAttribute('visibility', 'hidden'); });
+}
+
+// 막대 (1계열) + 막대별 툴팁
+function barChart(box, labels, values, name) {
+  const W = Math.max(box.clientWidth, 320), H = 280, L = 56, R = 16, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
+  const max = niceMax(Math.max(1, ...values)), y = v => T + ih - v / max * ih;
+  const slot = iw / labels.length, bw = Math.max(6, Math.min(56, slot - 2));
+  let g = '';
+  for (let k = 0; k <= 4; k++) {
+    const v = max * k / 4, yy = y(v);
+    g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--grid)"/><text x="${L - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="var(--axis)">${krw(v)}</text>`;
+  }
+  values.forEach((v, i) => {
+    const cx = L + slot * i + slot / 2, x0 = cx - bw / 2, top = y(v), h = T + ih - top, rr = Math.min(4, h, bw / 2);
+    if (h > 0) g += `<path d="M${x0} ${T + ih}V${top + rr}Q${x0} ${top} ${x0 + rr} ${top}H${x0 + bw - rr}Q${x0 + bw} ${top} ${x0 + bw} ${top + rr}V${T + ih}Z" fill="var(--series-1)"/>`;
+    g += `<rect x="${L + slot * i}" y="${T}" width="${slot}" height="${ih}" fill="transparent" data-i="${i}"/>`;
+    g += `<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--axis)">${labels[i]}</text>`;
+  });
+  const li = values.length - 1;  // 마지막 막대만 값 라벨
+  if (li >= 0) g += `<text x="${L + slot * li + slot / 2}" y="${y(values[li]) - 6}" text-anchor="middle" font-size="11" fill="var(--ink)">${krw(values[li])}</text>`;
+  box.innerHTML = `<div class="viz-wrap"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(name)}">${g}</svg><div class="viz-tip" hidden></div></div>`;
+  const svg = $('svg', box), tip = $('.viz-tip', box);
+  $$('[data-i]', box).forEach(rc => {
+    rc.addEventListener('mouseenter', () => {
+      const i = +rc.dataset.i, r = svg.getBoundingClientRect();
+      tip.innerHTML = `<b>${labels[i]}</b><br>${won(values[i])}원${i ? '<br>' + deltaHtml(values[i], values[i - 1]).replace(/class="(up|down)"/, 'style="font-weight:700"') + ' (전년 대비)' : ''}`;
+      tip.hidden = false;
+      tip.style.left = Math.min((L + slot * i + slot) * r.width / W, r.width - tip.offsetWidth - 4) + 'px';
+      tip.style.top = '20px';
+    });
+    rc.addEventListener('mouseleave', () => tip.hidden = true);
+  });
+}
+
+async function renderAnalytics() {
+  const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: ''};
+  const d = await api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`);
+  if (!d.years.length) {
+    $('#main').innerHTML = '<div class="card"><h3>📊 매출분석</h3><div class="empty">거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져오면 분석할 수 있습니다.</div></div>';
+    return;
+  }
+  const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
+  const now = new Date(), upto = Y === now.getFullYear() ? now.getMonth() + 1 : 12;   // 올해는 이번 달까지 같은 기간 비교
+  const cust = an.cust && d.customers.find(c => c.name === an.cust);
+  const curM = cust ? cust.cur : d.monthly[Y], prevM = cust ? cust.prev : (d.monthly[P] || Array(12).fill(0));
+  const ytd = sum(curM.slice(0, upto)), pytd = sum(prevM.slice(0, upto));
+  const years = d.years.filter(y => y <= Y).slice(-8);
+  const custYearly = name => years.map(y => (d.yearly[name] || {})[y] || 0);
+  const yearVals = an.cust ? custYearly(an.cust) : years.map(y => d.year_totals[y] || 0);
+  const ql = an.q.toLowerCase();
+  const rows = d.customers.filter(c => !ql || c.name.toLowerCase().includes(ql)).sort((a, b) => sum(b.cur) - sum(a.cur));
+  const yRows = Object.keys(d.yearly).filter(n => !ql || n.toLowerCase().includes(ql)).map(n => ({name: n, vals: custYearly(n)}))
+    .filter(r => sum(r.vals)).sort((a, b) => b.vals[b.vals.length - 1] - a.vals[a.vals.length - 1]);
+  $('#main').innerHTML = `<div class="card viz">
+    <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 거래처별 납품금액</h3><span class="spacer"></span>
+      <select id="anYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
+      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
+      <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
+    <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button></div>
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간</span><b>${krw(pytd)}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">전년 대비</span><b style="font-size:20px">${deltaHtml(ytd, pytd)}</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 거래처 수</span><b>${d.customers.filter(c => sum(c.cur)).length}곳</b></div>
+    </div>
+    <div class="row" style="margin-bottom:4px"><b>${an.cust ? esc(an.cust) : '전체 거래처'}</b>
+      ${an.cust ? '<button class="btn sm" id="anAll">전체로 보기</button>' : '<span class="muted" style="font-size:12px">아래 표에서 거래처를 누르면 그 거래처만 그래프로 봅니다</span>'}</div>
+    <div id="anChart"></div>
+    <div class="row" style="margin:14px 0 6px"><b>${an.mode === 'month' ? `${Y}년 월별` : '연도별'} 거래처 납품금액</b><span class="muted" style="font-size:12px">(단위: 만원 · ${an.mode === 'month' ? `${rows.length}곳` : `${yRows.length}곳`})</span></div>
+    <div class="qscroll" style="max-height:520px;overflow:auto">
+    ${an.mode === 'month' ? `<table class="an-table"><thead><tr><th>거래처</th>${months.map(m => `<th class="num">${m}</th>`).join('')}<th class="num">${Y} 합계</th><th class="num">${P} 합계</th><th class="num">전년 대비</th></tr></thead><tbody>
+        ${rows.map(c => `<tr data-c="${esc(c.name)}" class="${c.name === an.cust ? 'sel' : ''}"><td title="${esc(c.name)}">${esc(c.name)}</td>${c.cur.map(v => `<td class="num">${man(v)}</td>`).join('')}
+          <td class="num"><b>${man(sum(c.cur))}</b></td><td class="num">${man(sum(c.prev))}</td><td class="num">${deltaHtml(sum(c.cur.slice(0, upto)), sum(c.prev.slice(0, upto)))}</td></tr>`).join('')}
+      </tbody></table>`
+    : `<table class="an-table"><thead><tr><th>거래처</th>${years.map(y => `<th class="num">${y}</th>`).join('')}<th class="num">전년 대비</th></tr></thead><tbody>
+        ${yRows.map(r => `<tr data-c="${esc(r.name)}" class="${r.name === an.cust ? 'sel' : ''}"><td title="${esc(r.name)}">${esc(r.name)}</td>${r.vals.map(v => `<td class="num">${man(v)}</td>`).join('')}
+          <td class="num">${r.vals.length > 1 ? deltaHtml(r.vals[r.vals.length - 1], r.vals[r.vals.length - 2]) : '-'}</td></tr>`).join('')}
+      </tbody></table>`}
+    </div>
+    ${Y === now.getFullYear() ? `<div class="muted" style="font-size:12px;margin-top:6px">전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
+  </div>`;
+  if (an.mode === 'month') lineChart($('#anChart'), months, [{name: `${Y}년`, color: 'var(--series-1)', values: curM}, {name: `${P}년`, color: 'var(--series-2)', values: prevM}]);
+  else barChart($('#anChart'), years.map(y => `${y}`), yearVals, '연도별 납품금액');
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
+  $('#anYear').onchange = e => { an.year = +e.target.value; renderAnalytics(); };
+  $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  let timer;
+  $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  if ($('#anAll')) $('#anAll').onclick = () => { an.cust = ''; renderAnalytics(); };
+  $$('tr[data-c]').forEach(tr => tr.onclick = () => { an.cust = an.cust === tr.dataset.c ? '' : tr.dataset.c; renderAnalytics().then(() => window.scrollTo({top: 0, behavior: 'smooth'})); });
 }
 
 async function openCompany() {
