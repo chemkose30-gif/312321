@@ -31,7 +31,7 @@ apt-get install -y python3 python3-venv sqlite3 caddy ufw
 echo "==> 프로그램 복사 (/opt/teamhub)"
 id teamhub >/dev/null 2>&1 || useradd --system --home /opt/teamhub --shell /usr/sbin/nologin teamhub
 mkdir -p /opt/teamhub /var/lib/teamhub /var/backups/teamhub
-cp -r "$SRC/app.py" "$SRC/mailer.py" "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
+cp -r "$SRC"/*.py "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
 python3 -m venv /opt/teamhub/venv
 /opt/teamhub/venv/bin/pip install -q --upgrade pip
 /opt/teamhub/venv/bin/pip install -q -r /opt/teamhub/requirements.txt

@@ -3,7 +3,7 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 sqlite3 /var/lib/teamhub/teamhub.db ".backup /var/backups/teamhub/teamhub-before-update-$(date +%F-%H%M).db"
-cp -r "$SRC/app.py" "$SRC/mailer.py" "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
+cp -r "$SRC"/*.py "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
 /opt/teamhub/venv/bin/pip install -q -r /opt/teamhub/requirements.txt
 chown -R teamhub:teamhub /opt/teamhub
 systemctl restart teamhub

@@ -1,5 +1,6 @@
 """TeamHub - 사내 캘린더 & 업무지시 시스템 (FastAPI + SQLite)."""
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -13,10 +14,11 @@ import html
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, Form, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+import ecount
 import mailer
 
 BASE_DIR = Path(__file__).parent
@@ -171,6 +173,26 @@ def init_db():
                 note TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_quotes_task ON quotes(task_id);
+            CREATE TABLE IF NOT EXISTS ecount_products (
+                code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', spec TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS ecount_customers (
+                code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS ecount_warehouses (
+                code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS ecount_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quote_id INTEGER REFERENCES quotes(id) ON DELETE SET NULL,
+                kind TEXT NOT NULL,
+                ok INTEGER NOT NULL,
+                slip_nos TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                user_id INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_assigner ON tasks(assigner_id);
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start);
@@ -180,6 +202,12 @@ def init_db():
         cols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
         if "email" not in cols:
             c.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+        for table, col, ddl in (("quotes", "cust_cd", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "ecount_quote_slip", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "ecount_sale_slip", "TEXT NOT NULL DEFAULT ''"),
+                                ("quote_items", "prod_cd", "TEXT NOT NULL DEFAULT ''")):
+            if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
             c.execute("INSERT INTO settings VALUES ('secret', ?)", (secrets.token_hex(32),))
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
@@ -698,6 +726,7 @@ COMPANY_KEYS = ("company_name", "ceo", "biz_no", "biz_type", "biz_item", "addres
 
 
 class QuoteItemIn(BaseModel):
+    prod_cd: str = ""
     name: str
     spec: str = ""
     unit: str = ""
@@ -708,6 +737,7 @@ class QuoteItemIn(BaseModel):
 
 class QuoteIn(BaseModel):
     title: str = ""
+    cust_cd: str = ""
     customer_name: str
     customer_contact: str = ""
     customer_phone: str = ""
@@ -761,9 +791,9 @@ def save_quote_items(c, qid: int, items, vat_mode: str):
         supply_total += supply
         vat_total += vat
         c.execute(
-            "INSERT INTO quote_items (quote_id, seq, name, spec, unit, qty, unit_price, supply, vat, note)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (qid, seq, it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
+            "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (qid, seq, it.prod_cd.strip(), it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
              supply, vat, it.note.strip()),
         )
     c.execute("UPDATE quotes SET supply_total = ?, vat_total = ?, grand_total = ? WHERE id = ?",
@@ -791,7 +821,7 @@ def editable_quote(c, qid: int, user: dict):
     return q
 
 
-QUOTE_FIELDS = ("title", "customer_name", "customer_contact", "customer_phone", "customer_email",
+QUOTE_FIELDS = ("title", "cust_cd", "customer_name", "customer_contact", "customer_phone", "customer_email",
                 "quote_date", "valid_until", "delivery", "payment_terms", "vat_mode", "note", "status")
 
 
@@ -903,6 +933,235 @@ def put_company(body: dict, _: dict = Depends(admin_user)):
             if k in body:
                 set_setting(c, "company_" + k, str(body[k] or "").strip())
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 이카운트 ERP 연동
+ECOUNT_KEYS = ("com_code", "user_id", "api_key", "is_test", "emp_cd", "path_products", "path_quotation",
+               "path_quotation_list_key", "path_sale", "path_sale_list_key")
+
+
+def ecount_cfg(c) -> dict:
+    cfg = {k: get_setting(c, "ecount_" + k) for k in ECOUNT_KEYS}
+    cfg["is_test"] = cfg["is_test"] or "1"
+    return cfg
+
+
+def ecount_client(c) -> ecount.Client:
+    return ecount.get_client(ecount_cfg(c))
+
+
+def ecount_log(c, quote_id, kind: str, ok: bool, slip_nos: str, message: str, user: dict):
+    c.execute("INSERT INTO ecount_log (quote_id, kind, ok, slip_nos, message, user_id, created_at)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?)", (quote_id, kind, int(ok), slip_nos, message[:1000], user["id"], now()))
+
+
+@app.get("/api/ecount/settings")
+def ecount_get_settings(_: dict = Depends(admin_user)):
+    with db() as c:
+        cfg = ecount_cfg(c)
+        last_sync = get_setting(c, "ecount_last_sync")
+        counts = {t: c.execute(f"SELECT COUNT(*) FROM ecount_{t}").fetchone()[0]
+                  for t in ("products", "customers", "warehouses")}
+    has_key = bool(cfg.pop("api_key"))
+    return {**cfg, "has_key": has_key, "defaults": ecount.DEFAULT_PATHS, "last_sync": last_sync, "counts": counts}
+
+
+@app.put("/api/ecount/settings")
+def ecount_put_settings(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        for k in ECOUNT_KEYS:
+            if k not in body:
+                continue
+            if k == "api_key" and not str(body[k]).strip():
+                continue  # 빈 값이면 기존 키 유지
+            set_setting(c, "ecount_" + k, str(body[k] or "").strip())
+    return {"ok": True}
+
+
+@app.post("/api/ecount/test")
+def ecount_test(_: dict = Depends(admin_user)):
+    with db() as c:
+        client = ecount_client(c)
+    try:
+        client.login(force=True)
+    except ecount.EcountError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "zone": client.zone, "mode": "테스트 서버" if client.is_test else "실서비스"}
+
+
+@app.post("/api/ecount/sync-products")
+def ecount_sync_products(user: dict = Depends(admin_user)):
+    with db() as c:
+        client = ecount_client(c)
+    try:
+        rows = client.products()
+    except ecount.EcountError as e:
+        raise HTTPException(400, str(e))
+    with db() as c:
+        replace_master(c, "products", rows)
+        set_setting(c, "ecount_last_sync", now())
+    return {"ok": True, "count": len(rows)}
+
+
+def replace_master(c, kind: str, rows: list):
+    c.execute(f"DELETE FROM ecount_{kind}")
+    if kind == "products":
+        c.executemany("INSERT OR REPLACE INTO ecount_products (code, name, spec, unit, price) VALUES (?, ?, ?, ?, ?)",
+                      [(r["code"], r.get("name", ""), r.get("spec", ""), r.get("unit", ""), r.get("price") or 0)
+                       for r in rows])
+    else:
+        c.executemany(f"INSERT OR REPLACE INTO ecount_{kind} (code, name) VALUES (?, ?)",
+                      [(r["code"], r.get("name", "")) for r in rows])
+
+
+def parse_sheet(filename: str, data: bytes) -> list:
+    """엑셀(xlsx)/CSV 를 행 목록으로."""
+    if filename.lower().endswith(".csv"):
+        import csv
+        import io
+        for enc in ("utf-8-sig", "cp949"):
+            try:
+                return list(csv.reader(io.StringIO(data.decode(enc))))
+            except UnicodeDecodeError:
+                continue
+        raise HTTPException(400, "CSV 파일 인코딩을 읽을 수 없습니다.")
+    try:
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        return [["" if v is None else str(v).strip() for v in row] for row in wb.active.iter_rows(values_only=True)]
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "엑셀 파일을 읽을 수 없습니다. .xlsx 또는 .csv 로 저장해서 올려주세요.")
+
+
+def rows_to_master(kind: str, rows: list) -> list:
+    """이카운트에서 내려받은 목록의 머리글(…코드, …명, 규격, 단위, 단가)을 찾아 변환."""
+    for hi, header in enumerate(rows[:15]):
+        cells = [str(h).replace(" ", "") for h in header]
+        code_i = next((i for i, h in enumerate(cells) if h.endswith("코드")), None)
+        name_i = next((i for i, h in enumerate(cells) if h.endswith("명") and "코드" not in h), None)
+        if code_i is None or name_i is None:
+            continue
+        find = lambda *keys: next((i for i, h in enumerate(cells) if any(k in h for k in keys)), None)
+        spec_i, unit_i, price_i = find("규격"), find("단위"), find("출고단가", "판매단가", "단가")
+        out = []
+        for r in rows[hi + 1:]:
+            get = lambda i: (str(r[i]).strip() if i is not None and i < len(r) and r[i] is not None else "")
+            code = get(code_i)
+            if not code:
+                continue
+            item = {"code": code, "name": get(name_i)}
+            if kind == "products":
+                try:
+                    price = float(get(price_i).replace(",", "") or 0)
+                except ValueError:
+                    price = 0
+                item.update(spec=get(spec_i), unit=get(unit_i), price=price)
+            out.append(item)
+        return out
+    raise HTTPException(400, "머리글에서 '○○코드'와 '○○명' 열을 찾지 못했습니다. 이카운트에서 내려받은 목록 그대로 올려주세요.")
+
+
+@app.post("/api/ecount/upload/{kind}")
+async def ecount_upload(kind: str, file: UploadFile = File(...), _: dict = Depends(admin_user)):
+    if kind not in ("products", "customers", "warehouses"):
+        raise HTTPException(404, "잘못된 종류입니다.")
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
+    items = rows_to_master(kind, parse_sheet(file.filename or "", data))
+    with db() as c:
+        replace_master(c, kind, items)
+    return {"ok": True, "count": len(items)}
+
+
+class WarehouseIn(BaseModel):
+    code: str
+    name: str = ""
+
+
+@app.put("/api/ecount/warehouses")
+def ecount_put_warehouses(body: List[WarehouseIn], _: dict = Depends(admin_user)):
+    rows = [{"code": w.code.strip(), "name": w.name.strip()} for w in body if w.code.strip()]
+    with db() as c:
+        replace_master(c, "warehouses", rows)
+    return {"ok": True, "count": len(rows)}
+
+
+@app.get("/api/ecount/master")
+def ecount_master(user: dict = Depends(current_user)):
+    with db() as c:
+        cfg = ecount_cfg(c)
+        return {
+            "enabled": bool(cfg["com_code"] and cfg["user_id"] and cfg["api_key"]),
+            "mode": "test" if cfg["is_test"] in ("1", "true") else "live",
+            "products": [dict(r) for r in c.execute("SELECT code, name, spec, unit, price FROM ecount_products ORDER BY name")],
+            "customers": [dict(r) for r in c.execute("SELECT code, name FROM ecount_customers ORDER BY name")],
+            "warehouses": [dict(r) for r in c.execute("SELECT code, name FROM ecount_warehouses ORDER BY code")],
+        }
+
+
+class EcountSendIn(BaseModel):
+    kind: str  # quotation | sale
+    wh_cd: str = ""
+    io_date: str = ""
+    force: bool = False
+
+
+@app.post("/api/quotes/{qid}/ecount")
+def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)):
+    if body.kind not in ("quotation", "sale"):
+        raise HTTPException(400, "잘못된 전송 종류입니다.")
+    label = "견적서" if body.kind == "quotation" else "판매(거래명세서)"
+    slip_col = "ecount_quote_slip" if body.kind == "quotation" else "ecount_sale_slip"
+    with db() as c:
+        q = editable_quote(c, qid, user)
+        items = c.execute("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY seq", (qid,)).fetchall()
+        problems = []
+        if not q["cust_cd"]:
+            problems.append("이카운트 거래처가 지정되지 않았습니다.")
+        missing = [str(i["seq"]) for i in items if not i["prod_cd"]]
+        if missing:
+            problems.append(f"이카운트 품목이 지정되지 않은 행: {', '.join(missing)}번")
+        if body.kind == "sale" and not body.wh_cd:
+            problems.append("출고 창고를 선택하세요.")
+        if problems:
+            raise HTTPException(400, " / ".join(problems) + " (견적서 수정에서 지정하세요)")
+        if q[slip_col] and not body.force:
+            raise HTTPException(409, f"이미 이카운트에 {label}로 전송되었습니다 (전표 {q[slip_col]}).")
+        client = ecount_client(c)
+        emp_cd = ecount_cfg(c)["emp_cd"]
+    lines = ecount.build_lines(dict(q), [dict(i) for i in items], q["cust_cd"], body.wh_cd,
+                               body.io_date or q["quote_date"], emp_cd)
+    try:
+        result = client.save_slip(body.kind, lines)
+    except ecount.EcountError as e:
+        with db() as c:
+            ecount_log(c, qid, body.kind, False, "", str(e), user)
+        raise HTTPException(400, f"이카운트 전송 실패: {e}")
+    slips = ", ".join(result["slip_nos"])
+    with db() as c:
+        if result["ok"]:
+            c.execute(f"UPDATE quotes SET {slip_col} = ?, updated_at = ? WHERE id = ?", (slips or "전송됨", now(), qid))
+            if body.kind == "sale" and q["status"] in ("draft", "sent"):
+                c.execute("UPDATE quotes SET status = 'won' WHERE id = ?", (qid,))
+        msg = "; ".join(result["messages"]) or ("" if result["ok"] else json.dumps(result["raw"], ensure_ascii=False)[:500])
+        ecount_log(c, qid, body.kind, result["ok"], slips, msg, user)
+    if not result["ok"]:
+        raise HTTPException(400, f"이카운트가 {label} 등록을 거부했습니다: {msg}")
+    return {"ok": True, "slip_nos": result["slip_nos"], "mode": "테스트 서버" if client.is_test else "실서비스"}
+
+
+@app.get("/api/ecount/logs")
+def ecount_logs(_: dict = Depends(admin_user)):
+    with db() as c:
+        rows = c.execute(
+            "SELECT l.*, q.quote_no, u.name AS user_name FROM ecount_log l LEFT JOIN quotes q ON q.id = l.quote_id"
+            " LEFT JOIN users u ON u.id = l.user_id ORDER BY l.id DESC LIMIT 50"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------- Notifications / Dashboard

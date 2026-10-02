@@ -136,6 +136,15 @@ td.title{font-weight:600}
 .q-won{background:#dcfce7;color:#15803d}.q-lost{background:#fee2e2;color:#b91c1c}
 td.money{text-align:right;font-variant-numeric:tabular-nums}
 .qscroll{overflow-x:auto}
+.sbox{position:fixed;z-index:80;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);max-height:300px;overflow:auto;min-width:320px}
+.sbox div{padding:7px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6}
+.sbox div:hover,.sbox div.on{background:var(--primary-weak)}
+.sbox small{color:var(--muted)}
+.sbox .none{color:var(--muted);cursor:default}
+.code{display:inline-block;font-size:10px;font-weight:700;color:#15803d;background:#dcfce7;border-radius:4px;padding:1px 5px;margin-top:2px}
+.code.miss{color:#b45309;background:#fef3c7}
+.code button{border:0;background:none;color:inherit;font-size:10px;padding:0 0 0 4px;cursor:pointer}
+.ec-box{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px}
 /* ---------- responsive */
 @media (max-width:860px){
   header{padding:0 12px;gap:8px}
@@ -797,7 +806,7 @@ async function renderQuotes() {
   const sum = list.reduce((a, x) => a + x.grand_total, 0);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">🧾 견적서</h3><span class="spacer"></span>
-      ${isAdmin ? '<button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
+      ${isAdmin ? '<button class="btn" id="qEcount">🔗 이카운트</button><button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
       <button class="btn primary" id="qNew">+ 새 견적서</button></div>
     <div class="row" style="margin-bottom:10px">
       <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(QSTATUS).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -810,7 +819,7 @@ async function renderQuotes() {
     </tbody></table></div>` : '<div class="empty">견적서가 없습니다. [+ 새 견적서]로 작성해 보세요.</div>'}
   </div>`;
   $('#qNew').onclick = () => openQuoteForm();
-  if (isAdmin) $('#qCompany').onclick = openCompany;
+  if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; renderQuotes(); };
   let timer;
   $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -822,8 +831,11 @@ async function openQuoteForm(quote, task, template) {
   const q = quote || template || {quote_date: todayStr(), vat_mode: 'separate', status: 'draft', title: task ? task.title : '',
     valid_until: '견적일로부터 30일', payment_terms: '', delivery: '', items: [{}, {}, {}]};
   const linkedTask = task || (quote && quote.task_id ? {id: quote.task_id} : null);
+  const ec = await ecMaster();
+  const useEc = ec.products.length > 0;
+  const prodCode = cd => cd ? `<span class="code" data-code="${esc(cd)}">${esc(cd)}<button type="button" data-unlink title="품목 연결 해제">✕</button></span>` : (ec.enabled ? '<span class="code miss">이카운트 품목 미지정</span>' : '');
   const row = (it = {}) => `<tr>
-      <td><input name="name" list="itemList" value="${esc(it.name)}" placeholder="품명"></td>
+      <td><input name="name" ${useEc ? '' : 'list="itemList"'} value="${esc(it.name)}" placeholder="${useEc ? '품목 검색 (이름·코드·규격)' : '품명'}"><input type="hidden" name="prod_cd" value="${esc(it.prod_cd || '')}"><div class="pc">${prodCode(it.prod_cd)}</div></td>
       <td><input name="spec" value="${esc(it.spec)}" placeholder="규격"></td>
       <td style="width:60px"><input name="unit" value="${esc(it.unit)}" placeholder="EA"></td>
       <td style="width:80px"><input name="qty" class="num" inputmode="decimal" value="${it.qty ?? ''}"></td>
@@ -835,7 +847,8 @@ async function openQuoteForm(quote, task, template) {
     ${linkedTask ? `<div class="muted">📋 연결된 업무: ${esc(task?.title || '#' + linkedTask.id)}</div>` : ''}
     <form autocomplete="off">
       <div class="grid2">
-        <div><label>거래처명 *</label><input name="customer_name" list="custList" value="${esc(q.customer_name)}" required></div>
+        <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(이카운트 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
+          ${ec.enabled ? `<div class="row" style="gap:6px;margin-top:4px"><small class="muted">이카운트 거래처코드</small><input name="cust_cd" value="${esc(q.cust_cd || '')}" style="max-width:160px;padding:4px 8px;font-size:12px" placeholder="검색해서 선택"></div>` : '<input type="hidden" name="cust_cd" value="' + esc(q.cust_cd || '') + '">'}</div>
         <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="예: 사무용품 납품 견적"></div>
         <div><label>거래처 담당자</label><input name="customer_contact" value="${esc(q.customer_contact)}"></div>
         <div><label>거래처 연락처 / 이메일</label><div class="row" style="flex-wrap:nowrap"><input name="customer_phone" value="${esc(q.customer_phone)}" placeholder="연락처"><input name="customer_email" value="${esc(q.customer_email)}" placeholder="이메일"></div></div>
@@ -889,14 +902,41 @@ async function openQuoteForm(quote, task, template) {
       const c = sug.customers.find(x => x.customer_name === f.customer_name.value);
       if (c) ['customer_contact', 'customer_phone', 'customer_email'].forEach(k => { if (!f[k].value) f[k].value = c[k]; });
     };
+    if (useEc) {
+      tbody.addEventListener('focusin', e => {
+        if (e.target.name !== 'name' || e.target.dataset.sb) return;
+        e.target.dataset.sb = 1;
+        attachSearch(e.target, v => searchList(ec.products, v, p => [p.code, p.name, p.spec]), p =>
+          `<b>${esc(p.name)}</b> <small>${esc(p.spec)}</small><br><small>${esc(p.code)}${p.unit ? ' · ' + esc(p.unit) : ''}${p.price ? ' · ' + won(p.price) + '원' : ''}</small>`,
+          p => {
+            const tr = e.target.closest('tr');
+            e.target.value = p.name; $('[name=prod_cd]', tr).value = p.code; $('.pc', tr).innerHTML = prodCode(p.code);
+            $('[name=spec]', tr).value = p.spec; if (p.unit) $('[name=unit]', tr).value = p.unit;
+            if (p.price && !numVal($('[name=price]', tr).value)) $('[name=price]', tr).value = won(p.price);
+            if (!$('[name=qty]', tr).value) $('[name=qty]', tr).value = 1;
+            recalc(); $('[name=qty]', tr).focus(); $('[name=qty]', tr).select();
+          });
+        e.target.dispatchEvent(new Event('focus'));
+      });
+    }
+    tbody.addEventListener('click', e => {
+      if (!e.target.closest('[data-unlink]')) return;
+      const tr = e.target.closest('tr'); $('[name=prod_cd]', tr).value = ''; $('.pc', tr).innerHTML = prodCode('');
+    });
+    if (ec.customers.length) {
+      const pickCust = c => { f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change')); };
+      const custHtml = c => `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>`;
+      attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name]), custHtml, pickCust);
+      attachSearch(f.cust_cd, v => searchList(ec.customers, v, c => [c.code, c.name]), custHtml, pickCust);
+    }
     recalc();
     const save = async (andPrint) => {
       $('.err', bg).textContent = '';
       if (!f.reportValidity()) return;
-      const items = $$('tr', tbody).map(tr => ({name: $('[name=name]', tr).value, spec: $('[name=spec]', tr).value, unit: $('[name=unit]', tr).value,
+      const items = $$('tr', tbody).map(tr => ({prod_cd: $('[name=prod_cd]', tr).value, name: $('[name=name]', tr).value, spec: $('[name=spec]', tr).value, unit: $('[name=unit]', tr).value,
         qty: numVal($('[name=qty]', tr).value), unit_price: numVal($('[name=price]', tr).value), note: $('[name=inote]', tr).value})).filter(i => i.name.trim());
       const body = {items, task_id: linkedTask ? linkedTask.id : null, complete_task: !!(f.complete_task && f.complete_task.checked)};
-      ['customer_name', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'quote_date', 'valid_until', 'delivery', 'payment_terms', 'vat_mode', 'status', 'note'].forEach(k => body[k] = f[k].value);
+      ['customer_name', 'cust_cd', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'quote_date', 'valid_until', 'delivery', 'payment_terms', 'vat_mode', 'status', 'note'].forEach(k => body[k] = f[k].value);
       try {
         const r = await api(quote ? `/api/quotes/${quote.id}` : '/api/quotes', {method: quote ? 'PUT' : 'POST', body});
         close(); toast(`견적서 ${r.quote_no} 저장됨`);
@@ -910,7 +950,8 @@ async function openQuoteForm(quote, task, template) {
 }
 
 async function openQuoteView(id) {
-  const q = await api(`/api/quotes/${id}`);
+  const [q, ec] = await Promise.all([api(`/api/quotes/${id}`), ecMaster()]);
+  const ecEnabled = ec.enabled;
   const canEdit = q.created_by === state.me.id || state.me.role === 'admin';
   openModal(`<div class="row">${qTag(q.status)}<span class="muted">${esc(q.quote_no)} · ${esc(q.quote_date)} · ${VAT[q.vat_mode]}</span></div>
     <h2 style="margin-top:8px">${esc(q.customer_name)} ${q.title ? `<small class="muted">· ${esc(q.title)}</small>` : ''}</h2>
@@ -924,6 +965,12 @@ async function openQuoteView(id) {
       <dt>결제조건</dt><dd>${esc(q.payment_terms || '-')}</dd><dt>작성자</dt><dd>${esc(q.creator_name)}</dd>
     </dl>
     ${q.note ? `<div class="desc">${esc(q.note)}</div>` : ''}
+    ${ecEnabled ? `<div class="ec-box"><div class="row"><b>🔗 이카운트</b><span class="muted">거래처 ${q.cust_cd ? esc(q.cust_cd) : '<span class="code miss">미지정</span>'} · 품목 ${q.items.filter(i => i.prod_cd).length}/${q.items.length}개 연결</span></div>
+      <div class="row" style="margin-top:8px">
+        ${q.ecount_quote_slip ? `<span class="tag s-done">견적서 전송됨 ${esc(q.ecount_quote_slip)}</span>` : ''}
+        ${q.ecount_sale_slip ? `<span class="tag s-done">판매 전송됨 ${esc(q.ecount_sale_slip)}</span>` : ''}
+        ${canEdit ? `<button class="btn sm" id="ecQ">견적서로 전송</button><button class="btn sm primary" id="ecS">거래명세서(판매)로 전송</button>` : ''}
+      </div></div>` : ''}
     <div class="actions">
       ${canEdit ? '<button class="btn danger" id="qDel">삭제</button><button class="btn" id="qEdit">수정</button>' : ''}
       <button class="btn" id="qCopy">복사해서 새로 작성</button><span class="spacer"></span>
@@ -931,6 +978,9 @@ async function openQuoteView(id) {
     </div>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
     $('#qPrint', bg).onclick = () => printQuote(id);
+    const ecQ = $('#ecQ', bg), ecS = $('#ecS', bg);
+    if (ecQ) ecQ.onclick = () => { close(); openEcSend(q, 'quotation', ec); };
+    if (ecS) ecS.onclick = () => { close(); openEcSend(q, 'sale', ec); };
     $('#qCopy', bg).onclick = () => { close(); openQuoteForm(null, null, {...q, status: 'draft', quote_date: todayStr()}); };
     const ed = $('#qEdit', bg); if (ed) ed.onclick = () => { close(); openQuoteForm(q); };
     const del = $('#qDel', bg); if (del) del.onclick = async () => {
@@ -1043,6 +1093,172 @@ async function openCompany() {
       $$('input[name], textarea[name]', bg).forEach(i => body[i.name] = i.value);
       try { await api('/api/company', {method: 'PUT', body}); close(); toast('회사 정보가 저장되었습니다.'); }
       catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
+
+// ===================================================== 이카운트 연동
+let ecCache = null;
+async function ecMaster(reload) {
+  if (!ecCache || reload) ecCache = await api('/api/ecount/master');
+  return ecCache;
+}
+
+// 여러 단어 검색: "a4 500" → 코드/이름/규격에 모든 단어가 들어간 것
+function searchList(list, query, fields) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return list.slice(0, 30);
+  const out = [];
+  for (const it of list) {
+    const hay = fields(it).join(' ').toLowerCase();
+    if (words.every(w => hay.includes(w))) { out.push(it); if (out.length >= 50) break; }
+  }
+  return out;
+}
+
+function attachSearch(input, search, render, pick) {
+  let box = null, items = [], idx = -1;
+  const close = () => { if (box) { box.remove(); box = null; } };
+  const open = () => {
+    items = search(input.value.trim());
+    if (!box) { box = document.createElement('div'); box.className = 'sbox'; document.body.appendChild(box); }
+    const r = input.getBoundingClientRect();
+    box.style.left = Math.min(r.left, window.innerWidth - 330) + 'px';
+    box.style.width = Math.max(r.width, 320) + 'px';
+    const below = window.innerHeight - r.bottom;
+    if (below < 220 && r.top > below) { box.style.top = ''; box.style.bottom = (window.innerHeight - r.top + 2) + 'px'; }
+    else { box.style.bottom = ''; box.style.top = (r.bottom + 2) + 'px'; }
+    idx = -1;
+    box.innerHTML = items.length ? items.map((it, i) => `<div data-i="${i}">${render(it)}</div>`).join('')
+      : '<div class="none">검색 결과가 없습니다. 다른 단어로 찾아보세요.</div>';
+    $$('[data-i]', box).forEach(d => d.onmousedown = e => { e.preventDefault(); pick(items[+d.dataset.i]); close(); });
+  };
+  input.setAttribute('autocomplete', 'off');
+  input.addEventListener('focus', open);
+  input.addEventListener('input', open);
+  input.addEventListener('blur', () => setTimeout(close, 150));
+  input.addEventListener('keydown', e => {
+    if (!box || !items.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      idx = (idx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      $$('[data-i]', box).forEach((d, i) => d.classList.toggle('on', i === idx));
+      $$('[data-i]', box)[idx].scrollIntoView({block: 'nearest'});
+    } else if (e.key === 'Enter' && idx >= 0) { e.preventDefault(); pick(items[idx]); close(); }
+    else if (e.key === 'Escape') close();
+  });
+  const modal = input.closest('.modal-bg');
+  if (modal) modal.addEventListener('scroll', close);
+}
+
+function openEcSend(q, kind, ec) {
+  const isSale = kind === 'sale';
+  const label = isSale ? '거래명세서(판매)' : '견적서';
+  const already = isSale ? q.ecount_sale_slip : q.ecount_quote_slip;
+  openModal(`<h2>이카운트 ${label}로 전송</h2>
+    <div class="muted">${esc(q.quote_no)} · ${esc(q.customer_name)} · 합계 ${won(q.grand_total)}원</div>
+    ${ec.mode === 'test' ? '<div class="tag s-hold" style="margin-top:8px">테스트 서버 모드 — 실제 장부에는 들어가지 않습니다</div>' : ''}
+    ${already ? `<div class="err">이미 전송된 ${label}입니다 (전표 ${esc(already)}). 다시 보내면 이카운트에 한 건이 더 생깁니다.</div>` : ''}
+    <form>
+      <label>${isSale ? '판매일자' : '견적일자'}</label><input type="date" name="io_date" value="${isSale ? todayStr() : esc(q.quote_date)}" required>
+      <label>${isSale ? '출고 창고 *' : '창고 (선택)'}</label>
+      <select name="wh_cd" ${isSale ? 'required' : ''}><option value="">${ec.warehouses.length ? '선택하세요' : '등록된 창고가 없습니다 (관리자: 🔗 이카운트 설정)'}</option>
+        ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${state.lastWh === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('')}</select>
+      <div class="err" id="ecErr"></div>
+      <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">${already ? '다시 전송' : '전송'}</button></div>
+    </form>`, (bg, close) => {
+    $('form', bg).onsubmit = async e => {
+      e.preventDefault();
+      const f = e.target, btn = $('button.primary', bg);
+      btn.disabled = true; btn.textContent = '전송 중…'; $('#ecErr', bg).textContent = '';
+      try {
+        const r = await api(`/api/quotes/${q.id}/ecount`, {method: 'POST', body: {kind, wh_cd: f.wh_cd.value, io_date: f.io_date.value, force: !!already}});
+        state.lastWh = f.wh_cd.value;
+        close(); toast(`이카운트 ${label} 등록 완료 ${r.slip_nos.length ? '(전표 ' + r.slip_nos.join(', ') + ')' : ''}`);
+        openQuoteView(q.id); if (state.view === 'quotes') renderQuotes();
+      } catch (err) { $('#ecErr', bg).textContent = err.message; btn.disabled = false; btn.textContent = '다시 시도'; }
+    };
+  });
+}
+
+async function openEcountSettings() {
+  const [s, logs] = await Promise.all([api('/api/ecount/settings'), api('/api/ecount/logs')]);
+  const ec = await ecMaster(true);
+  const d = s.defaults;
+  openModal(`<h2>🔗 이카운트 연동 설정</h2>
+    <form id="ecForm">
+      <div class="grid2">
+        <div><label>회사코드</label><input name="com_code" value="${esc(s.com_code)}" placeholder="이카운트 로그인 회사코드"></div>
+        <div><label>사용자 ID</label><input name="user_id" value="${esc(s.user_id)}" placeholder="API 인증키를 발급받은 ID"></div>
+        <div><label>API 인증키 ${s.has_key ? '<span class="tag s-done">등록됨</span>' : ''}</label><input name="api_key" type="password" autocomplete="new-password" placeholder="${s.has_key ? '변경할 때만 입력' : '발급받은 인증키'}"></div>
+        <div><label>서버</label><select name="is_test"><option value="1" ${s.is_test === '1' ? 'selected' : ''}>테스트 서버 (테스트 인증키)</option><option value="0" ${s.is_test === '0' ? 'selected' : ''}>실서비스 (정식 인증키)</option></select></div>
+        <div><label>담당자 코드 (선택)</label><input name="emp_cd" value="${esc(s.emp_cd)}" placeholder="전표에 넣을 이카운트 담당자 코드"></div>
+      </div>
+      <details style="margin-top:10px"><summary class="muted" style="cursor:pointer">고급: API 경로 (이카운트 API 매뉴얼과 다를 때만 수정)</summary>
+        <div class="grid2">
+          <div><label>품목 조회</label><input name="path_products" value="${esc(s.path_products)}" placeholder="${esc(d.products)}"></div>
+          <div></div>
+          <div><label>견적서 입력</label><input name="path_quotation" value="${esc(s.path_quotation)}" placeholder="${esc(d.quotation)}"></div>
+          <div><label>견적서 목록 키</label><input name="path_quotation_list_key" value="${esc(s.path_quotation_list_key)}" placeholder="${esc(d.quotation_list_key)}"></div>
+          <div><label>판매 입력</label><input name="path_sale" value="${esc(s.path_sale)}" placeholder="${esc(d.sale)}"></div>
+          <div><label>판매 목록 키</label><input name="path_sale_list_key" value="${esc(s.path_sale_list_key)}" placeholder="${esc(d.sale_list_key)}"></div>
+        </div></details>
+      <div class="err" id="ecSetErr"></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary">저장</button><button type="button" class="btn" id="ecTest">연결 테스트</button><span class="muted" id="ecTestRes"></span></div>
+    </form>
+
+    <div class="ec-box"><div class="row"><b>📦 품목</b><span class="muted">${s.counts.products}개${s.last_sync ? ' · 마지막 불러오기 ' + esc(s.last_sync.slice(0, 16)) : ''}</span><span class="spacer"></span>
+      <button class="btn sm primary" id="ecSync">이카운트에서 불러오기</button><label class="btn sm" style="margin:0">엑셀 업로드<input type="file" accept=".xlsx,.csv" data-up="products" hidden></label></div>
+      <small class="muted">품목이 바뀌면 다시 불러오세요. 견적서에서 이름·코드·규격 일부만 입력해도 검색됩니다.</small></div>
+
+    <div class="ec-box"><div class="row"><b>🏢 거래처</b><span class="muted">${s.counts.customers}개</span><span class="spacer"></span>
+      <label class="btn sm" style="margin:0">엑셀 업로드<input type="file" accept=".xlsx,.csv" data-up="customers" hidden></label></div>
+      <small class="muted">이카운트 거래처등록 목록 화면에서 [Excel] 로 내려받은 파일을 그대로 올리세요. (거래처 조회 API는 이카운트에서 제공하지 않습니다)</small></div>
+
+    <div class="ec-box"><div class="row"><b>🏭 창고</b><span class="muted">${s.counts.warehouses}개</span><span class="spacer"></span>
+      <label class="btn sm" style="margin:0">엑셀 업로드<input type="file" accept=".xlsx,.csv" data-up="warehouses" hidden></label></div>
+      <label style="font-weight:400">한 줄에 하나씩 <b>창고코드 창고이름</b> (예: <code>100 본사창고</code>)</label>
+      <textarea id="whText" style="min-height:80px">${ec.warehouses.map(w => w.code + ' ' + w.name).join('\n')}</textarea>
+      <button type="button" class="btn sm" id="whSave" style="margin-top:6px">창고 저장</button></div>
+
+    ${logs.length ? `<label>최근 전송 기록</label><div class="qscroll"><table><thead><tr><th>시간</th><th>견적번호</th><th>종류</th><th>결과</th><th>내용</th></tr></thead><tbody>
+      ${logs.map(l => `<tr style="cursor:default"><td>${esc(l.created_at.slice(5, 16))}</td><td>${esc(l.quote_no || '-')}</td><td>${l.kind === 'sale' ? '판매' : '견적서'}</td>
+        <td>${l.ok ? '<span class="tag s-done">성공</span>' : '<span class="tag p-urgent">실패</span>'}</td><td style="font-size:12px">${esc(l.slip_nos || l.message)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="actions"><button class="btn" data-close>닫기</button></div>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    const f = $('#ecForm', bg);
+    const values = () => Object.fromEntries($$('input[name], select[name]', f).map(i => [i.name, i.value]));
+    const saveSettings = async () => { await api('/api/ecount/settings', {method: 'PUT', body: values()}); };
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try { await saveSettings(); toast('저장되었습니다.'); close(); openEcountSettings(); }
+      catch (err) { $('#ecSetErr', bg).textContent = err.message; }
+    };
+    $('#ecTest', bg).onclick = async () => {
+      $('#ecTestRes', bg).textContent = '확인 중…'; $('#ecSetErr', bg).textContent = '';
+      try { await saveSettings(); const r = await api('/api/ecount/test', {method: 'POST'}); $('#ecTestRes', bg).innerHTML = `<span class="tag s-done">연결 성공</span> ${esc(r.mode)} · Zone ${esc(r.zone)}`; }
+      catch (err) { $('#ecTestRes', bg).textContent = ''; $('#ecSetErr', bg).textContent = err.message; }
+    };
+    $('#ecSync', bg).onclick = async e => {
+      e.target.disabled = true; e.target.textContent = '불러오는 중…';
+      try { const r = await api('/api/ecount/sync-products', {method: 'POST'}); toast(`품목 ${r.count}개를 불러왔습니다.`); close(); openEcountSettings(); }
+      catch (err) { $('#ecSetErr', bg).textContent = err.message; e.target.disabled = false; e.target.textContent = '이카운트에서 불러오기'; }
+    };
+    $$('[data-up]', bg).forEach(inp => inp.onchange = async () => {
+      const file = inp.files[0]; if (!file) return;
+      const fd = new FormData(); fd.append('file', file);
+      try {
+        const res = await fetch(`/api/ecount/upload/${inp.dataset.up}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || '업로드 실패');
+        toast(`${data.count}건을 등록했습니다.`); close(); openEcountSettings();
+      } catch (err) { $('#ecSetErr', bg).textContent = err.message; }
+    });
+    $('#whSave', bg).onclick = async () => {
+      const rows = $('#whText', bg).value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const m = l.match(/^(\S+)\s*(.*)$/); return {code: m[1], name: m[2]}; });
+      try { const r = await api('/api/ecount/warehouses', {method: 'PUT', body: rows}); toast(`창고 ${r.count}개 저장`); ecMaster(true); }
+      catch (err) { $('#ecSetErr', bg).textContent = err.message; }
     };
   });
 }
