@@ -2257,14 +2257,12 @@ def inventory_lot(lid: int, user: dict = Depends(current_user)):
         if not lot:
             raise HTTPException(404, "로트를 찾을 수 없습니다.")
         cost = can_see_cost(c, user)
-        ships = [dict(r) for r in c.execute("SELECT ship_date, customer, qty, price, note FROM inv_ships"
+        ships = [dict(r) for r in c.execute("SELECT ship_date, customer, qty FROM inv_ships"
                                             " WHERE lot_id = ? ORDER BY ship_date DESC", (lid,))]
     lot = dict(lot)
     if not cost:
         for k in ("cost_fx", "rate", "cost_krw", "cost_est", "stock_amt"):
             lot.pop(k, None)
-        for s in ships:
-            s.pop("price", None)
     return {"lot": lot, "ships": ships, "can_cost": cost}
 
 
@@ -2287,59 +2285,129 @@ def inv_customer_fn(c):
     return fn
 
 
+# 거래명세서 품명 ↔ 재고 엑셀 품목 맞추기
+_CODE_RE = re.compile(r"\b(?:[a-z]{1,3})?\d{5,}\b", re.I)    # 끝에 붙는 제품코드: 937450, AH11914, F13841, JC163890
+
+
+def _item_tokens(name: str) -> tuple:
+    s = _CODE_RE.sub(" ", str(name or "").lower())
+    return tuple(sorted(t for t in re.split(r"[^0-9a-z가-힣]+", s) if t))
+
+
+def _item_norm(name: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]", "", str(name or "").lower())
+
+
+def cost_item_map(c) -> dict:
+    """관리자가 직접 연결한 것: {거래명세서 품명: {"item": 재고 품목} 또는 {"cost": 원/kg}}"""
+    try:
+        return json.loads(get_setting(c, "cost_item_map", "{}")) or {}
+    except ValueError:
+        return {}
+
+
+class CostBook:
+    """품목별 원가 찾기. 1) 재고 엑셀 출고 기록과 날짜(±3일)·거래처·수량이 맞으면 그 로트 원가
+    2) 아니면 판매일 이전에 통관된 가장 최근 로트 원가 3) 그것도 없으면 가장 오래된 로트 원가."""
+
+    def __init__(self, c, cust_fn):
+        self.cust = cust_fn
+        self.lots, self.by_norm, self.by_tok, self.ships = {}, {}, {}, {}
+        for l in c.execute("SELECT id, item, cost_krw, customs_date FROM inv_lots WHERE cost_krw > 0"):
+            self.lots.setdefault(l["item"], []).append(dict(l))
+        for item, lots in self.lots.items():
+            lots.sort(key=lambda l: l["customs_date"] or "")
+            self.by_norm.setdefault(_item_norm(item), item)
+            self.by_tok.setdefault(_item_tokens(item), item)
+        for s in c.execute("SELECT s.ship_date, s.customer, s.qty, l.item, l.cost_krw FROM inv_ships s"
+                           " JOIN inv_lots l ON l.id = s.lot_id WHERE l.cost_krw > 0"):
+            self.ships.setdefault(s["item"], []).append(
+                (s["ship_date"], _company_key(self.cust(s["customer"])), s["qty"], s["cost_krw"]))
+        self.manual = cost_item_map(c)
+
+    def match_item(self, name: str):
+        m = self.manual.get(name)
+        if m and m.get("item") in self.lots:
+            return m["item"]
+        return self.by_norm.get(_item_norm(name)) or self.by_norm.get(_item_norm(_CODE_RE.sub("", name))) \
+            or self.by_tok.get(_item_tokens(name))
+
+    def cost(self, name: str, date: str, customer: str, qty: float):
+        """(원/kg, 근거) 근거: lot(출고 기록 일치) / date(날짜 기준 로트) / manual / None"""
+        m = self.manual.get(name) or {}
+        if m.get("cost"):
+            return float(m["cost"]), "manual", ""
+        item = self.match_item(name)
+        if not item:
+            return None, None, ""
+        ck = _company_key(customer)
+        try:
+            d0 = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            d0 = None
+        near = [s for s in self.ships.get(item, []) if s[1] == ck and d0 and
+                abs((datetime.strptime(s[0], "%Y-%m-%d") - d0).days) <= 3]
+        for s in near:
+            if abs(s[2] - qty) < 0.01:
+                return s[3], "lot", item
+        if near and abs(sum(s[2] for s in near) - qty) < 0.01 and qty:
+            return sum(s[2] * s[3] for s in near) / qty, "lot", item
+        lots = self.lots[item]
+        before = [l for l in lots if l["customs_date"] and l["customs_date"] <= date]
+        return (before[-1] if before else lots[0])["cost_krw"], "date", item
+
+
 @app.get("/api/inventory/profit")
 def inventory_profit(year: int = 0, low: float = 10, user: dict = Depends(current_user)):
-    """재고 엑셀의 출고 기록 기준 이익 = (납품가 − 원가(원화)) × 출고량."""
+    """이익 = 거래명세서 공급가액 − 출고량 × 원가(재고 엑셀 로트의 원가(원화)).
+    재고 엑셀의 납품가는 쓰지 않는다."""
     with db() as c:
         if not can_see_cost(c, user):
             raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
-        is_ex, canon = exclude_matcher(c), inv_customer_fn(c)
-        rows = c.execute("SELECT s.ship_date, s.customer, s.qty, s.price, s.note, l.item, l.cost_krw, l.cost_est,"
-                         " l.lot_no, l.id AS lot_id FROM inv_ships s JOIN inv_lots l ON l.id = s.lot_id").fetchall()
+        is_ex, canon = exclude_matcher(c), canon_fn(c)
+        book = CostBook(c, inv_customer_fn(c))
+        rows = c.execute("SELECT q.quote_date, q.customer_name, i.name, i.qty, i.supply FROM quote_items i"
+                         " JOIN quotes q ON q.id = i.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft'"
+                         " AND i.name != ''").fetchall()
         meta = inv_meta(c)
-    years = sorted({int(r["ship_date"][:4]) for r in rows})
-    if not years:
-        return {"years": [], "year": None, "meta": meta}
+    years = sorted({int(r["quote_date"][:4]) for r in rows if r["quote_date"][:4].isdigit()})
+    if not years or not book.lots:
+        return {"years": years if book.lots else [], "year": None, "meta": meta, "no_inventory": not book.lots}
     year = year if year in years else years[-1]
-    monthly = {y: {"rev": [0] * 12, "cost": [0] * 12, "profit": [0] * 12} for y in (year, year - 1)}
-    yearly = {}
-    cust, items, low_rows = {}, {}, []
-    stats = {"priced": 0, "free": 0, "free_cost": 0, "unpriced": 0, "nocost": 0, "excluded": 0, "estimated": 0}
+    monthly = {y: {"rev": [0] * 12, "cost": [0] * 12, "profit": [0] * 12, "all": [0] * 12} for y in (year, year - 1)}
+    cust, items, low_rows, unmatched = {}, {}, [], {}
+    stats = {"lines": 0, "matched": 0, "rev_all": 0, "rev_matched": 0, "by_lot": 0, "by_date": 0, "manual": 0}
     for r in rows:
-        y, m = int(r["ship_date"][:4]), int(r["ship_date"][5:7])
-        name = canon(r["customer"]) or "(거래처 없음)"
-        in_year = y == year
-        if is_ex(name):
-            stats["excluded"] += in_year
+        d = r["quote_date"]
+        y, m = int(d[:4]), int(d[5:7])
+        name = canon(r["customer_name"])
+        if is_ex(name) or y not in monthly:
             continue
-        qty, price, unit = r["qty"] or 0, r["price"], r["cost_krw"]
-        if price is None:
-            stats["unpriced"] += in_year
-            continue
-        if not unit:
-            stats["nocost"] += in_year
+        rev, qty = r["supply"] or 0, r["qty"] or 0
+        unit, how, item = book.cost(r["name"], d, name, qty)
+        mm = monthly[y]
+        mm["all"][m - 1] += rev
+        if y == year:
+            stats["lines"] += 1
+            stats["rev_all"] += rev
+        if unit is None:
+            if y == year:
+                u = unmatched.setdefault(r["name"], {"name": r["name"], "rev": 0, "qty": 0, "count": 0})
+                u["rev"] += rev
+                u["qty"] += qty
+                u["count"] += 1
             continue
         cost = qty * unit
-        if price == 0:      # 무상(샘플 등)
-            stats["free"] += in_year
-            stats["free_cost"] += cost if in_year else 0
-            continue
-        rev = qty * price
         profit = rev - cost
-        yy = yearly.setdefault(y, {"rev": 0, "cost": 0, "profit": 0})
-        yy["rev"] += rev
-        yy["cost"] += cost
-        yy["profit"] += profit
-        if y in monthly:
-            mm = monthly[y]
-            mm["rev"][m - 1] += rev
-            mm["cost"][m - 1] += cost
-            mm["profit"][m - 1] += profit
-        if not in_year:
+        mm["rev"][m - 1] += rev
+        mm["cost"][m - 1] += cost
+        mm["profit"][m - 1] += profit
+        if y != year:
             continue
-        stats["priced"] += 1
-        stats["estimated"] += 1 if r["cost_est"] else 0
-        for key, bucket in ((name, cust), (r["item"], items)):
+        stats["matched"] += 1
+        stats["rev_matched"] += rev
+        stats["by_" + how if how != "manual" else "manual"] += 1
+        for key, bucket in ((name, cust), (item or r["name"], items)):
             e = bucket.setdefault(key, {"name": key, "rev": 0, "cost": 0, "profit": 0, "qty": 0, "count": 0})
             e["rev"] += rev
             e["cost"] += cost
@@ -2348,13 +2416,39 @@ def inventory_profit(year: int = 0, low: float = 10, user: dict = Depends(curren
             e["count"] += 1
         margin = profit / rev * 100 if rev else 0
         if qty > 0 and margin < low:
-            low_rows.append({"date": r["ship_date"], "customer": name, "item": r["item"], "lot_no": r["lot_no"],
-                             "lot_id": r["lot_id"], "qty": qty, "price": price, "unit_cost": unit,
-                             "profit": profit, "margin": margin, "est": r["cost_est"]})
+            low_rows.append({"date": d, "customer": name, "item": r["name"], "inv_item": item, "qty": qty,
+                             "price": rev / qty if qty else 0, "unit_cost": unit, "profit": profit,
+                             "margin": margin, "how": how})
     low_rows.sort(key=lambda x: (x["margin"], x["profit"]))
-    by_profit = lambda d: sorted(d.values(), key=lambda e: -e["profit"])
-    return {"years": years, "year": year, "monthly": monthly, "yearly": yearly, "customers": by_profit(cust),
-            "items": by_profit(items), "low": low_rows[:200], "low_threshold": low, "stats": stats, "meta": meta}
+    by_profit = lambda dct: sorted(dct.values(), key=lambda e: -e["profit"])
+    return {"years": years, "year": year, "monthly": monthly, "customers": by_profit(cust), "items": by_profit(items),
+            "low": low_rows[:200], "low_threshold": low, "stats": stats, "meta": meta,
+            "unmatched": sorted(unmatched.values(), key=lambda e: -e["rev"])[:300]}
+
+
+@app.get("/api/inventory/cost-map")
+def get_cost_map(_: dict = Depends(admin_user)):
+    with db() as c:
+        items = [r[0] for r in c.execute("SELECT DISTINCT item FROM inv_lots WHERE cost_krw > 0 ORDER BY item COLLATE NOCASE")]
+        return {"map": cost_item_map(c), "items": items}
+
+
+@app.put("/api/inventory/cost-map")
+def put_cost_map(body: dict, _: dict = Depends(admin_user)):
+    """{"name": 거래명세서 품명, "item": 재고 품목 | "cost": 원/kg | 둘 다 없으면 연결 해제}"""
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(400, "품명이 없습니다.")
+    with db() as c:
+        m = cost_item_map(c)
+        if body.get("item"):
+            m[name] = {"item": str(body["item"])}
+        elif _num(body.get("cost")) > 0:
+            m[name] = {"cost": _num(body["cost"])}
+        else:
+            m.pop(name, None)
+        set_setting(c, "cost_item_map", json.dumps(m, ensure_ascii=False))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- 입고 예정

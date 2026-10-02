@@ -1707,11 +1707,8 @@ function openInvItem(lots, canCost, today) {
       const box = a.nextElementSibling;
       if (box.innerHTML) { box.innerHTML = ''; return; }
       const r = await api(`/api/inventory/lot/${a.dataset.lot}`);
-      const u = r.lot.cost_krw;
-      box.innerHTML = `<div class="qscroll"><table class="an-table" style="margin-top:6px"><thead><tr><th>출고일</th><th>거래처</th><th class="num">출고량</th>${r.can_cost ? '<th class="num">납품가</th><th class="num">이익</th><th class="num">이익률</th>' : ''}</tr></thead><tbody>
-        ${r.ships.map(s => { const p = s.price, pr = r.can_cost && p && u ? (p - u) * s.qty : null;
-          return `<tr><td>${esc(s.ship_date)}</td><td>${esc(s.customer)}</td><td class="num">${kg(s.qty)}</td>${r.can_cost ? `<td class="num">${p != null ? won(p) : `<span class="muted">${esc(s.note) || '-'}</span>`}</td>
-            <td class="num ${pr < 0 ? 'down' : ''}">${pr == null ? '-' : won(pr)}</td><td class="num">${pr == null ? '-' : ((p - u) / p * 100).toFixed(1) + '%'}</td>` : ''}</tr>`; }).join('')}
+      box.innerHTML = `<div class="qscroll"><table class="an-table" style="margin-top:6px"><thead><tr><th>출고일</th><th>거래처</th><th class="num">출고량</th></tr></thead><tbody>
+        ${r.ships.map(s => `<tr><td>${esc(s.ship_date)}</td><td>${esc(s.customer)}</td><td class="num">${kg(s.qty)}</td></tr>`).join('')}
       </tbody></table></div>`;
     });
   });
@@ -1722,52 +1719,59 @@ async function renderProfit() {
   const pf = state.pf ||= {year: 0, tab: 'cust', low: 10, q: ''};
   const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}`), excludeNote()]);
   const admin = state.me.role === 'admin';
-  if (!d.years.length) {
-    $('#main').innerHTML = `<div class="card"><h3>💰 이익분석</h3><div class="empty">재고 엑셀의 출고 기록이 없습니다. 📦 재고에서 엑셀을 올려 주세요.</div></div>`;
+  if (!d.years.length || !d.year) {
+    $('#main').innerHTML = `<div class="card"><h3>💰 이익분석</h3><div class="empty">${d.no_inventory ? '원가를 가져올 재고 엑셀이 없습니다. 📦 재고에서 엑셀을 올려 주세요.' : '거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져와 주세요.'}</div></div>`;
     return;
   }
   const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
   const now = new Date();
   const cm = d.monthly[Y], pm = d.monthly[P];
-  const lastM = cm.rev.reduce((acc, v, i) => v ? i + 1 : acc, 0);
+  const lastM = cm.all.reduce((acc, v, i) => v ? i + 1 : acc, 0);
   const upto = Y === now.getFullYear() ? now.getMonth() + 1 : (lastM || 12);
   const ytd = k => sum(cm[k].slice(0, upto)), pytd = k => sum(pm[k].slice(0, upto));
   const rate = (p, r) => r ? (p / r * 100).toFixed(1) + '%' : '-';
-  const st = d.stats;
+  const st = d.stats, cover = st.rev_all ? st.rev_matched / st.rev_all * 100 : 0;
   const ql = pf.q.toLowerCase();
   const list = (pf.tab === 'cust' ? d.customers : d.items).filter(e => !ql || e.name.toLowerCase().includes(ql));
   const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item).toLowerCase().includes(ql));
+  const unm = d.unmatched.filter(e => !ql || e.name.toLowerCase().includes(ql));
+  const HOW = {lot: '출고 기록 일치', date: '날짜 기준 로트', manual: '직접 입력'};
+  let table;
+  if (pf.tab === 'low') table = `<div class="row" style="margin-bottom:6px"><span class="muted">이익률</span><select id="pfLow" style="width:auto">${[0, 5, 10, 15, 20, 30].map(v => `<option value="${v}" ${v === pf.low ? 'selected' : ''}>${v}% 미만</option>`).join('')}</select><span class="muted" style="font-size:12px">${Y}년 · 0% 미만은 손해</span></div>
+      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>날짜</th><th>거래처</th><th class="num">수량</th><th class="num">판매단가</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th><th>원가 근거</th></tr></thead><tbody>
+      ${lows.map(e => `<tr><td title="${esc(e.item)}">${esc(e.item)}</td><td>${esc(e.date)}</td><td>${esc(e.customer)}</td><td class="num">${kg(e.qty)}</td><td class="num">${won(e.price)}</td>
+        <td class="num">${won(e.unit_cost)}</td><td class="num ${e.profit < 0 ? 'down' : ''}">${won(e.profit)}</td><td class="num ${e.margin < 0 ? 'down' : ''}">${e.margin.toFixed(1)}%</td><td><small class="muted">${HOW[e.how] || ''}${e.inv_item && e.inv_item !== e.item ? ' · ' + esc(e.inv_item) : ''}</small></td></tr>`).join('') || '<tr><td colspan="9" class="empty">없습니다.</td></tr>'}
+      </tbody></table></div>`;
+  else if (pf.tab === 'unmatched') table = `<div class="muted" style="font-size:12px;margin-bottom:6px">거래명세서 품명을 재고 엑셀에서 찾지 못해 이익 계산에서 빠진 품목입니다 (${Y}년, 매출 큰 순).${admin ? ' <b>연결</b>을 눌러 재고 품목을 고르거나 원가를 직접 넣으세요.' : ''}</div>
+      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>거래명세서 품명</th><th class="num">건수</th><th class="num">수량</th><th class="num">매출(만원)</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>
+      ${unm.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td>${admin ? `<td><button class="btn sm" data-link="${esc(e.name)}">연결</button></td>` : ''}</tr>`).join('') || '<tr><td colspan="5" class="empty">모두 연결되었습니다.</td></tr>'}
+      </tbody></table></div>${admin ? '<button class="btn sm" id="pfLinks" style="margin-top:8px">연결해 둔 품목 보기·해제</button>' : ''}`;
+  else table = `<div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>${pf.tab === 'cust' ? '거래처' : '품목'}</th><th class="num">건수</th><th class="num">수량(kg)</th><th class="num">매출</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
+      ${list.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td><td class="num">${man(e.cost)}</td>
+        <td class="num ${e.profit < 0 ? 'down' : ''}"><b>${man(e.profit)}</b></td><td class="num ${e.profit < 0 ? 'down' : ''}">${rate(e.profit, e.rev)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">없습니다.</td></tr>'}
+      </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원 · ${Y}년</div>`;
   $('#main').innerHTML = `<div class="card viz">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>
       <select id="pfYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
       <input id="pfQ" placeholder="거래처 / 품목 검색" value="${esc(pf.q)}" style="max-width:180px">${admin ? '<button class="btn" id="pfSet">⚙</button>' : ''}</div>
-    <div style="margin-bottom:6px">${invMetaLine(d.meta)}</div>
+    <div style="margin-bottom:6px"><span class="muted" style="font-size:12px">매출: 거래명세서 공급가액 · 원가: 재고 엑셀</span> ${invMetaLine(d.meta)}</div>
     ${exNote}
     <div class="stats stats4">
-      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : ''} 매출 (납품가×출고량)</span><b>${krw(ytd('rev'))}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월 ` : ''}매출 (원가 확인된 것)</span><b>${krw(ytd('rev'))}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">원가</span><b>${krw(ytd('cost'))}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">이익 · 전년 같은 기간 ${krw(pytd('profit'))}원</span><b>${krw(ytd('profit'))}원</b><small>${deltaHtml(ytd('profit'), pytd('profit'))}</small></div>
       <div class="stat" style="cursor:default"><span class="muted">이익률 · 전년 ${rate(pytd('profit'), pytd('rev'))}</span><b>${rate(ytd('profit'), ytd('rev'))}</b></div>
     </div>
+    <div class="muted" style="font-size:13px;margin:-4px 0 10px">${Y}년 거래명세서 매출 ${krw(st.rev_all)}원 중 <b style="color:${cover < 80 ? '#b45309' : 'inherit'}">${cover.toFixed(0)}%</b>(${st.matched}/${st.lines}건)의 원가를 찾았습니다.${d.unmatched.length ? ` <a href="#" id="pfGoUnm">원가 못 찾은 품목 ${d.unmatched.length}개 보기</a>` : ''}</div>
     <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b></div>
     <div id="pfChart"></div>
-    <div class="tabs" style="margin-top:12px"><button data-t="cust">거래처별</button><button data-t="item">품목별</button><button data-t="low">⚠ 마진 낮은 출고 (${d.low.length})</button></div>
-    ${pf.tab === 'low' ? `<div class="row" style="margin-bottom:6px"><span class="muted">이익률</span><select id="pfLow" style="width:auto">${[0, 5, 10, 15, 20, 30].map(v => `<option value="${v}" ${v === pf.low ? 'selected' : ''}>${v}% 미만</option>`).join('')}</select><span class="muted" style="font-size:12px">${Y}년 · 0% 미만은 손해</span></div>
-      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>출고일</th><th>거래처</th><th class="num">출고량</th><th class="num">납품가</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
-      ${lows.map(e => `<tr><td title="${esc(e.item)}">${esc(e.item)}</td><td>${esc(e.date)}</td><td>${esc(e.customer)}</td><td class="num">${kg(e.qty)}</td><td class="num">${won(e.price)}</td>
-        <td class="num">${won(e.unit_cost)}${e.est === 2 ? '*' : ''}</td><td class="num ${e.profit < 0 ? 'down' : ''}">${won(e.profit)}</td><td class="num ${e.margin < 0 ? 'down' : ''}">${e.margin.toFixed(1)}%</td></tr>`).join('') || '<tr><td colspan="8" class="empty">없습니다.</td></tr>'}
-      </tbody></table></div>`
-    : `<div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>${pf.tab === 'cust' ? '거래처' : '품목'}</th><th class="num">출고</th><th class="num">수량(kg)</th><th class="num">매출</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
-      ${list.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td><td class="num">${man(e.cost)}</td>
-        <td class="num ${e.profit < 0 ? 'down' : ''}"><b>${man(e.profit)}</b></td><td class="num ${e.profit < 0 ? 'down' : ''}">${rate(e.profit, e.rev)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">없습니다.</td></tr>'}
-      </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원 · ${Y}년</div>`}
+    <div class="tabs" style="margin-top:12px"><button data-t="cust">거래처별</button><button data-t="item">품목별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button><button data-t="unmatched">🔗 원가 못 찾은 품목 (${d.unmatched.length})</button></div>
+    ${table}
     <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.7">
-      계산: (납품가 − 원가(원화)) × 출고량, 재고 엑셀의 출고 기록 기준. ${Y}년 반영 ${st.priced}건.
-      ${st.unpriced ? `<br>· 납품가가 비어 있거나 글자(반품·차용반납 등)인 출고 ${st.unpriced}건은 뺐습니다.` : ''}
-      ${st.free ? `<br>· 납품가 0원 출고 ${st.free}건(원가 ${krw(st.free_cost)}원)은 매출·이익에서 뺐습니다.` : ''}
-      ${st.nocost ? `<br>· 원가를 알 수 없는 출고 ${st.nocost}건은 뺐습니다.` : ''}
-      ${st.estimated ? `<br>· 원가가 아직 없는 로트 ${st.estimated}건은 같은 품목의 최근 원가로 계산했습니다(*).` : ''}
-      <br>· 엑셀에서 지운 예전 로트의 출고는 들어가지 않으므로 오래된 연도는 실제보다 작게 나올 수 있습니다. 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
+      계산: 이익 = 거래명세서 공급가액 − 수량 × 원가(원화/kg). 재고 엑셀의 납품가는 쓰지 않습니다.
+      <br>· 원가 찾는 순서: ① 재고 엑셀 출고 기록과 날짜(±3일)·거래처·수량이 맞는 로트의 원가 (${st.by_lot}건) ② 판매일 전에 통관된 가장 최근 로트의 원가 (${st.by_date}건)${st.manual ? ` ③ 직접 입력한 원가 (${st.manual}건)` : ''}
+      <br>· 품명은 띄어쓰기·기호·끝에 붙은 제품코드(예: 937450)를 무시하고 맞춥니다. 못 찾은 품목은 계산에서 빠집니다.
+      <br>· 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
     </div>
   </div>`;
   const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
@@ -1779,9 +1783,52 @@ async function renderProfit() {
   $('#pfYear').onchange = e => { pf.year = +e.target.value; renderProfit(); };
   if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
   if ($('#pfSet')) $('#pfSet').onclick = openInvSettings;
+  if ($('#pfGoUnm')) $('#pfGoUnm').onclick = e => { e.preventDefault(); pf.tab = 'unmatched'; renderProfit(); };
+  if ($('#pfLinks')) $('#pfLinks').onclick = openCostLinks;
+  $$('[data-link]').forEach(b => b.onclick = () => openCostLink(b.dataset.link));
   let timer;
   $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   bindExcludeEdit();
+}
+
+// 거래명세서 품명 → 재고 품목 연결 (또는 원가 직접 입력)
+async function openCostLink(name) {
+  const m = await api('/api/inventory/cost-map');
+  const cur = m.map[name] || {};
+  const words = name.toLowerCase().replace(/\b[a-z]{0,3}\d{5,}\b/g, ' ').split(/[^0-9a-z가-힣]+/).filter(w => w.length > 2);
+  const guess = m.items.filter(it => words.some(w => it.toLowerCase().includes(w))).slice(0, 8);
+  openModal(`<h2>🔗 원가 연결</h2>
+    <div>거래명세서 품명: <b>${esc(name)}</b></div>
+    <label>재고 엑셀의 같은 품목</label>
+    <input id="clItem" list="clItems" placeholder="품목 이름 일부를 입력해 고르세요" value="${esc(cur.item || '')}">
+    <datalist id="clItems">${m.items.map(it => `<option value="${esc(it)}">`).join('')}</datalist>
+    ${guess.length ? `<div class="row" style="margin-top:6px;gap:6px">${guess.map(g => `<button type="button" class="btn sm" data-g="${esc(g)}">${esc(g)}</button>`).join('')}</div>` : ''}
+    <label>또는 원가 직접 입력 (원/kg) — 재고 엑셀에 없는 품목일 때</label>
+    <input id="clCost" inputmode="decimal" value="${cur.cost || ''}">
+    <div class="err"></div>
+    <div class="actions">${cur.item || cur.cost ? '<button class="btn danger" id="clDel">연결 해제</button><span class="spacer"></span>' : ''}<button class="btn" data-close>취소</button><button class="btn primary" id="clSave">저장</button></div>`, (bg, close) => {
+    $$('[data-g]', bg).forEach(b => b.onclick = () => { $('#clItem', bg).value = b.dataset.g; });
+    const put = async body => { await api('/api/inventory/cost-map', {method: 'PUT', body: {name, ...body}}); close(); toast('저장했습니다.'); renderProfit(); };
+    $('#clSave', bg).onclick = async () => {
+      const item = $('#clItem', bg).value.trim(), cost = numVal($('#clCost', bg).value);
+      if (item && !m.items.includes(item)) { $('.err', bg).textContent = '목록에 있는 품목을 고르세요.'; return; }
+      if (!item && !(cost > 0)) { $('.err', bg).textContent = '품목을 고르거나 원가를 입력하세요.'; return; }
+      try { await put(item ? {item} : {cost}); } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    if ($('#clDel', bg)) $('#clDel', bg).onclick = () => put({});
+  });
+}
+
+async function openCostLinks() {
+  const m = await api('/api/inventory/cost-map');
+  const rows = Object.entries(m.map);
+  openModal(`<h2>연결해 둔 품목 (${rows.length})</h2>
+    ${rows.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래명세서 품명</th><th>연결</th><th></th></tr></thead><tbody>
+      ${rows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.item ? esc(v.item) : `원가 ${won(v.cost)}원/kg`}</td><td><button class="btn sm" data-edit="${esc(n)}">수정</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">없습니다.</div>'}
+    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    $$('[data-edit]', bg).forEach(b => b.onclick = () => { close(); openCostLink(b.dataset.edit); });
+  });
 }
 
 // ===================================================== 매출(납품) 분석
