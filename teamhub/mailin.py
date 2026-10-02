@@ -487,9 +487,9 @@ def topic_of(subject: str, text: str) -> str:
     for k, pat in TOPICS.items():
         score[k] = 3 * len(re.findall(pat, subject or "", re.I)) + len(re.findall(pat, (text or "")[:4000], re.I))
     best = max(score, key=score.get)
-    # 운임(해상·항공 운임 견적·문의)은 해외 영업 담당 — 선적 낱말이 있어도 수입·통관보다 먼저
+    # 해상·항공 운임 견적·문의는 따로 (선적 낱말이 있어도 수입·통관보다 먼저)
     if re.search(FREIGHT_RATE, subject or "", re.I) or len(re.findall(FREIGHT_RATE, (text or "")[:4000], re.I)) >= 2:
-        return "overseas"
+        return "freight"
     if score[best] and best == "import":
         return "import"
     letters = re.findall(r"[A-Za-z가-힣]", f"{subject}\n{(text or '')[:4000]}")

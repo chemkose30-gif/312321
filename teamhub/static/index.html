@@ -1169,7 +1169,7 @@ async function openTask(id) {
 }
 
 // ===================================================== users (admin)
-const MAIL_TOPICS = {import: '🚢 수입·통관', overseas: '🌏 해외 영업', order: '🧾 발주 문의', finance: '💳 회계·결제', quality: '🧪 샘플·품질', etc: '📁 기타'};
+const MAIL_TOPICS = {import: '🚢 수입·통관', freight: '✈️ 운임 문의', overseas: '🌏 해외 영업', order: '🧾 발주 문의', finance: '💳 회계·결제', quality: '🧪 샘플·품질', etc: '📁 기타'};
 async function renderUsers() {
   state.users = await api('/api/users');
   $('#main').innerHTML = `<div class="card">

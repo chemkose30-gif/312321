@@ -39,17 +39,21 @@ async def lifespan(_app):
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
-            if get_setting(c, "mail_topics_v", "") != "3":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
+            if get_setting(c, "mail_topics_v", "") != "4":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
                 for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
-                                   " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():
+                                   " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():   # noqa
                     c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
                 c.execute("UPDATE mail_items SET topic = 'order' WHERE topic = 'sales'")
+                ver = get_setting(c, "mail_topics_v", "")
                 for u in c.execute("SELECT id, name, mail_topics FROM users").fetchall():
                     t = str(u["mail_topics"] or "").replace("sales", "order")
-                    if not t and u["name"].replace(" ", "") in MAIL_TOPIC_SEED:
-                        t = MAIL_TOPIC_SEED[u["name"].replace(" ", "")]
+                    seed = MAIL_TOPIC_SEED.get(u["name"].replace(" ", ""), "")
+                    if not t:
+                        t = seed
+                    elif "freight" in seed and "freight" not in t:     # 운임 문의 업무가 새로 생김 → 담당자에 추가
+                        t += ",freight"
                     c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
-                set_setting(c, "mail_topics_v", "3")
+                set_setting(c, "mail_topics_v", "4")
             for r in c.execute("SELECT id, subject, body FROM mail_items WHERE topic = '' AND status != 'merged'").fetchall():
                 c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
     except Exception as e:  # noqa: BLE001
@@ -4208,10 +4212,12 @@ async def mailin_receive(request: Request, x_upload_key: str = Header(default=""
         return save_mail_items(c, raw)
 
 
-MAIL_TOPICS = {"import": "🚢 수입·통관", "overseas": "🌏 해외 영업", "order": "🧾 발주 문의", "finance": "💳 회계·결제",
+MAIL_TOPICS = {"import": "🚢 수입·통관", "freight": "✈️ 운임 문의", "overseas": "🌏 해외 영업", "order": "🧾 발주 문의",
+               "finance": "💳 회계·결제",
                "quality": "🧪 샘플·품질", "etc": "📁 기타"}
 # 처음 한 번 담당자 지정 (직원관리에서 바꿀 수 있음)
-MAIL_TOPIC_SEED = {"조정무": "import,order", "이수철": "overseas,order", "심혜지": "overseas", "오근학": "order"}
+MAIL_TOPIC_SEED = {"조정무": "import,order,freight", "이수철": "overseas,order,freight", "심혜지": "overseas,freight",
+                   "오근학": "order"}
 
 
 def user_topics(user: dict) -> list:
