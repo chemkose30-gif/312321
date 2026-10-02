@@ -828,11 +828,11 @@ async function renderQuotes() {
       <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="qYear" style="width:auto"><option value="">전체 연도</option>${res.years.map(y => `<option value="${y}" ${state.qYear === y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
       ${state.qYear ? `<select id="qMonth" style="width:auto"><option value="">전체 월</option>${Array.from({length: 12}, (_, i) => i + 1).map(m => `<option value="${m}" ${String(state.qMonth) === String(m) ? 'selected' : ''}>${m}월</option>`).join('')}</select>` : ''}
-      <input id="qSearch" placeholder="거래처/품명/건명${dt === 'statement' ? '' : '/' + D.no} 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
+      <input id="qSearch" placeholder="거래처/품명/건명 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
       <span class="muted">${res.total.toLocaleString('ko-KR')}건 · 합계 ${won(res.amount)}원</span>
     </div>
-    ${list.length ? `<div class="qscroll"><table><thead><tr>${dt === 'statement' ? '' : `<th>${D.no}</th>`}<th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
-      ${list.map(x => `<tr data-q="${x.id}">${dt === 'statement' ? '' : `<td>${esc(x.quote_no)}</td>`}<td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
+    ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
+      ${list.map(x => `<tr data-q="${x.id}"><td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
         <td>${esc(x.first_item || '')}${x.item_count > 1 ? ` <small class="muted">외 ${x.item_count - 1}건</small>` : ''}
           ${x.title && !x.title.startsWith(x.first_item || '\u0000') ? `<br><small class="muted">${esc(x.title)}</small>` : ''}</td>
         <td class="money">${x.total_qty != null ? Number(x.total_qty).toLocaleString('ko-KR', {maximumFractionDigits: 2}) + (x.qty_unit ? ' ' + esc(x.qty_unit) : '') : ''}</td>
