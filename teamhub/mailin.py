@@ -73,8 +73,9 @@ def _sent_at(msg) -> datetime:
 #  - '전달'·'첨부로 전달'한 메일: 보낸 사람(From)이 직원
 #  - 자동 전체 전달(원래 메일이 그대로 넘어옴): 받는 사람(To/Cc)·전달 표시 머리글 쪽이 직원
 #  (Delivered-To / X-Original-To 는 모으는 주소(info@)라서 쓰지 않는다)
-FWD_ORDER = ("from", "resent-from", "x-forwarded-for", "to", "cc")
-REDIRECT_ORDER = ("resent-from", "x-forwarded-for", "to", "cc", "from", "return-path")
+#  (X-Gm-Original-To: Google Workspace 라우팅에서 'X-Gm-Original-To 헤더 추가'를 켜면 붙는 원래 받는 사람)
+FWD_ORDER = ("from", "x-gm-original-to", "resent-from", "x-forwarded-for", "to", "cc")
+REDIRECT_ORDER = ("x-gm-original-to", "resent-from", "x-forwarded-for", "to", "cc", "from", "return-path")
 
 
 def header_addrs(msg, order=FWD_ORDER) -> list:
