@@ -865,13 +865,15 @@ async function openQuoteForm(quote, task, template, docType) {
   const useEc = ec.products.length > 0;
   const prodCode = cd => cd ? `<span class="code" data-code="${esc(cd)}">${esc(cd)}<button type="button" data-unlink title="품목 연결 해제">✕</button></span>` : (ec.enabled ? '<span class="code miss">이카운트 품목 미지정</span>' : '');
   const row = (it = {}) => `<tr>
+      ${isSt ? '' : `<td style="width:96px"><input name="cas_no" value="${esc(it.cas_no || '')}" placeholder="Cas no."></td>`}
       <td><input name="name" ${useEc ? '' : 'list="itemList"'} value="${esc(it.name)}" placeholder="${useEc ? '품목 검색 (이름·코드·규격)' : '품명'}"><input type="hidden" name="prod_cd" value="${esc(it.prod_cd || '')}"><div class="pc">${prodCode(it.prod_cd)}</div></td>
       <td><input name="spec" value="${esc(it.spec)}" placeholder="규격"></td>
       <td style="width:60px"><input name="unit" value="${esc(it.unit)}" placeholder="EA"></td>
       <td style="width:80px"><input name="qty" class="num" inputmode="decimal" value="${it.qty ?? ''}"></td>
       <td style="width:110px"><input name="price" class="num" inputmode="decimal" value="${it.unit_price != null ? won(it.unit_price) : ''}"></td>
+      ${isSt ? '' : `<td style="width:70px"><input name="origin" value="${esc(it.origin || '')}" placeholder="CN"></td>`}
       <td class="calc sup">0</td><td class="calc vat">0</td>
-      <td class="hide-m"><input name="inote" value="${esc(it.note)}"></td>
+      <td class="hide-m" ${isSt ? '' : 'style="display:none"'}><input name="inote" value="${esc(it.note)}"></td>
       <td style="width:30px"><button type="button" class="btn sm" data-del title="행 삭제">✕</button></td></tr>`;
   openModal(`<h2>${quote ? `${D.label} 수정 <small class="muted">${esc(quote.quote_no)}</small>` : '새 ' + D.label}</h2>
     ${linkedTask ? `<div class="muted">📋 연결된 업무: ${esc(task?.title || '#' + linkedTask.id)}</div>` : ''}
@@ -887,17 +889,19 @@ async function openQuoteForm(quote, task, template, docType) {
         <div><label>거래처 연락처 / 이메일</label><div class="row" style="flex-wrap:nowrap"><input name="customer_phone" value="${esc(q.customer_phone)}" placeholder="연락처"><input name="customer_email" value="${esc(q.customer_email)}" placeholder="이메일"></div></div>
         <div><label>${D.date}</label><input type="date" name="quote_date" value="${esc(q.quote_date)}" required></div>
         ${isSt ? '' : `<div><label>유효기간</label><input name="valid_until" value="${esc(q.valid_until)}"></div>
-        <div><label>납기</label><input name="delivery" value="${esc(q.delivery)}" placeholder="예: 발주 후 7일"></div>`}
+        <div><label>납기 (Leadtime)</label><input name="delivery" value="${esc(q.delivery)}" placeholder="예: 발주 후 7일"></div>
+        <div><label>운송조건 (Transportation)</label><input name="transport" value="${esc(q.transport || '')}" placeholder="예: 착불 / 택배 / EXW"></div>
+        <div><label>거래처 FAX</label><input name="customer_fax" value="${esc(q.customer_fax || '')}"></div>`}
         <div><label>결제조건</label><input name="payment_terms" value="${esc(q.payment_terms)}" placeholder="예: 납품 후 익월 말 현금"></div>
         <div><label>부가세</label><select name="vat_mode">${Object.entries(VAT).map(([k, v]) => `<option value="${k}" ${q.vat_mode === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
         <div><label>상태</label><select name="status">${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${q.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
       <label>품목</label>
-      <div class="qscroll"><table class="qitems"><thead><tr><th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th><th style="text-align:right">공급가액</th><th style="text-align:right">세액</th><th class="hide-m">비고</th><th></th></tr></thead>
+      <div class="qscroll"><table class="qitems"><thead><tr>${isSt ? '' : '<th>Cas no.</th>'}<th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th>${isSt ? '' : '<th>Origin</th>'}<th style="text-align:right">공급가액</th><th style="text-align:right">세액</th>${isSt ? '<th class="hide-m">비고</th>' : ''}<th></th></tr></thead>
         <tbody>${(q.items.length ? q.items : [{}]).map(row).join('')}</tbody></table></div>
       <button type="button" class="btn sm" id="qAdd" style="margin-top:6px">+ 행 추가</button>
       <div class="qtotal"><span>공급가액 <b id="tSup">0</b></span><span>세액 <b id="tVat">0</b></span><span>합계 <b id="tSum" style="color:var(--primary)">0</b>원</span></div>
-      <label>비고 / 특이사항</label><textarea name="note" style="min-height:60px">${esc(q.note)}</textarea>
+      <label>${isSt ? '비고 / 특이사항' : '기타사항 (출력 시 NOTE 의 기타사항)'}</label><textarea name="note" style="min-height:60px">${esc(q.note)}</textarea>
       <datalist id="custList">${sug.customers.map(c => `<option value="${esc(c.customer_name)}">`).join('')}</datalist>
       <datalist id="itemList">${sug.items.map(i => `<option value="${esc(i.name)}">${esc([i.spec, won(i.unit_price) + '원'].filter(Boolean).join(' / '))}</option>`).join('')}</datalist>
       ${linkedTask ? `<label style="display:flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" name="complete_task" style="width:auto" ${quote ? '' : 'checked'}> 저장하면서 연결된 업무를 <b>완료</b> 처리 (지시자에게 알림·메일)</label>` : ''}
@@ -923,6 +927,9 @@ async function openQuoteForm(quote, task, template, docType) {
           if (!$('[name=unit]', tr).value) $('[name=unit]', tr).value = hit.unit;
           if (!$('[name=price]', tr).value) $('[name=price]', tr).value = won(hit.unit_price);
           if (!$('[name=qty]', tr).value) $('[name=qty]', tr).value = 1;
+          const cas = $('[name=cas_no]', tr), org = $('[name=origin]', tr);
+          if (cas && !cas.value && hit.cas_no) cas.value = hit.cas_no;
+          if (org && !org.value && hit.origin) org.value = hit.origin;
         }
       }
       recalc();
@@ -933,7 +940,7 @@ async function openQuoteForm(quote, task, template, docType) {
     f.vat_mode.onchange = recalc;
     f.customer_name.onchange = () => {
       const c = sug.customers.find(x => x.customer_name === f.customer_name.value);
-      if (c) ['customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address'].forEach(k => { if (f[k] && !f[k].value) f[k].value = c[k] || ''; });
+      if (c) ['customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address', 'customer_fax'].forEach(k => { if (f[k] && !f[k].value) f[k].value = c[k] || ''; });
     };
     if (useEc) {
       tbody.addEventListener('focusin', e => {
@@ -984,10 +991,10 @@ async function openQuoteForm(quote, task, template, docType) {
     const save = async (andPrint) => {
       $('.err', bg).textContent = '';
       if (!f.reportValidity()) return;
-      const items = $$('tr', tbody).map(tr => ({prod_cd: $('[name=prod_cd]', tr).value, name: $('[name=name]', tr).value, spec: $('[name=spec]', tr).value, unit: $('[name=unit]', tr).value,
+      const items = $$('tr', tbody).map(tr => ({prod_cd: $('[name=prod_cd]', tr).value, cas_no: $('[name=cas_no]', tr)?.value || '', origin: $('[name=origin]', tr)?.value || '', name: $('[name=name]', tr).value, spec: $('[name=spec]', tr).value, unit: $('[name=unit]', tr).value,
         qty: numVal($('[name=qty]', tr).value), unit_price: numVal($('[name=price]', tr).value), note: $('[name=inote]', tr).value})).filter(i => i.name.trim());
       const body = {items, doc_type: dt, source_id: quote ? null : (q.source_id || null), task_id: linkedTask ? linkedTask.id : null, complete_task: !!(f.complete_task && f.complete_task.checked)};
-      ['customer_name', 'cust_cd', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address',
+      ['customer_name', 'cust_cd', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address', 'customer_fax', 'transport',
        'quote_date', 'valid_until', 'delivery', 'payment_terms', 'vat_mode', 'status', 'note'].forEach(k => body[k] = f[k] ? f[k].value : (q[k] || ''));
       try {
         const r = await api(quote ? `/api/quotes/${quote.id}` : '/api/quotes', {method: quote ? 'PUT' : 'POST', body});
@@ -1050,67 +1057,86 @@ async function printQuote(id) {
   const peek = await api(`/api/quotes/${id}`);
   if (peek.doc_type === 'statement') return printStatement(w, peek);
   if (!w) { toast('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.'); return; }
-  w.document.write('<p style="font-family:sans-serif">견적서를 불러오는 중…</p>');
-  const [q, co] = await Promise.all([api(`/api/quotes/${id}`), api('/api/company')]);
-  const rows = q.items.map((i, n) => `<tr><td class="c">${n + 1}</td><td>${esc(i.name)}</td><td>${esc(i.spec)}</td><td class="c">${esc(i.unit)}</td>
-      <td class="r">${i.qty.toLocaleString('ko-KR')}</td><td class="r">${won(i.unit_price)}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.vat)}</td><td>${esc(i.note)}</td></tr>`);
-  while (rows.length < 12) rows.push('<tr>' + '<td>&nbsp;</td>'.repeat(9) + '</tr>');
-  const sup = (k, label, span = 3) => `<th>${label}</th><td colspan="${span}">${esc(co[k] || '')}</td>`;
+  const q = peek, co = await api('/api/company');
+  // 이카운트 견적서 양식: 일자/수신/참조/TEL·FAX/유효기간 + 공급자정보, Cas no.·품목명·수량·단가·Origin, 총합계, NOTE
+  const units = [...new Set(q.items.map(i => (i.unit || '').trim()).filter(Boolean))];
+  const unit = units.length === 1 ? units[0] : '';
+  const qtyFmt = n => Number(n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const [y, mo, d] = (q.quote_date || '').split('-');
+  const rows = q.items.map(i => `<tr><td class="c">${esc(i.cas_no || '')}</td>
+      <td>${esc(i.name)}${i.spec ? ' ' + esc(i.spec) : ''}${!unit && i.unit ? ` <small>(${esc(i.unit)})</small>` : ''}</td>
+      <td class="r">${qtyFmt(i.qty)}</td><td class="r">${won(i.unit_price)}</td><td class="c">${esc(i.origin || '')}</td></tr>`);
+  const blanks = Math.max(0, 14 - q.items.length);
+  const vatLine = {separate: 'VAT별도', included: 'VAT포함', none: 'VAT면세(영세)'}[q.vat_mode] || 'VAT별도';
+  const etc = [q.note, q.payment_terms ? '결제조건: ' + q.payment_terms : ''].filter(Boolean).join(' / ');
   w.document.open();
   w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>견적서 ${esc(q.quote_no)} - ${esc(q.customer_name)}</title>
   <style>
-    @page{size:A4;margin:12mm}
-    body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#111;font-size:12px;margin:0;padding:16px}
-    .sheet{max-width:780px;margin:0 auto}
-    h1{text-align:center;letter-spacing:24px;font-size:30px;margin:4px 0 18px;padding-bottom:8px;border-bottom:3px double #111}
-    .top{display:flex;gap:14px;align-items:stretch}
-    .left{flex:1;display:flex;flex-direction:column;justify-content:space-between}
-    .left .to{font-size:18px;font-weight:bold;border-bottom:1px solid #111;padding:6px 0;margin:8px 0}
-    table{border-collapse:collapse;width:100%}
-    td,th{border:1px solid #333;padding:5px 6px}
-    th{background:#f0f2f5;font-weight:bold;white-space:nowrap}
-    .supplier{width:400px}.supplier th{width:58px;font-size:11px}
-    .supplier .vh{writing-mode:vertical-rl;letter-spacing:6px;width:22px;text-align:center}
-    .stampbox{position:relative}.stamp{position:absolute;right:2px;top:50%;transform:translateY(-50%);height:46px;opacity:.85}
-    .total{margin:14px 0;font-size:15px}.total th{width:120px}.total td{font-weight:bold}
-    .items th{font-size:11px}.items td{height:20px}
+    @page{size:A4;margin:10mm 14mm}
+    body{font-family:Arial,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#111;font-size:12px;margin:0;padding:16px}
+    .sheet{max-width:745px;margin:0 auto;padding:0 2px;box-sizing:border-box}
+    h1{text-align:center;font-size:28px;letter-spacing:14px;margin:0 0 24px;text-decoration:underline;text-underline-offset:6px}
+    .top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
+    .info{width:44%;border-collapse:collapse}
+    .info th{text-align:left;width:76px;font-weight:bold;padding:7px 2px;border-bottom:1px solid #ddd;white-space:nowrap}
+    .info td{padding:7px 2px;border-bottom:1px solid #ddd}
+    .sup{width:56%;border-collapse:collapse;border:1px solid #111}
+    .sup caption{border:1px solid #111;border-bottom:0;padding:9px;font-weight:bold;caption-side:top}
+    .sup th{width:84px;text-align:center;font-weight:bold;padding:5px 4px;border-right:1px solid #ddd;white-space:nowrap}
+    .sup td{padding:5px 6px;line-height:1.3}
+    .sp{letter-spacing:12px}
+    .rule{border-top:2px solid #bbb;margin:34px 0 6px}
+    table.items{width:100%;border-collapse:collapse}
+    .items th,.items td{border:1px solid #999;padding:3px 5px;height:24px}
+    .items th{background:#f2f2f2;font-weight:normal}
+    .items td{font-size:11.5px}
+    .items .sum td{background:#f2f2f2;font-size:13px}
     .c{text-align:center}.r{text-align:right;font-variant-numeric:tabular-nums}
-    .sumrow td{font-weight:bold;background:#fafafa}
-    .cond{margin-top:14px}.cond th{width:90px;text-align:left}
-    .foot{margin-top:18px;font-size:11px;color:#444;white-space:pre-wrap}
-    .noprint{text-align:center;margin:18px}
+    .note{border:1.5px solid #111;margin-top:6px;padding:6px 8px;min-height:150px;font-size:12px;box-sizing:border-box}
+    .note b{font-weight:normal;font-size:13px;letter-spacing:1px}
+    .note div{line-height:1.45}
+    .noprint{text-align:center;margin:16px}
     @media print{.noprint{display:none}body{padding:0}}
   </style></head><body><div class="sheet">
   <h1>견 적 서</h1>
   <div class="top">
-    <div class="left">
-      <div>견적번호: ${esc(q.quote_no)}<br>견적일자: ${esc(q.quote_date)}</div>
-      <div class="to">${esc(q.customer_name)} 귀하</div>
-      <div>${q.customer_contact ? `담당: ${esc(q.customer_contact)}<br>` : ''}${q.title ? `건명: ${esc(q.title)}<br>` : ''}<br>아래와 같이 견적합니다.</div>
-    </div>
-    <table class="supplier">
-      <tr><th class="vh" rowspan="5">공급자</th>${sup('biz_no', '등록번호')}</tr>
-      <tr>${sup('company_name', '상호', 1)}<th>성명</th><td class="stampbox">${esc(co.ceo || '')}${co.stamp ? `<img class="stamp" src="${co.stamp}">` : ' (인)'}</td></tr>
-      <tr>${sup('address', '주소')}</tr>
-      <tr>${sup('biz_type', '업태', 1)}${sup('biz_item', '종목', 1)}</tr>
-      <tr>${sup('phone', '전화', 1)}<th>담당</th><td>${esc(q.creator_name)}</td></tr>
+    <table class="info">
+      <tr><th><span class="sp">일</span>자</th><td>${y ? `${y}년 ${mo}월 ${d}일` : ''}</td></tr>
+      <tr><th><span class="sp">수</span>신</th><td>${esc(q.customer_name)}</td></tr>
+      <tr><th><span class="sp">참</span>조</th><td>${esc(q.customer_contact || '')}</td></tr>
+      <tr><th>TEL / FAX</th><td>${esc(q.customer_phone || '')} / ${esc(q.customer_fax || '')}</td></tr>
+      <tr><th>유효기간</th><td>${esc(q.valid_until || '')}</td></tr>
+    </table>
+    <table class="sup"><caption>공급자정보</caption>
+      <tr><th>사업자등록번호</th><td>${esc(co.biz_no || '')}</td></tr>
+      <tr><th><span class="sp">상</span>호</th><td>${esc(co.company_name || '')}</td></tr>
+      <tr><th>대표자</th><td>${esc(co.ceo || '')}</td></tr>
+      <tr><th>TEL / FAX</th><td>${esc(co.phone || '')} / ${esc(co.fax || '')}</td></tr>
+      <tr><th><span class="sp">주</span>소</th><td>${esc(co.address || '')}</td></tr>
     </table>
   </div>
-  <table class="total"><tr><th>합계금액<br><small>(${VAT[q.vat_mode]})</small></th><td>일금 ${koreanAmount(q.grand_total)}원정 &nbsp; (₩ ${won(q.grand_total)})</td></tr></table>
+  <div class="rule"></div>
   <table class="items">
-    <tr><th style="width:28px">No</th><th>품명</th><th>규격</th><th style="width:40px">단위</th><th style="width:56px">수량</th><th style="width:80px">단가</th><th style="width:90px">공급가액</th><th style="width:76px">세액</th><th style="width:80px">비고</th></tr>
+    <tr><th style="width:96px">Cas no.</th><th>품목명</th><th style="width:96px">수량${unit ? `(${esc(unit.toUpperCase())})` : ''}</th><th style="width:100px">단가(₩${unit ? '/' + esc(unit) : ''})</th><th style="width:100px">Origin</th></tr>
     ${rows.join('')}
-    <tr class="sumrow"><td colspan="6" class="c">합 계</td><td class="r">${won(q.supply_total)}</td><td class="r">${won(q.vat_total)}</td><td class="r">${won(q.grand_total)}</td></tr>
+    <tr class="sum"><td colspan="3" class="c">총합계</td><td class="r" id="sumCell"></td><td></td></tr>
+    ${'<tr><td></td><td></td><td></td><td></td><td></td></tr>'.repeat(blanks)}
   </table>
-  <table class="cond">
-    <tr><th>유효기간</th><td>${esc(q.valid_until)}</td><th>납기</th><td>${esc(q.delivery)}</td></tr>
-    <tr><th>결제조건</th><td colspan="3">${esc(q.payment_terms)}</td></tr>
-    <tr><th>비고</th><td colspan="3" style="white-space:pre-wrap;height:40px">${esc(q.note)}</td></tr>
-  </table>
-  <div class="foot">${esc(co.quote_footer || '')}${co.email ? `\n문의: ${esc(q.creator_name)} ${esc(q.creator_email || co.email)}` : ''}</div>
-  <div class="noprint"><button onclick="print()" style="font-size:15px;padding:10px 24px">🖨 인쇄 / PDF로 저장</button>
+  <div class="note"><b>NOTE</b><br><br>
+    <div>* ${vatLine}</div>
+    <div>* Transportation: ${esc(q.transport || '')}</div>
+    <div>* Leadtime: ${esc(q.delivery || '')}</div>
+    <div>* 기타사항: ${esc(etc)}</div>
+    <div>* 검토 후 조속한 회신 바랍니다.</div>
+    ${co.quote_footer ? `<div style="white-space:pre-wrap">${esc(co.quote_footer)}</div>` : ''}
+  </div>
+  <div class="noprint">
+    <label style="font-size:13px"><input type="checkbox" id="showSum"> 총합계에 공급가액 합계(₩ ${won(q.supply_total)}) 표시</label><br><br>
+    <button onclick="print()" style="font-size:15px;padding:10px 24px">🖨 인쇄 / PDF로 저장</button>
     <p style="color:#666;font-size:12px">PDF로 받으려면 인쇄 창에서 대상(프린터)을 "PDF로 저장"으로 선택하세요.</p></div>
-  </div></body></html>`);
+  </div>
+  <script>document.getElementById('showSum').onchange=function(){document.getElementById('sumCell').textContent=this.checked?'${won(q.supply_total)}':''}<\/script>
+  </body></html>`);
   w.document.close();
   setTimeout(() => w.print(), 400);
 }

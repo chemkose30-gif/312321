@@ -213,7 +213,11 @@ def init_db():
                                 ("quotes", "source_id", "INTEGER"),
                                 ("quotes", "customer_biz_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "customer_ceo", "TEXT NOT NULL DEFAULT ''"),
-                                ("quotes", "customer_address", "TEXT NOT NULL DEFAULT ''")):
+                                ("quotes", "customer_address", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "customer_fax", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "transport", "TEXT NOT NULL DEFAULT ''"),
+                                ("quote_items", "cas_no", "TEXT NOT NULL DEFAULT ''"),
+                                ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -752,6 +756,8 @@ COMPANY_KEYS = ("company_name", "ceo", "biz_no", "biz_type", "biz_item", "addres
 
 class QuoteItemIn(BaseModel):
     prod_cd: str = ""
+    cas_no: str = ""
+    origin: str = ""
     name: str
     spec: str = ""
     unit: str = ""
@@ -768,6 +774,8 @@ class QuoteIn(BaseModel):
     customer_biz_no: str = ""
     customer_ceo: str = ""
     customer_address: str = ""
+    customer_fax: str = ""
+    transport: str = ""
     customer_name: str
     customer_contact: str = ""
     customer_phone: str = ""
@@ -823,9 +831,9 @@ def save_quote_items(c, qid: int, items, vat_mode: str):
         supply_total += supply
         vat_total += vat
         c.execute(
-            "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (qid, seq, it.prod_cd.strip(), it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
+            "INSERT INTO quote_items (quote_id, seq, prod_cd, cas_no, origin, name, spec, unit, qty, unit_price, supply,"
+            " vat, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (qid, seq, it.prod_cd.strip(), it.cas_no.strip(), it.origin.strip(), it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
              supply, vat, it.note.strip()),
         )
     c.execute("UPDATE quotes SET supply_total = ?, vat_total = ?, grand_total = ? WHERE id = ?",
@@ -854,7 +862,8 @@ def editable_quote(c, qid: int, user: dict):
     return q
 
 
-QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer_address", "customer_name", "customer_contact", "customer_phone", "customer_email",
+QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer_address", "customer_fax", "transport",
+                "customer_name", "customer_contact", "customer_phone", "customer_email",
                 "quote_date", "valid_until", "delivery", "payment_terms", "vat_mode", "note", "status")
 
 
@@ -909,11 +918,11 @@ def quote_suggest(user: dict = Depends(current_user)):
     with db() as c:
         customers = c.execute(
             "SELECT customer_name, customer_contact, customer_phone, customer_email,"
-            " customer_biz_no, customer_ceo, customer_address FROM quotes"
+            " customer_biz_no, customer_ceo, customer_address, customer_fax FROM quotes"
             " WHERE id IN (SELECT MAX(id) FROM quotes GROUP BY customer_name) ORDER BY customer_name"
         ).fetchall()
         items = c.execute(
-            "SELECT name, spec, unit, unit_price FROM quote_items"
+            "SELECT name, spec, unit, unit_price, cas_no, origin FROM quote_items"
             " WHERE id IN (SELECT MAX(id) FROM quote_items GROUP BY name, spec) ORDER BY name LIMIT 1000"
         ).fetchall()
     return {"customers": [dict(r) for r in customers], "items": [dict(r) for r in items]}
@@ -1279,6 +1288,9 @@ def _map_sale_cols(cells: list) -> dict:
         ("slip", lambda h: ("일자" in h and "no" in h) or h in ("월/일", "월일") or any(k in h for k in ("전표번호", "견적번호"))),
         ("vendor", lambda h: "구매처" in h),
         ("title", lambda h: "건명" in h or "제목" in h),
+        ("transport", lambda h: "운송조건" in h or "transportation" in h),
+        ("cas_no", lambda h: h.startswith("cas")),
+        ("origin", lambda h: "원산지" in h or h.startswith("origin")),
         ("cust_cd", lambda h: "거래처" in h and "코드" in h),
         ("customer", lambda h: "거래처" in h and "코드" not in h),
         ("date", lambda h: "일자" in h or h in ("일", "날짜") or any(k in h for k in ("판매일", "거래일", "견적일", "작성일"))),
@@ -1362,8 +1374,9 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             note = get("note")
             if get("vendor"):
                 note = (note + " / " if note else "") + "구매처: " + get("vendor")
-            parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "title": get("title"), "item": {
-                "prod_cd": get("prod_cd"), "name": name, "spec": get("spec"), "unit": get("unit"), "qty": qty,
+            parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "title": get("title"),
+                           "transport": get("transport"), "item": {
+                "prod_cd": get("prod_cd"), "cas_no": get("cas_no"), "origin": get("origin"), "name": name, "spec": get("spec"), "unit": get("unit"), "qty": qty,
                 "price": price, "supply": int(round(supply)), "vat": int(round(vat or 0)), "note": note}})
         # 연도 없는 날짜: 목록이 날짜순이라고 보고 아래(최근)에서 위로 올라가며 월/일이 커지면 한 해 전으로
         year = end_date[0] if end_date else datetime.now().year
@@ -1388,7 +1401,8 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             key = f"{date}|{p['no']}" if p["no"] else f"{date}|{p['cust']}"
             if key not in groups:
                 groups[key] = {"date": date, "slip": f"{date.replace('-', '')}-{p['no']}" if p["no"] else "",
-                               "customer": p["cust"], "cust_cd": p["cust_cd"], "title": p["title"], "items": []}
+                               "customer": p["cust"], "cust_cd": p["cust_cd"], "title": p["title"],
+                               "transport": p["transport"], "items": []}
                 order.append(key)
             groups[key]["items"].append(p["item"])
         for g in groups.values():
@@ -1412,9 +1426,9 @@ def auto_title(names: list) -> str:
 def insert_import_items(c, qid: int, items: list):
     for seq, it in enumerate(items, 1):
         c.execute(
-            "INSERT INTO quote_items (quote_id, seq, prod_cd, name, spec, unit, qty, unit_price, supply, vat, note)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (qid, seq, it["prod_cd"], it["name"], it["spec"], it["unit"], it["qty"], it["price"],
+            "INSERT INTO quote_items (quote_id, seq, prod_cd, cas_no, origin, name, spec, unit, qty, unit_price, supply,"
+            " vat, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (qid, seq, it["prod_cd"], it.get("cas_no", ""), it.get("origin", ""), it["name"], it["spec"], it["unit"], it["qty"], it["price"],
              it["supply"], it["vat"], it["note"]),
         )
 
@@ -1481,10 +1495,10 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
                 continue
             quote_no = next_quote_no(c, g["date"], doc_type)
             cur = c.execute(
-                "INSERT INTO quotes (quote_no, doc_type, title, customer_name, cust_cd, quote_date, vat_mode, status, note,"
-                f" supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (quote_no, doc_type, g["title"], g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
+                "INSERT INTO quotes (quote_no, doc_type, title, transport, customer_name, cust_cd, quote_date, vat_mode,"
+                f" status, note, supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (quote_no, doc_type, g["title"], g.get("transport", ""), g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
                  IMPORT_NOTE, supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
