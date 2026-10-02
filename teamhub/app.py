@@ -206,7 +206,12 @@ def init_db():
                                 ("quotes", "ecount_quote_slip", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_sale_slip", "TEXT NOT NULL DEFAULT ''"),
                                 ("quote_items", "prod_cd", "TEXT NOT NULL DEFAULT ''"),
-                                ("ecount_customers", "memo", "TEXT NOT NULL DEFAULT ''")):
+                                ("ecount_customers", "memo", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "doc_type", "TEXT NOT NULL DEFAULT 'quote'"),
+                                ("quotes", "source_id", "INTEGER"),
+                                ("quotes", "customer_biz_no", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "customer_ceo", "TEXT NOT NULL DEFAULT ''"),
+                                ("quotes", "customer_address", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
@@ -638,7 +643,7 @@ def get_task(tid: int, user: dict = Depends(current_user)):
             " WHERE task_id = ? ORDER BY id DESC LIMIT 20", (tid,),
         ).fetchall()
         quotes = c.execute(
-            "SELECT id, quote_no, customer_name, grand_total, status FROM quotes WHERE task_id = ? ORDER BY id",
+            "SELECT id, quote_no, doc_type, customer_name, grand_total, status FROM quotes WHERE task_id = ? ORDER BY id",
             (tid,),
         ).fetchall()
     return {**dict(t), "comments": [dict(r) for r in comments], "mails": [dict(r) for r in mails],
@@ -721,6 +726,7 @@ def add_comment(tid: int, body: CommentIn, user: dict = Depends(current_user)):
 
 # ---------------------------------------------------------------- 견적서
 QUOTE_STATUSES = ("draft", "sent", "won", "lost")
+DOC_TYPES = {"quote": ("Q", "견적서"), "statement": ("T", "거래명세서")}
 VAT_MODES = ("separate", "included", "none")  # 부가세 별도 / 포함 / 면세(영세)
 COMPANY_KEYS = ("company_name", "ceo", "biz_no", "biz_type", "biz_item", "address", "phone", "fax",
                 "email", "stamp", "quote_footer")
@@ -737,8 +743,13 @@ class QuoteItemIn(BaseModel):
 
 
 class QuoteIn(BaseModel):
+    doc_type: str = "quote"
+    source_id: Optional[int] = None
     title: str = ""
     cust_cd: str = ""
+    customer_biz_no: str = ""
+    customer_ceo: str = ""
+    customer_address: str = ""
     customer_name: str
     customer_contact: str = ""
     customer_phone: str = ""
@@ -768,16 +779,18 @@ def calc_line(item: QuoteItemIn, vat_mode: str):
 def check_quote(body: QuoteIn):
     if not body.customer_name.strip():
         raise HTTPException(400, "거래처명을 입력하세요.")
-    if body.vat_mode not in VAT_MODES or body.status not in QUOTE_STATUSES:
+    if body.vat_mode not in VAT_MODES or body.status not in QUOTE_STATUSES or body.doc_type not in DOC_TYPES:
         raise HTTPException(400, "잘못된 입력입니다.")
+    if body.doc_type == "statement" and body.status not in ("draft", "sent"):
+        body.status = "sent"
     items = [i for i in body.items if i.name.strip()]
     if not items:
         raise HTTPException(400, "품목을 한 개 이상 입력하세요.")
     return items
 
 
-def next_quote_no(c, date: str) -> str:
-    prefix = "Q" + date.replace("-", "")[:8] + "-"
+def next_quote_no(c, date: str, doc_type: str = "quote") -> str:
+    prefix = DOC_TYPES[doc_type][0] + date.replace("-", "")[:8] + "-"
     row = c.execute("SELECT quote_no FROM quotes WHERE quote_no LIKE ? ORDER BY quote_no DESC LIMIT 1",
                     (prefix + "%",)).fetchone()
     n = int(row["quote_no"].rsplit("-", 1)[1]) + 1 if row else 1
@@ -807,7 +820,8 @@ def link_task(c, body: QuoteIn, user: dict, qid: int, quote_no: str):
         return None
     t = get_task_row(c, body.task_id, user)
     c.execute("INSERT INTO task_comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)",
-              (t["id"], user["id"], f"🧾 견적서 {quote_no} ({body.customer_name.strip()}) 작성", now()))
+              (t["id"], user["id"], f"{'📄' if body.doc_type == 'statement' else '🧾'} {DOC_TYPES[body.doc_type][1]}"
+               f" {quote_no} ({body.customer_name.strip()}) 작성", now()))
     if body.complete_task:
         return change_status(c, t, user, "done")
     return None
@@ -816,19 +830,19 @@ def link_task(c, body: QuoteIn, user: dict, qid: int, quote_no: str):
 def editable_quote(c, qid: int, user: dict):
     q = c.execute("SELECT * FROM quotes WHERE id = ?", (qid,)).fetchone()
     if not q:
-        raise HTTPException(404, "견적서를 찾을 수 없습니다.")
+        raise HTTPException(404, "문서를 찾을 수 없습니다.")
     if q["created_by"] != user["id"] and user["role"] != "admin":
         raise HTTPException(403, "작성자 또는 관리자만 수정할 수 있습니다.")
     return q
 
 
-QUOTE_FIELDS = ("title", "cust_cd", "customer_name", "customer_contact", "customer_phone", "customer_email",
+QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer_address", "customer_name", "customer_contact", "customer_phone", "customer_email",
                 "quote_date", "valid_until", "delivery", "payment_terms", "vat_mode", "note", "status")
 
 
 @app.get("/api/quotes")
-def list_quotes(q: str = "", status: str = "", user: dict = Depends(current_user)):
-    where, params = [], []
+def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", user: dict = Depends(current_user)):
+    where, params = ["qt.doc_type = ?"], [doc_type]
     if q:
         where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?)")
         params += [f"%{q}%"] * 3
@@ -846,7 +860,8 @@ def quote_suggest(user: dict = Depends(current_user)):
     """이전 견적서의 거래처/품목을 자동완성 후보로 제공."""
     with db() as c:
         customers = c.execute(
-            "SELECT customer_name, customer_contact, customer_phone, customer_email FROM quotes"
+            "SELECT customer_name, customer_contact, customer_phone, customer_email,"
+            " customer_biz_no, customer_ceo, customer_address FROM quotes"
             " WHERE id IN (SELECT MAX(id) FROM quotes GROUP BY customer_name) ORDER BY customer_name"
         ).fetchall()
         items = c.execute(
@@ -865,9 +880,14 @@ def get_quote(qid: int, user: dict = Depends(current_user)):
             (qid,),
         ).fetchone()
         if not q:
-            raise HTTPException(404, "견적서를 찾을 수 없습니다.")
+            raise HTTPException(404, "문서를 찾을 수 없습니다.")
         items = c.execute("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY seq", (qid,)).fetchall()
-    return {**dict(q), "items": [dict(r) for r in items]}
+        children = c.execute("SELECT id, quote_no, quote_date, grand_total FROM quotes WHERE source_id = ? ORDER BY id",
+                             (qid,)).fetchall()
+        source = c.execute("SELECT id, quote_no FROM quotes WHERE id = ?", (q["source_id"],)).fetchone() \
+            if q["source_id"] else None
+    return {**dict(q), "items": [dict(r) for r in items], "statements": [dict(r) for r in children],
+            "source": dict(source) if source else None}
 
 
 @app.post("/api/quotes")
@@ -876,14 +896,22 @@ def create_quote(body: QuoteIn, user: dict = Depends(current_user)):
     with db() as c:
         if body.task_id:
             get_task_row(c, body.task_id, user)
-        quote_no = next_quote_no(c, body.quote_date)
+        source = None
+        if body.source_id:
+            source = c.execute("SELECT * FROM quotes WHERE id = ?", (body.source_id,)).fetchone()
+            if not source:
+                raise HTTPException(400, "원본 견적서를 찾을 수 없습니다.")
+        quote_no = next_quote_no(c, body.quote_date, body.doc_type)
         ts = now()
         cur = c.execute(
-            f"INSERT INTO quotes (quote_no, {', '.join(QUOTE_FIELDS)}, task_id, created_by, created_at, updated_at)"
-            f" VALUES (?, {', '.join('?' * len(QUOTE_FIELDS))}, ?, ?, ?, ?)",
-            (quote_no, *[getattr(body, f).strip() for f in QUOTE_FIELDS], body.task_id, user["id"], ts, ts),
+            f"INSERT INTO quotes (quote_no, doc_type, source_id, {', '.join(QUOTE_FIELDS)}, task_id, created_by,"
+            f" created_at, updated_at) VALUES (?, ?, ?, {', '.join('?' * len(QUOTE_FIELDS))}, ?, ?, ?, ?)",
+            (quote_no, body.doc_type, body.source_id, *[getattr(body, f).strip() for f in QUOTE_FIELDS],
+             body.task_id, user["id"], ts, ts),
         )
         qid = cur.lastrowid
+        if source and body.doc_type == "statement" and source["status"] in ("draft", "sent"):
+            c.execute("UPDATE quotes SET status = 'won', updated_at = ? WHERE id = ?", (ts, source["id"]))
         save_quote_items(c, qid, items, body.vat_mode)
         mail = link_task(c, body, user, qid, quote_no)
     if mail:
@@ -896,6 +924,9 @@ def update_quote(qid: int, body: QuoteIn, user: dict = Depends(current_user)):
     items = check_quote(body)
     with db() as c:
         q = editable_quote(c, qid, user)
+        body.doc_type = q["doc_type"]
+        if q["doc_type"] == "statement" and body.status not in ("draft", "sent"):
+            body.status = "sent"
         c.execute(
             f"UPDATE quotes SET {', '.join(f + ' = ?' for f in QUOTE_FIELDS)}, updated_at = ? WHERE id = ?",
             (*[getattr(body, f).strip() for f in QUOTE_FIELDS], now(), qid),
@@ -1125,6 +1156,8 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
     slip_col = "ecount_quote_slip" if body.kind == "quotation" else "ecount_sale_slip"
     with db() as c:
         q = editable_quote(c, qid, user)
+        if q["doc_type"] == "statement" and body.kind != "sale":
+            raise HTTPException(400, "거래명세서는 이카운트 판매로만 전송할 수 있습니다.")
         items = c.execute("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY seq", (qid,)).fetchall()
         problems = []
         if not q["cust_cd"]:
@@ -1152,7 +1185,7 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
     with db() as c:
         if result["ok"]:
             c.execute(f"UPDATE quotes SET {slip_col} = ?, updated_at = ? WHERE id = ?", (slips or "전송됨", now(), qid))
-            if body.kind == "sale" and q["status"] in ("draft", "sent"):
+            if body.kind == "sale" and q["doc_type"] == "quote" and q["status"] in ("draft", "sent"):
                 c.execute("UPDATE quotes SET status = 'won' WHERE id = ?", (qid,))
         msg = "; ".join(result["messages"]) or ("" if result["ok"] else json.dumps(result["raw"], ensure_ascii=False)[:500])
         ecount_log(c, qid, body.kind, result["ok"], slips, msg, user)

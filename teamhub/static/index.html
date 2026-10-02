@@ -190,6 +190,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="calendar">📅 캘린더</button>
       <button data-view="tasks">📋 업무</button>
       <button data-view="quotes">🧾 견적서</button>
+      <button data-view="statements">📄 거래명세서</button>
       <button data-view="users" class="admin-only">👥 직원관리</button>
     </nav>
     <div class="hdr-right">
@@ -329,7 +330,7 @@ function go(view) {
   if (view === 'users' && state.me.role !== 'admin') view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, users: renderUsers})[view]();
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, users: renderUsers})[view]();
 }
 
 $('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
@@ -646,9 +647,9 @@ async function openTask(id) {
     ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ''}
     <label>진행 상태</label>
     <div class="status-btns">${Object.entries(STATUS).map(([k, v]) => `<button data-st="${k}" class="${t.status === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-    <label>🧾 견적서</label>
-    <div>${t.quotes.map(q => `<div class="list-item" data-q="${q.id}" style="padding:6px 0">${qTag(q.status)}<b>${esc(q.quote_no)}</b> ${esc(q.customer_name)}<span class="spacer"></span>${won(q.grand_total)}원</div>`).join('')}
-      <button class="btn sm" id="tQuote">+ 이 업무로 견적서 작성</button></div>
+    <label>🧾 견적서 · 📄 거래명세서</label>
+    <div>${t.quotes.map(q => `<div class="list-item" data-q="${q.id}" style="padding:6px 0">${DOC[q.doc_type || 'quote'].icon} ${qTag(q.status, q.doc_type)}<b>${esc(q.quote_no)}</b> ${esc(q.customer_name)}<span class="spacer"></span>${won(q.grand_total)}원</div>`).join('')}
+      <div class="row" style="gap:6px"><button class="btn sm" id="tQuote">+ 견적서 작성</button><button class="btn sm" id="tStmt">+ 거래명세서 작성</button></div></div>
     ${t.mails.length ? `<label>📧 메일 기록</label><div style="font-size:12px">${t.mails.map(l => `<div class="row" style="gap:6px;padding:3px 0" title="${esc(l.error)}">${MAIL_RESULT(l.result)}<span class="muted">${esc(l.created_at.slice(5, 16))}</span> ${MAIL_KIND(l.kind)} → ${esc(l.recipient)}</div>`).join('')}</div>` : ''}
     <label>코멘트 (${t.comments.length})</label>
     <div>${t.comments.map(c => `<div class="comment"><span class="who">${esc(c.user_name)}</span><span class="when">${esc(c.created_at.slice(0, 16))}</span><div class="body">${esc(c.body)}</div></div>`).join('') || '<div class="muted" style="padding:6px 0">아직 코멘트가 없습니다.</div>'}</div>
@@ -676,7 +677,8 @@ async function openTask(id) {
     };
     const ed = $('#tEdit', bg);
     if (ed) ed.onclick = () => { close(); openTaskForm(t); };
-    $('#tQuote', bg).onclick = () => { close(); openQuoteForm(null, t); };
+    $('#tQuote', bg).onclick = () => { close(); openQuoteForm(null, t, null, 'quote'); };
+    $('#tStmt', bg).onclick = () => { close(); openQuoteForm(null, t, null, 'statement'); };
     $$('[data-q]', bg).forEach(el => el.onclick = () => { close(); openQuoteView(+el.dataset.q); });
   });
 }
@@ -769,7 +771,12 @@ function openUser(u) {
 // ===================================================== quotes (견적서)
 const QSTATUS = {draft: '작성중', sent: '발송', won: '수주', lost: '실주'};
 const VAT = {separate: '부가세 별도', included: '부가세 포함', none: '면세/영세'};
-const qTag = s => `<span class="tag q-${s}">${QSTATUS[s]}</span>`;
+const TSTATUS = {draft: '작성중', sent: '발행'};
+const DOC = {
+  quote: {label: '견적서', icon: '🧾', no: '견적번호', date: '견적일', status: QSTATUS},
+  statement: {label: '거래명세서', icon: '📄', no: '명세서번호', date: '거래일자', status: TSTATUS},
+};
+const qTag = (s, type = 'quote') => `<span class="tag q-${s}">${DOC[type].status[s] || QSTATUS[s]}</span>`;
 const won = n => Math.round(Number(n) || 0).toLocaleString('ko-KR');
 const numVal = v => Number(String(v).replace(/,/g, '')) || 0;
 
@@ -799,26 +806,28 @@ function calcLine(qty, price, mode) {
 
 async function renderQuotes() {
   const isAdmin = state.me.role === 'admin';
-  const q = new URLSearchParams();
+  const dt = state.view === 'statements' ? 'statement' : 'quote', D = DOC[dt];
+  if (state.qType !== dt) { state.qType = dt; state.qStatus = ''; state.qSearch = ''; }
+  const q = new URLSearchParams({doc_type: dt});
   if (state.qSearch) q.set('q', state.qSearch);
   if (state.qStatus) q.set('status', state.qStatus);
   const list = await api('/api/quotes?' + q);
   const sum = list.reduce((a, x) => a + x.grand_total, 0);
   $('#main').innerHTML = `<div class="card">
-    <div class="row" style="margin-bottom:12px"><h3 style="margin:0">🧾 견적서</h3><span class="spacer"></span>
+    <div class="row" style="margin-bottom:12px"><h3 style="margin:0">${D.icon} ${D.label}</h3><span class="spacer"></span>
       ${isAdmin ? '<button class="btn" id="qEcount">🔗 이카운트</button><button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
-      <button class="btn primary" id="qNew">+ 새 견적서</button></div>
+      <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     <div class="row" style="margin-bottom:10px">
-      <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(QSTATUS).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <input id="qSearch" placeholder="거래처/건명/견적번호 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
+      <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input id="qSearch" placeholder="거래처/건명/${D.no} 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
       <span class="muted">${list.length}건 · 합계 ${won(sum)}원</span>
     </div>
-    ${list.length ? `<div class="qscroll"><table><thead><tr><th>견적번호</th><th>견적일</th><th>거래처</th><th class="hide-m">건명</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
+    ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.no}</th><th>${D.date}</th><th>거래처</th><th class="hide-m">건명</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
       ${list.map(x => `<tr data-q="${x.id}"><td>${esc(x.quote_no)}</td><td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
-        <td class="hide-m">${esc(x.title)}</td><td class="money">${won(x.grand_total)}</td><td>${qTag(x.status)}</td><td class="hide-m">${esc(x.creator_name)}</td></tr>`).join('')}
-    </tbody></table></div>` : '<div class="empty">견적서가 없습니다. [+ 새 견적서]로 작성해 보세요.</div>'}
+        <td class="hide-m">${esc(x.title)}</td><td class="money">${won(x.grand_total)}</td><td>${qTag(x.status, dt)}</td><td class="hide-m">${esc(x.creator_name)}</td></tr>`).join('')}
+    </tbody></table></div>` : `<div class="empty">${D.label}가 없습니다. [+ 새 ${D.label}]로 작성해 보세요.</div>`}
   </div>`;
-  $('#qNew').onclick = () => openQuoteForm();
+  $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);
   if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; renderQuotes(); };
   let timer;
@@ -826,9 +835,10 @@ async function renderQuotes() {
   $$('tbody tr').forEach(tr => tr.onclick = () => openQuoteView(+tr.dataset.q));
 }
 
-async function openQuoteForm(quote, task, template) {
+async function openQuoteForm(quote, task, template, docType) {
   const sug = await api('/api/quotes/suggest');
-  const q = quote || template || {quote_date: todayStr(), vat_mode: 'separate', status: 'draft', title: task ? task.title : '',
+  const dt = (quote || template || {}).doc_type || docType || 'quote', D = DOC[dt], isSt = dt === 'statement';
+  const q = quote || template || {quote_date: todayStr(), vat_mode: 'separate', status: isSt ? 'sent' : 'draft', title: task ? task.title : '',
     valid_until: '견적일로부터 30일', payment_terms: '', delivery: '', items: [{}, {}, {}]};
   const linkedTask = task || (quote && quote.task_id ? {id: quote.task_id} : null);
   const ec = await ecMaster();
@@ -843,21 +853,24 @@ async function openQuoteForm(quote, task, template) {
       <td class="calc sup">0</td><td class="calc vat">0</td>
       <td class="hide-m"><input name="inote" value="${esc(it.note)}"></td>
       <td style="width:30px"><button type="button" class="btn sm" data-del title="행 삭제">✕</button></td></tr>`;
-  openModal(`<h2>${quote ? `견적서 수정 <small class="muted">${esc(quote.quote_no)}</small>` : '새 견적서'}</h2>
+  openModal(`<h2>${quote ? `${D.label} 수정 <small class="muted">${esc(quote.quote_no)}</small>` : '새 ' + D.label}</h2>
     ${linkedTask ? `<div class="muted">📋 연결된 업무: ${esc(task?.title || '#' + linkedTask.id)}</div>` : ''}
     <form autocomplete="off">
       <div class="grid2">
         <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(이카운트 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
           <input type="hidden" name="cust_cd" value="${esc(q.cust_cd || '')}">${ec.enabled ? '<div id="custChip"></div>' : ''}</div>
-        <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="예: 사무용품 납품 견적"></div>
+        <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="${isSt ? '예: 10월 사무용품 납품' : '예: 사무용품 납품 견적'}"></div>
+        ${isSt ? `<div><label>공급받는자 사업자번호</label><input name="customer_biz_no" value="${esc(q.customer_biz_no)}" placeholder="000-00-00000"></div>
+        <div><label>공급받는자 대표자</label><input name="customer_ceo" value="${esc(q.customer_ceo)}"></div>
+        <div style="grid-column:1/-1"><label>공급받는자 주소</label><input name="customer_address" value="${esc(q.customer_address)}"></div>` : ''}
         <div><label>거래처 담당자</label><input name="customer_contact" value="${esc(q.customer_contact)}"></div>
         <div><label>거래처 연락처 / 이메일</label><div class="row" style="flex-wrap:nowrap"><input name="customer_phone" value="${esc(q.customer_phone)}" placeholder="연락처"><input name="customer_email" value="${esc(q.customer_email)}" placeholder="이메일"></div></div>
-        <div><label>견적일</label><input type="date" name="quote_date" value="${esc(q.quote_date)}" required></div>
-        <div><label>유효기간</label><input name="valid_until" value="${esc(q.valid_until)}"></div>
-        <div><label>납기</label><input name="delivery" value="${esc(q.delivery)}" placeholder="예: 발주 후 7일"></div>
+        <div><label>${D.date}</label><input type="date" name="quote_date" value="${esc(q.quote_date)}" required></div>
+        ${isSt ? '' : `<div><label>유효기간</label><input name="valid_until" value="${esc(q.valid_until)}"></div>
+        <div><label>납기</label><input name="delivery" value="${esc(q.delivery)}" placeholder="예: 발주 후 7일"></div>`}
         <div><label>결제조건</label><input name="payment_terms" value="${esc(q.payment_terms)}" placeholder="예: 납품 후 익월 말 현금"></div>
         <div><label>부가세</label><select name="vat_mode">${Object.entries(VAT).map(([k, v]) => `<option value="${k}" ${q.vat_mode === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div><label>상태</label><select name="status">${Object.entries(QSTATUS).map(([k, v]) => `<option value="${k}" ${q.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label>상태</label><select name="status">${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${q.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
       <label>품목</label>
       <div class="qscroll"><table class="qitems"><thead><tr><th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th><th style="text-align:right">공급가액</th><th style="text-align:right">세액</th><th class="hide-m">비고</th><th></th></tr></thead>
@@ -900,7 +913,7 @@ async function openQuoteForm(quote, task, template) {
     f.vat_mode.onchange = recalc;
     f.customer_name.onchange = () => {
       const c = sug.customers.find(x => x.customer_name === f.customer_name.value);
-      if (c) ['customer_contact', 'customer_phone', 'customer_email'].forEach(k => { if (!f[k].value) f[k].value = c[k]; });
+      if (c) ['customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address'].forEach(k => { if (f[k] && !f[k].value) f[k].value = c[k] || ''; });
     };
     if (useEc) {
       tbody.addEventListener('focusin', e => {
@@ -924,7 +937,11 @@ async function openQuoteForm(quote, task, template) {
       const tr = e.target.closest('tr'); $('[name=prod_cd]', tr).value = ''; $('.pc', tr).innerHTML = prodCode('');
     });
     if (ec.customers.length) {
-      const pickCust = c => { f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change')); drawCustChip(); };
+      const pickCust = c => {
+        f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change'));
+        if (f.customer_address && !f.customer_address.value && c.memo) f.customer_address.value = c.memo;
+        drawCustChip();
+      };
       const custHtml = c => `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>${c.memo ? `<br><small>${esc(c.memo)}</small>` : ''}`;
       attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name, c.memo]), custHtml, pickCust);
       // 직접 입력한 이름이 이카운트 거래처 하나와 정확히 같으면 자동 연결
@@ -949,13 +966,14 @@ async function openQuoteForm(quote, task, template) {
       if (!f.reportValidity()) return;
       const items = $$('tr', tbody).map(tr => ({prod_cd: $('[name=prod_cd]', tr).value, name: $('[name=name]', tr).value, spec: $('[name=spec]', tr).value, unit: $('[name=unit]', tr).value,
         qty: numVal($('[name=qty]', tr).value), unit_price: numVal($('[name=price]', tr).value), note: $('[name=inote]', tr).value})).filter(i => i.name.trim());
-      const body = {items, task_id: linkedTask ? linkedTask.id : null, complete_task: !!(f.complete_task && f.complete_task.checked)};
-      ['customer_name', 'cust_cd', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'quote_date', 'valid_until', 'delivery', 'payment_terms', 'vat_mode', 'status', 'note'].forEach(k => body[k] = f[k].value);
+      const body = {items, doc_type: dt, source_id: quote ? null : (q.source_id || null), task_id: linkedTask ? linkedTask.id : null, complete_task: !!(f.complete_task && f.complete_task.checked)};
+      ['customer_name', 'cust_cd', 'title', 'customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address',
+       'quote_date', 'valid_until', 'delivery', 'payment_terms', 'vat_mode', 'status', 'note'].forEach(k => body[k] = f[k] ? f[k].value : (q[k] || ''));
       try {
         const r = await api(quote ? `/api/quotes/${quote.id}` : '/api/quotes', {method: quote ? 'PUT' : 'POST', body});
-        close(); toast(`견적서 ${r.quote_no} 저장됨`);
+        close(); toast(`${D.label} ${r.quote_no} 저장됨`);
         if (andPrint) printQuote(r.id);
-        if (state.view === 'quotes') renderQuotes(); else go(state.view);
+        go(state.view);
       } catch (err) { $('.err', bg).textContent = err.message; }
     };
     f.onsubmit = e => { e.preventDefault(); save(false); };
@@ -967,7 +985,8 @@ async function openQuoteView(id) {
   const [q, ec] = await Promise.all([api(`/api/quotes/${id}`), ecMaster()]);
   const ecEnabled = ec.enabled;
   const canEdit = q.created_by === state.me.id || state.me.role === 'admin';
-  openModal(`<div class="row">${qTag(q.status)}<span class="muted">${esc(q.quote_no)} · ${esc(q.quote_date)} · ${VAT[q.vat_mode]}</span></div>
+  const dt = q.doc_type || 'quote', D = DOC[dt], isSt = dt === 'statement';
+  openModal(`<div class="row"><span class="tag p-low">${D.icon} ${D.label}</span>${qTag(q.status, dt)}<span class="muted">${esc(q.quote_no)} · ${esc(q.quote_date)} · ${VAT[q.vat_mode]}</span></div>
     <h2 style="margin-top:8px">${esc(q.customer_name)} ${q.title ? `<small class="muted">· ${esc(q.title)}</small>` : ''}</h2>
     <div class="qscroll"><table style="margin-top:10px"><thead><tr><th>품명</th><th>규격</th><th style="text-align:right">수량</th><th style="text-align:right">단가</th><th style="text-align:right">공급가액</th><th style="text-align:right">세액</th></tr></thead><tbody>
       ${q.items.map(i => `<tr style="cursor:default"><td>${esc(i.name)}</td><td>${esc(i.spec)}</td><td class="money">${i.qty.toLocaleString('ko-KR')} ${esc(i.unit)}</td><td class="money">${won(i.unit_price)}</td><td class="money">${won(i.supply)}</td><td class="money">${won(i.vat)}</td></tr>`).join('')}
@@ -975,7 +994,8 @@ async function openQuoteView(id) {
     <div class="qtotal"><span>공급가액 <b>${won(q.supply_total)}</b></span><span>세액 <b>${won(q.vat_total)}</b></span><span>합계 <b style="color:var(--primary)">${won(q.grand_total)}</b>원</span></div>
     <dl class="detail-meta">
       <dt>담당자</dt><dd>${esc(q.customer_contact || '-')} ${esc(q.customer_phone)} ${esc(q.customer_email)}</dd>
-      <dt>유효기간</dt><dd>${esc(q.valid_until || '-')}</dd><dt>납기</dt><dd>${esc(q.delivery || '-')}</dd>
+      ${isSt ? `<dt>사업자번호</dt><dd>${esc(q.customer_biz_no || '-')}</dd><dt>주소</dt><dd>${esc(q.customer_address || '-')}</dd>`
+        : `<dt>유효기간</dt><dd>${esc(q.valid_until || '-')}</dd><dt>납기</dt><dd>${esc(q.delivery || '-')}</dd>`}
       <dt>결제조건</dt><dd>${esc(q.payment_terms || '-')}</dd><dt>작성자</dt><dd>${esc(q.creator_name)}</dd>
     </dl>
     ${q.note ? `<div class="desc">${esc(q.note)}</div>` : ''}
@@ -983,7 +1003,7 @@ async function openQuoteView(id) {
       <div class="row" style="margin-top:8px">
         ${q.ecount_quote_slip ? `<span class="tag s-done">견적서 전송됨 ${esc(q.ecount_quote_slip)}</span>` : ''}
         ${q.ecount_sale_slip ? `<span class="tag s-done">판매 전송됨 ${esc(q.ecount_sale_slip)}</span>` : ''}
-        ${canEdit ? `<button class="btn sm" id="ecQ">견적서로 전송</button><button class="btn sm primary" id="ecS">거래명세서(판매)로 전송</button>` : ''}
+        ${canEdit ? `${isSt ? '' : '<button class="btn sm" id="ecQ">견적서로 전송</button>'}<button class="btn sm primary" id="ecS">${isSt ? '이카운트 판매로 전송' : '판매로 전송'}</button>` : ''}
       </div></div>` : ''}
     <div class="actions">
       ${canEdit ? '<button class="btn danger" id="qDel">삭제</button><button class="btn" id="qEdit">수정</button>' : ''}
@@ -995,10 +1015,10 @@ async function openQuoteView(id) {
     const ecQ = $('#ecQ', bg), ecS = $('#ecS', bg);
     if (ecQ) ecQ.onclick = () => { close(); openEcSend(q, 'quotation', ec); };
     if (ecS) ecS.onclick = () => { close(); openEcSend(q, 'sale', ec); };
-    $('#qCopy', bg).onclick = () => { close(); openQuoteForm(null, null, {...q, status: 'draft', quote_date: todayStr()}); };
+    $('#qCopy', bg).onclick = () => { close(); openQuoteForm(null, null, {...q, source_id: null, status: isSt ? 'sent' : 'draft', quote_date: todayStr()}); };
     const ed = $('#qEdit', bg); if (ed) ed.onclick = () => { close(); openQuoteForm(q); };
     const del = $('#qDel', bg); if (del) del.onclick = async () => {
-      if (!confirm('이 견적서를 삭제할까요?')) return;
+      if (!confirm(`이 ${D.label}를 삭제할까요?`)) return;
       await api(`/api/quotes/${id}`, {method: 'DELETE'}); close(); toast('삭제되었습니다.'); go(state.view);
     };
   });
@@ -1006,6 +1026,9 @@ async function openQuoteView(id) {
 
 async function printQuote(id) {
   const w = window.open('', '_blank');
+  if (w) w.document.write('<p style="font-family:sans-serif">불러오는 중…</p>');
+  const peek = await api(`/api/quotes/${id}`);
+  if (peek.doc_type === 'statement') return printStatement(w, peek);
   if (!w) { toast('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.'); return; }
   w.document.write('<p style="font-family:sans-serif">견적서를 불러오는 중…</p>');
   const [q, co] = await Promise.all([api(`/api/quotes/${id}`), api('/api/company')]);
@@ -1072,10 +1095,81 @@ async function printQuote(id) {
   setTimeout(() => w.print(), 400);
 }
 
+
+// 거래명세서 인쇄: A4 한 장에 공급받는자 보관용 + 공급자 보관용 (품목이 많으면 각각 한 장씩)
+async function printStatement(w, q) {
+  if (!w) { toast('팝업이 차단되었습니다. 브라우저에서 팝업을 허용해 주세요.'); return; }
+  const co = await api('/api/company');
+  const md = d => d ? `${+d.slice(5, 7)}/${+d.slice(8, 10)}` : '';
+  const many = q.items.length > 10;
+  const minRows = many ? Math.max(q.items.length, 22) : 10;
+  const copy = (who, color) => {
+    const rows = q.items.map(i => `<tr><td class="c">${md(q.quote_date)}</td><td>${esc(i.name)}</td><td>${esc(i.spec)}</td>
+      <td class="r">${i.qty.toLocaleString('ko-KR')}${i.unit ? ' ' + esc(i.unit) : ''}</td><td class="r">${won(i.unit_price)}</td><td class="r">${won(i.supply)}</td><td class="r">${won(i.vat)}</td><td>${esc(i.note)}</td></tr>`);
+    while (rows.length < minRows) rows.push('<tr>' + '<td>&nbsp;</td>'.repeat(8) + '</tr>');
+    return `<div class="copy" style="--c:${color}">
+      <div class="head"><h1>거 래 명 세 서</h1><span class="who">(${who} 보관용)</span></div>
+      <div class="meta">No. ${esc(q.quote_no)} &nbsp; 거래일자: ${esc(q.quote_date)}</div>
+      <div class="parties">
+        <table class="party"><tr><th class="vh" rowspan="4">공<br>급<br>받<br>는<br>자</th><th>상호</th><td colspan="3"><b>${esc(q.customer_name)}</b></td></tr>
+          <tr><th>등록번호</th><td colspan="3">${esc(q.customer_biz_no)}</td></tr>
+          <tr><th>대표자</th><td>${esc(q.customer_ceo)}</td><th>담당</th><td>${esc(q.customer_contact)}</td></tr>
+          <tr><th>주소</th><td colspan="3">${esc(q.customer_address)}</td></tr></table>
+        <table class="party"><tr><th class="vh" rowspan="4">공<br>급<br>자</th><th>등록번호</th><td colspan="3">${esc(co.biz_no || '')}</td></tr>
+          <tr><th>상호</th><td>${esc(co.company_name || '')}</td><th>성명</th><td class="stampbox">${esc(co.ceo || '')}${co.stamp ? `<img class="stamp" src="${co.stamp}">` : ' (인)'}</td></tr>
+          <tr><th>주소</th><td colspan="3">${esc(co.address || '')}</td></tr>
+          <tr><th>업태</th><td>${esc(co.biz_type || '')}</td><th>종목</th><td>${esc(co.biz_item || '')}</td></tr></table>
+      </div>
+      <table class="total"><tr><th>합계금액</th><td>일금 ${koreanAmount(q.grand_total)}원정 (₩ ${won(q.grand_total)})</td><th>${VAT[q.vat_mode]}</th></tr></table>
+      <table class="items"><tr><th style="width:42px">월/일</th><th>품목</th><th>규격</th><th style="width:70px">수량</th><th style="width:76px">단가</th><th style="width:86px">공급가액</th><th style="width:70px">세액</th><th style="width:70px">비고</th></tr>
+        ${rows.join('')}
+        <tr class="sumrow"><td colspan="5" class="c">합 계</td><td class="r">${won(q.supply_total)}</td><td class="r">${won(q.vat_total)}</td><td class="r">${won(q.grand_total)}</td></tr></table>
+      <table class="foot"><tr><th>비고</th><td style="white-space:pre-wrap">${esc(q.note)}${q.payment_terms ? (q.note ? '\n' : '') + '결제조건: ' + esc(q.payment_terms) : ''}</td><th>인수자</th><td style="width:120px;text-align:right">(인)</td></tr></table>
+    </div>`;
+  };
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>거래명세서 ${esc(q.quote_no)} - ${esc(q.customer_name)}</title>
+  <style>
+    @page{size:A4;margin:8mm}
+    body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#111;font-size:11px;margin:0;padding:12px}
+    .sheet{max-width:790px;margin:0 auto}
+    .copy{border:2px solid var(--c);padding:8px 10px;margin-bottom:6px}
+    .copy th{background:color-mix(in srgb,var(--c) 12%,#fff);color:#111}
+    .copy td,.copy th{border:1px solid var(--c)}
+    .head{display:flex;align-items:baseline;justify-content:center;gap:10px}
+    h1{font-size:22px;letter-spacing:12px;margin:2px 0;color:var(--c)}
+    .who{font-size:11px;color:var(--c)}
+    .meta{text-align:right;font-size:10px;margin-bottom:4px}
+    table{border-collapse:collapse;width:100%}
+    td,th{padding:3px 5px}
+    th{font-weight:bold;white-space:nowrap}
+    .parties{display:flex;gap:6px}.party th{width:48px;font-size:10px}.party .vh{width:16px;text-align:center;line-height:1.15}
+    .stampbox{position:relative}.stamp{position:absolute;right:0;top:50%;transform:translateY(-50%);height:36px;opacity:.85}
+    .total{margin:5px 0;font-size:13px}.total th{width:80px}.total td{font-weight:bold}.total th:last-child{width:90px;font-size:10px}
+    .items th{font-size:10px}.items td{height:15px}
+    .c{text-align:center}.r{text-align:right;font-variant-numeric:tabular-nums}
+    .sumrow td{font-weight:bold}
+    .foot{margin-top:4px}.foot th{width:48px}
+    .cut{border-top:1px dashed #999;margin:8px 0 10px;text-align:center;font-size:9px;color:#999;height:0}
+    .cut span{background:#fff;padding:0 6px;position:relative;top:-7px}
+    .pb{page-break-after:always}
+    .noprint{text-align:center;margin:14px}
+    @media print{.noprint{display:none}body{padding:0}}
+  </style></head><body><div class="sheet">
+  ${copy('공급받는자', '#1d4ed8')}
+  ${many ? '<div class="pb"></div>' : '<div class="cut"><span>✂ 자르는 선</span></div>'}
+  ${copy('공급자', '#b91c1c')}
+  <div class="noprint"><button onclick="print()" style="font-size:15px;padding:10px 24px">🖨 인쇄 / PDF로 저장</button>
+    <p style="color:#666;font-size:12px">PDF로 받으려면 인쇄 창에서 대상(프린터)을 "PDF로 저장"으로 선택하세요.</p></div>
+  </div></body></html>`);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
+}
+
 async function openCompany() {
   const co = await api('/api/company');
   const field = (k, label, ph = '') => `<div><label>${label}</label><input name="${k}" value="${esc(co[k])}" placeholder="${ph}"></div>`;
-  openModal(`<h2>🏢 회사 정보 (견적서 공급자)</h2>
+  openModal(`<h2>🏢 회사 정보 (견적서·거래명세서 공급자)</h2>
     <form><div class="grid2">
       ${field('company_name', '상호')}${field('ceo', '대표자')}${field('biz_no', '사업자등록번호', '000-00-00000')}${field('phone', '전화')}
       ${field('biz_type', '업태')}${field('biz_item', '종목')}${field('fax', '팩스')}${field('email', '대표 이메일')}
