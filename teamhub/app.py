@@ -6,6 +6,7 @@ import os
 import secrets
 import sqlite3
 import time
+import urllib.parse
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -194,6 +195,44 @@ def init_db():
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_shipments_eta ON shipments(eta);
+            CREATE TABLE IF NOT EXISTS inv_lots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet TEXT NOT NULL DEFAULT '',
+                row_no INTEGER NOT NULL DEFAULT 0,
+                item TEXT NOT NULL,
+                cas TEXT NOT NULL DEFAULT '',
+                fema TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                location TEXT NOT NULL DEFAULT '',
+                info TEXT NOT NULL DEFAULT '',
+                order_note TEXT NOT NULL DEFAULT '',
+                lot_no TEXT NOT NULL DEFAULT '',
+                bat_no TEXT NOT NULL DEFAULT '',
+                packing TEXT NOT NULL DEFAULT '',
+                origin TEXT NOT NULL DEFAULT '',
+                mfg_date TEXT NOT NULL DEFAULT '',
+                expiry TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT '',
+                customs_date TEXT NOT NULL DEFAULT '',
+                import_qty REAL,
+                cost_fx REAL,
+                rate REAL,
+                cost_krw REAL,
+                cost_est INTEGER NOT NULL DEFAULT 0,
+                stock_qty REAL,
+                stock_amt REAL
+            );
+            CREATE TABLE IF NOT EXISTS inv_ships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lot_id INTEGER NOT NULL REFERENCES inv_lots(id) ON DELETE CASCADE,
+                ship_date TEXT NOT NULL,
+                customer TEXT NOT NULL DEFAULT '',
+                qty REAL NOT NULL DEFAULT 0,
+                price REAL,
+                note TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
+            CREATE INDEX IF NOT EXISTS idx_inv_ships_lot ON inv_ships(lot_id);
             CREATE TABLE IF NOT EXISTS ecount_products (
                 code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', spec TEXT NOT NULL DEFAULT '',
                 unit TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0
@@ -360,7 +399,10 @@ def logout(authorization: str = Header(default="")):
 
 @app.get("/api/me")
 def me(user: dict = Depends(current_user)):
-    return public_user(user)
+    d = public_user(user)
+    with db() as c:
+        d["can_profit"] = can_see_cost(c, user)
+    return d
 
 
 @app.put("/api/me/password")
@@ -1170,9 +1212,18 @@ def parse_sheet(filename: str, data: bytes) -> list:
                                  " 또는 CSV 로 저장해서 올려주세요.")
 
 
-def read_xlsx_values(data: bytes) -> list:
-    """xlsx 의 첫 시트 셀 값만 읽는다. 서식(스타일)은 무시 — 이카운트 엑셀은 서식 정보가 표준과 달라
-    openpyxl 이 읽지 못하는 경우가 있다."""
+def xlsx_sheet_names(data: bytes) -> list:
+    import io
+    import zipfile
+    import xml.etree.ElementTree as ET
+    m = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    wb = ET.fromstring(zipfile.ZipFile(io.BytesIO(data)).read("xl/workbook.xml"))
+    return [sh.get("name") for sh in wb.iter(m + "sheet")]
+
+
+def read_xlsx_values(data: bytes, sheet=None) -> list:
+    """xlsx 시트의 셀 값만 읽는다(sheet: 이름 또는 0부터 순번, 기본 첫 시트). 서식(스타일)은 무시 —
+    이카운트 엑셀은 서식 정보가 표준과 달라 openpyxl 이 읽지 못하는 경우가 있다."""
     import io
     import posixpath
     import zipfile
@@ -1186,13 +1237,21 @@ def read_xlsx_values(data: bytes) -> list:
     sheet_path = "xl/worksheets/sheet1.xml"
     try:
         wb = ET.fromstring(z.read("xl/workbook.xml"))
-        first = wb.find("m:sheets/m:sheet", ns)
+        sheets = wb.findall("m:sheets/m:sheet", ns)
+        if isinstance(sheet, int):
+            first = sheets[sheet]
+        elif sheet:
+            first = next(sh for sh in sheets if sh.get("name") == sheet)
+        else:
+            first = sheets[0]
         rid = first.get(f"{{{ns['r']}}}id")
         rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
         for rel in rels.findall("pr:Relationship", ns):
             if rel.get("Id") == rid:
                 target = rel.get("Target")
                 sheet_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath("xl/" + target)
+    except (StopIteration, IndexError):
+        raise
     except Exception:
         pass
     if sheet_path not in names:
@@ -1944,6 +2003,339 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         patterns.sort(key=lambda r: -r["value"])
     return {"ref": ref.isoformat(), "cur": cur_r, "cmp": cmp_r, "rows": rows, "dormant": dormant, "patterns": patterns,
             "cur_total": sum(cur_c.values()), "cmp_total": sum(cmp_c.values())}
+
+
+# ---------------------------------------------------------------- 재고(나스 엑셀) · 원가 · 이익
+INV_H1 = {"location": ("위치",), "loc_detail": ("위치상세",), "info": ("상세정보",), "kind": ("유형",),
+          "order_note": ("발주시기",), "bat_no": ("batno",), "item": ("품목",), "lot_no": ("재고번호",),
+          "import_qty": ("수입수량", "수량"), "packing": ("packing",), "origin": ("origin",), "mfg_date": ("제조일자",),
+          "transport": ("운송수단",), "cost_fx": ("원가(외화)",), "customs_date": ("통관날짜", "통관일자"),
+          "stock_qty": ("재고량",), "stock_amt": ("재고금액",), "cas": ("cas", "casno")}
+INV_H2 = {"fema": ("fema",), "expiry": ("소비기한", "유통기한"), "cost_krw": ("원가(원화)",), "rate": ("기준환율", "환율")}
+INV_TEXT = ("location", "loc_detail", "info", "kind", "order_note", "bat_no", "item", "lot_no", "packing", "origin",
+            "mfg_date", "transport", "customs_date", "cas", "fema", "expiry")
+
+
+def _inv_h(v) -> str:
+    return re.sub(r"[\s.\-_]", "", str(v or "")).lower()
+
+
+def _numn(v):
+    """숫자로 읽을 수 없으면 None (빈칸·글자)."""
+    s = str(v or "").replace(",", "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def inv_date(v) -> str:
+    """250106 / 2025.01.06 / 2025-01-06 / 250312(250430) / 엑셀 날짜숫자 → 2025-01-06. 못 읽으면 ''."""
+    s = str(v or "").strip()
+    m = re.match(r"^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", s)
+    if m:
+        y, mo, d = int(m[1]), int(m[2]), int(m[3])
+    else:
+        m = re.match(r"^(\d{2})[.\-/]?(\d{2})[.\-/]?(\d{2})(?!\d)", s)
+        if m:
+            y, mo, d = 2000 + int(m[1]), int(m[2]), int(m[3])
+        elif re.match(r"^\d{5}(\.0+)?$", s):     # 엑셀 날짜 일련번호
+            dt = datetime(1899, 12, 30) + timedelta(days=int(float(s)))
+            y, mo, d = dt.year, dt.month, dt.day
+        else:
+            return ""
+    try:
+        return datetime(y, mo, d).strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def parse_inventory_sheet(name: str, rows: list) -> list:
+    """재고 시트: 머리글 2줄(1줄: 품목·재고번호·출고일/거래처…, 2줄: Fema·원가(원화)·출고량/납품가…),
+    로트 하나가 2줄(윗줄: 품목·수량·통관·출고일·거래처 /아랫줄: 원가(원화)·환율·출고량·납품가)."""
+    hi = next((i for i, r in enumerate(rows[:10]) if "품목" in [_inv_h(x) for x in r]
+               and "출고일" in [_inv_h(x) for x in r]), None)
+    if hi is None:
+        return []
+    h1 = [_inv_h(x) for x in rows[hi]]
+    h2 = [_inv_h(x) for x in (rows[hi + 1] if hi + 1 < len(rows) else [])]
+
+    def find(hdr, keys):
+        for k in keys:   # 정확히 일치 우선
+            if k in hdr:
+                return hdr.index(k)
+        return next((i for i, h in enumerate(hdr) if h and any(h.startswith(k) for k in keys)), None)
+
+    col1 = {f: find(h1, ks) for f, ks in INV_H1.items()}
+    if col1["import_qty"] == col1["stock_qty"]:
+        col1["import_qty"] = find(h1, ("수입수량",))
+    col2 = {f: find(h2, ks) for f, ks in INV_H2.items()}
+    if col1["cas"] is None and h2 and h2[0].startswith("fema"):
+        col1["cas"] = 0      # CAS 머리글이 비어 있는 경우(Fema 윗칸)
+    pairs = [j for j, h in enumerate(h1) if h == "출고일"]
+    item_c = col1["item"]
+    g = lambda r, j: (r[j] if j is not None and j < len(r) else "")
+    lots = []
+    i = hi + 2
+    while i < len(rows):
+        a = rows[i]
+        b = rows[i + 1] if i + 1 < len(rows) else []
+        item = str(g(a, item_c)).strip()
+        if not item or g(b, item_c):
+            i += 1
+            continue
+        nums = [_numn(g(a, col1[k])) for k in ("import_qty", "stock_qty", "cost_fx")] + [_numn(g(b, col2["cost_krw"]))]
+        if all(n is None for n in nums):
+            i += 1     # 구분 줄(예: Flavour natural)·색 설명 줄
+            continue
+        lot = {"sheet": name, "row_no": i + 1, "item": item}
+        for f in INV_TEXT:
+            src = (b, col2) if f in col2 else (a, col1)
+            lot[f] = str(g(src[0], src[1].get(f))).strip()
+        for f in ("expiry", "mfg_date", "customs_date"):
+            lot[f] = inv_date(lot[f]) or lot[f]
+        lot["location"] = (lot["location"] + " " + lot.pop("loc_detail")).strip()
+        for f in ("import_qty", "cost_fx", "stock_qty", "stock_amt"):
+            lot[f] = _numn(g(a, col1[f]))
+        lot["cost_krw"] = _numn(g(b, col2["cost_krw"]))
+        lot["rate"] = _numn(g(b, col2["rate"]))
+        lot["cost_est"] = 0
+        if not lot["cost_krw"] and lot["cost_fx"] and lot["rate"]:
+            lot["cost_krw"], lot["cost_est"] = round(lot["cost_fx"] * lot["rate"], 2), 1
+        ships = []
+        for j in pairs:
+            d = inv_date(g(a, j))
+            if not d:
+                continue
+            qty, pr = _numn(g(b, j)), g(b, j + 1)
+            price = _numn(pr)
+            ships.append({"ship_date": d, "customer": str(g(a, j + 1)).strip(), "qty": qty or 0,
+                          "price": price, "note": "" if price is not None else str(pr).strip()})
+        lot["ships"] = ships
+        lots.append(lot)
+        i += 2
+    return lots
+
+
+def parse_inventory(data: bytes) -> list:
+    lots = []
+    for name in xlsx_sheet_names(data):
+        try:
+            lots += parse_inventory_sheet(name, read_xlsx_values(data, name))
+        except Exception:
+            continue
+    # 원가(원화)가 아직 없는 로트(막 통관된 것 등): 같은 품목의 가장 최근 원가를 참고값으로
+    latest = {}
+    for l in sorted(lots, key=lambda l: l["customs_date"]):
+        if l["cost_krw"] and not l["cost_est"]:
+            latest[l["item"].lower()] = l["cost_krw"]
+    for l in lots:
+        if not l["cost_krw"] and latest.get(l["item"].lower()):
+            l["cost_krw"], l["cost_est"] = latest[l["item"].lower()], 2
+    return lots
+
+
+INV_COLS = ("sheet", "row_no", "item", "cas", "fema", "kind", "location", "info", "order_note", "lot_no", "bat_no",
+            "packing", "origin", "mfg_date", "expiry", "transport", "customs_date", "import_qty", "cost_fx", "rate",
+            "cost_krw", "cost_est", "stock_qty", "stock_amt")
+
+
+def save_inventory(c, lots: list, filename: str, by: str) -> dict:
+    c.execute("DELETE FROM inv_ships")
+    c.execute("DELETE FROM inv_lots")
+    n_ship = 0
+    for l in lots:
+        cur = c.execute(f"INSERT INTO inv_lots ({', '.join(INV_COLS)}) VALUES ({', '.join('?' * len(INV_COLS))})",
+                        [l.get(k) for k in INV_COLS])
+        c.executemany("INSERT INTO inv_ships (lot_id, ship_date, customer, qty, price, note) VALUES (?, ?, ?, ?, ?, ?)",
+                      [(cur.lastrowid, s["ship_date"], s["customer"], s["qty"], s["price"], s["note"]) for s in l["ships"]])
+        n_ship += len(l["ships"])
+    meta = {"filename": filename, "uploaded_at": now(), "by": by, "lots": len(lots), "ships": n_ship}
+    set_setting(c, "inv_meta", json.dumps(meta, ensure_ascii=False))
+    return meta
+
+
+def inv_meta(c) -> dict:
+    try:
+        return json.loads(get_setting(c, "inv_meta", "{}")) or {}
+    except ValueError:
+        return {}
+
+
+def can_see_cost(c, user: dict) -> bool:
+    return user["role"] == "admin" or get_setting(c, "profit_public", "0") == "1"
+
+
+def upload_user(authorization: str = Header(default=""), x_upload_key: str = Header(default="")) -> dict:
+    """관리자 로그인 또는 사무실 PC 자동 업로드용 키(X-Upload-Key)."""
+    if x_upload_key:
+        with db() as c:
+            key = get_setting(c, "inv_upload_key", "")
+        if key and secrets.compare_digest(key, x_upload_key.strip()):
+            return {"name": "자동 업로드", "role": "auto"}
+        raise HTTPException(403, "업로드 키가 맞지 않습니다.")
+    return admin_user(current_user(authorization))
+
+
+@app.post("/api/inventory/upload")
+async def inventory_upload(file: UploadFile = File(...), dry_run: bool = False, user: dict = Depends(upload_user),
+                           x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "xlsx 엑셀 파일만 올릴 수 있습니다.")
+    try:
+        lots = parse_inventory(data)
+    except Exception as e:
+        raise HTTPException(400, f"엑셀을 읽지 못했습니다: {e}")
+    if not lots:
+        raise HTTPException(400, "재고 시트(품목·출고일 머리글)를 찾지 못했습니다.")
+    if dry_run:
+        return {"lots": len(lots), "ships": sum(len(l["ships"]) for l in lots), "sheets": sorted({l["sheet"] for l in lots})}
+    with db() as c:
+        return save_inventory(c, lots, filename, user["name"])
+
+
+@app.get("/api/inventory/settings")
+def inventory_settings(_: dict = Depends(admin_user)):
+    with db() as c:
+        return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1"}
+
+
+@app.put("/api/inventory/settings")
+def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        if body.get("new_key"):
+            set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
+        if "profit_public" in body:
+            set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
+        return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1"}
+
+
+@app.get("/api/inventory")
+def inventory_list(user: dict = Depends(current_user)):
+    """로트 목록(품목별로 화면에서 묶음). 원가는 볼 수 있는 사람에게만."""
+    with db() as c:
+        cost = can_see_cost(c, user)
+        lots = [dict(r) for r in c.execute("SELECT * FROM inv_lots ORDER BY item COLLATE NOCASE, customs_date")]
+        last = {r[0]: (r[1], r[2]) for r in c.execute(
+            "SELECT lot_id, MAX(ship_date), COUNT(*) FROM inv_ships GROUP BY lot_id")}
+        meta = inv_meta(c)
+    for l in lots:
+        l["last_ship"], l["ship_count"] = last.get(l["id"], ("", 0))
+        if not cost:
+            for k in ("cost_fx", "rate", "cost_krw", "cost_est", "stock_amt"):
+                l.pop(k, None)
+    return {"lots": lots, "meta": meta, "can_cost": cost, "today": datetime.now().strftime("%Y-%m-%d")}
+
+
+@app.get("/api/inventory/lot/{lid}")
+def inventory_lot(lid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        lot = c.execute("SELECT * FROM inv_lots WHERE id = ?", (lid,)).fetchone()
+        if not lot:
+            raise HTTPException(404, "로트를 찾을 수 없습니다.")
+        cost = can_see_cost(c, user)
+        ships = [dict(r) for r in c.execute("SELECT ship_date, customer, qty, price, note FROM inv_ships"
+                                            " WHERE lot_id = ? ORDER BY ship_date DESC", (lid,))]
+    lot = dict(lot)
+    if not cost:
+        for k in ("cost_fx", "rate", "cost_krw", "cost_est", "stock_amt"):
+            lot.pop(k, None)
+        for s in ships:
+            s.pop("price", None)
+    return {"lot": lot, "ships": ships, "can_cost": cost}
+
+
+def inv_customer_fn(c):
+    """재고 엑셀의 거래처 이름 → 거래명세서에서 쓰는 이름으로 맞춤.
+    '한불화농 (반품)' → 한불화농, '서울향료1공장' / '서울향료㈜ 2공장' → 거래명세서의 같은 회사 이름."""
+    canon = canon_fn(c)
+    known = {}
+    for n, cnt in c.execute("SELECT customer_name, COUNT(*) FROM quotes WHERE doc_type = 'statement'"
+                            " GROUP BY 1 ORDER BY 2"):
+        known[_company_key(n)] = n      # 가장 많이 쓴 이름이 마지막에 남음
+    seen = {}
+
+    def fn(name: str) -> str:
+        n = re.sub(r"\(?\s*(반품|교환|반품교환)\s*\)?\s*$", "", str(name or "")).strip()
+        key = _company_key(n)
+        if not key:
+            return n
+        return canon(known.get(key) or seen.setdefault(key, n))
+    return fn
+
+
+@app.get("/api/inventory/profit")
+def inventory_profit(year: int = 0, low: float = 10, user: dict = Depends(current_user)):
+    """재고 엑셀의 출고 기록 기준 이익 = (납품가 − 원가(원화)) × 출고량."""
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        is_ex, canon = exclude_matcher(c), inv_customer_fn(c)
+        rows = c.execute("SELECT s.ship_date, s.customer, s.qty, s.price, s.note, l.item, l.cost_krw, l.cost_est,"
+                         " l.lot_no, l.id AS lot_id FROM inv_ships s JOIN inv_lots l ON l.id = s.lot_id").fetchall()
+        meta = inv_meta(c)
+    years = sorted({int(r["ship_date"][:4]) for r in rows})
+    if not years:
+        return {"years": [], "year": None, "meta": meta}
+    year = year if year in years else years[-1]
+    monthly = {y: {"rev": [0] * 12, "cost": [0] * 12, "profit": [0] * 12} for y in (year, year - 1)}
+    yearly = {}
+    cust, items, low_rows = {}, {}, []
+    stats = {"priced": 0, "free": 0, "free_cost": 0, "unpriced": 0, "nocost": 0, "excluded": 0, "estimated": 0}
+    for r in rows:
+        y, m = int(r["ship_date"][:4]), int(r["ship_date"][5:7])
+        name = canon(r["customer"]) or "(거래처 없음)"
+        in_year = y == year
+        if is_ex(name):
+            stats["excluded"] += in_year
+            continue
+        qty, price, unit = r["qty"] or 0, r["price"], r["cost_krw"]
+        if price is None:
+            stats["unpriced"] += in_year
+            continue
+        if not unit:
+            stats["nocost"] += in_year
+            continue
+        cost = qty * unit
+        if price == 0:      # 무상(샘플 등)
+            stats["free"] += in_year
+            stats["free_cost"] += cost if in_year else 0
+            continue
+        rev = qty * price
+        profit = rev - cost
+        yy = yearly.setdefault(y, {"rev": 0, "cost": 0, "profit": 0})
+        yy["rev"] += rev
+        yy["cost"] += cost
+        yy["profit"] += profit
+        if y in monthly:
+            mm = monthly[y]
+            mm["rev"][m - 1] += rev
+            mm["cost"][m - 1] += cost
+            mm["profit"][m - 1] += profit
+        if not in_year:
+            continue
+        stats["priced"] += 1
+        stats["estimated"] += 1 if r["cost_est"] else 0
+        for key, bucket in ((name, cust), (r["item"], items)):
+            e = bucket.setdefault(key, {"name": key, "rev": 0, "cost": 0, "profit": 0, "qty": 0, "count": 0})
+            e["rev"] += rev
+            e["cost"] += cost
+            e["profit"] += profit
+            e["qty"] += qty
+            e["count"] += 1
+        margin = profit / rev * 100 if rev else 0
+        if qty > 0 and margin < low:
+            low_rows.append({"date": r["ship_date"], "customer": name, "item": r["item"], "lot_no": r["lot_no"],
+                             "lot_id": r["lot_id"], "qty": qty, "price": price, "unit_cost": unit,
+                             "profit": profit, "margin": margin, "est": r["cost_est"]})
+    low_rows.sort(key=lambda x: (x["margin"], x["profit"]))
+    by_profit = lambda d: sorted(d.values(), key=lambda e: -e["profit"])
+    return {"years": years, "year": year, "monthly": monthly, "yearly": yearly, "customers": by_profit(cust),
+            "items": by_profit(items), "low": low_rows[:200], "low_threshold": low, "stats": stats, "meta": meta}
 
 
 # ---------------------------------------------------------------- 입고 예정

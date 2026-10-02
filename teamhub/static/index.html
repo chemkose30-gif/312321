@@ -252,6 +252,8 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="statements">📄 거래명세서</button>
       <button data-view="shipments">🚢 입고예정</button>
       <button data-view="analytics">📊 매출분석</button>
+      <button data-view="inventory">📦 재고</button>
+      <button data-view="profit" class="profit-only">💰 이익분석</button>
       <button data-view="users" class="admin-only">👥 직원관리</button>
     </nav>
     <div class="hdr-right">
@@ -381,6 +383,7 @@ async function boot() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#userBtn').textContent = `${state.me.name} ▾`;
   $$('.admin-only').forEach(el => el.classList.toggle('hidden', state.me.role !== 'admin'));
+  $$('.profit-only').forEach(el => el.classList.toggle('hidden', !state.me.can_profit));
   go(state.view);
   refreshNotifs();
 }
@@ -389,9 +392,10 @@ async function boot() {
 $$('#nav button').forEach(b => b.onclick = () => go(b.dataset.view));
 function go(view) {
   if (view === 'users' && state.me.role !== 'admin') view = 'dashboard';
+  if (view === 'profit' && !state.me.can_profit) view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, analytics: renderAnalytics, users: renderUsers})[view]();
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, analytics: renderAnalytics, inventory: renderInventory, profit: renderProfit, users: renderUsers})[view]();
 }
 
 $('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
@@ -1489,6 +1493,253 @@ async function openShipment(id, day) {
   });
 }
 
+// ===================================================== 재고 (나스 재고 엑셀)
+const kg = n => n == null ? '-' : Number(n).toLocaleString('ko-KR', {maximumFractionDigits: 2});
+function expTag(d, today) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d || '')) return d ? `<small class="muted">${esc(d)}</small>` : '';
+  const days = Math.round((new Date(d) - new Date(today)) / 864e5);
+  if (days < 0) return `<span class="dday late">기한 지남 ${esc(d)}</span>`;
+  if (days <= 180) return `<span class="dday" style="background:#fef3c7;color:#b45309">${days}일 남음 ${esc(d)}</span>`;
+  return `<small class="muted">${esc(d)}</small>`;
+}
+const isDead = l => /폐기|불용/.test(l.kind + ' ' + l.location);
+
+function invMetaLine(meta) {
+  if (!meta || !meta.filename) return '<span class="muted">아직 올린 재고 엑셀이 없습니다.</span>';
+  return `<span class="muted" style="font-size:12px">기준 파일 <b>${esc(meta.filename)}</b> · ${esc((meta.uploaded_at || '').slice(0, 16))} · ${esc(meta.by || '')}</span>`;
+}
+
+function openInvUpload(after) {
+  openModal(`<h2>📦 재고 엑셀 올리기</h2>
+    <div class="muted" style="font-size:13px">나스 <b>창고관리</b> 폴더의 재고 엑셀(xlsx)을 올리면 재고·원가·출고 기록을 새로 읽습니다. 올릴 때마다 전체가 이 파일 내용으로 바뀝니다.</div>
+    <label>엑셀 파일</label><input type="file" id="invFile" accept=".xlsx,.xlsm">
+    <div id="invPrev" class="muted" style="margin-top:8px"></div><div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="invGo" disabled>올리기</button></div>`, (bg, close) => {
+    const send = async dry => {
+      const fd = new FormData(); fd.append('file', $('#invFile', bg).files[0]);
+      const res = await fetch(`/api/inventory/upload?dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '업로드 실패');
+      return data;
+    };
+    $('#invFile', bg).onchange = async () => {
+      $('.err', bg).textContent = ''; $('#invGo', bg).disabled = true; $('#invPrev', bg).textContent = '읽는 중…';
+      try {
+        const r = await send(true);
+        $('#invPrev', bg).innerHTML = `시트 <b>${r.sheets.map(esc).join(', ')}</b> · 로트 <b>${r.lots}</b>개 · 출고 기록 <b>${r.ships}</b>건을 찾았습니다.`;
+        $('#invGo', bg).disabled = false;
+      } catch (err) { $('#invPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+    };
+    $('#invGo', bg).onclick = async () => {
+      try { const r = await send(false); close(); toast(`로트 ${r.lots}개, 출고 ${r.ships}건을 반영했습니다.`); after && after(); }
+      catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
+async function openInvSettings() {
+  const s = await api('/api/inventory/settings');
+  const host = location.origin;
+  const script = key => `# TeamHub 재고 자동 업로드: 창고관리 폴더에서 가장 최근에 수정한 재고 엑셀을 올립니다
+$dir = "Z:\\VOL1\\공유문서\\창고관리"
+$key = "${key || '(위에서 키 만들기)'}"
+$files = Get-ChildItem -Path "$dir\\*" -File -Include *.xlsx,*.xlsm | Where-Object { $_.Name -notlike '~$*' } |
+         Sort-Object LastWriteTime -Descending | Select-Object -First 5
+$tmp = Join-Path $env:TEMP "teamhub_inv.xlsx"   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
+foreach ($f in $files) {   # 재고 시트가 없는 파일이면 다음 파일로
+  Copy-Item -LiteralPath $f.FullName $tmp -Force
+  curl.exe -s -f -X POST -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" "${host}/api/inventory/upload"
+  if ($LASTEXITCODE -eq 0) { break }
+}`;
+  openModal(`<h2>⚙ 재고 자동 업로드 · 공개 범위</h2>
+    <label>💰 이익분석·원가를 볼 수 있는 사람</label>
+    <select id="pfPub"><option value="0">관리자만</option><option value="1" ${s.profit_public ? 'selected' : ''}>전 직원</option></select>
+    <label>자동 업로드 키</label>
+    <div class="row" style="flex-wrap:nowrap"><input id="upKey" readonly value="${esc(s.upload_key || '')}" placeholder="아직 없음"><button class="btn" id="newKey">${s.upload_key ? '새로 만들기' : '키 만들기'}</button></div>
+    <div class="muted" style="font-size:12px;margin-top:4px">키를 새로 만들면 예전 키는 더 이상 쓸 수 없습니다. 키는 사무실 PC 스크립트에만 넣으세요.</div>
+    <h3 style="margin:16px 0 4px;font-size:15px">사무실 PC에서 매일 자동으로 올리기</h3>
+    <ol style="font-size:13px;padding-left:18px;line-height:1.7">
+      <li>나스(Z: 드라이브)가 연결된 사무실 PC에서 이 화면을 열고 아래 <b>스크립트 파일 받기</b> → 받은 <code>teamhub_inventory.ps1</code> 을 <code>C:\\TeamHub</code> 폴더(새로 만들기)로 옮기기</li>
+      <li><b>작업 스케줄러</b> → 기본 작업 만들기 → 이름 "TeamHub 재고" → 매일, 원하는 시각(예: 오후 6시. 하루 두 번이면 작업 속성 → 트리거에서 하나 더 추가)</li>
+      <li>동작: 프로그램 시작 → 프로그램 <code>powershell.exe</code>, 인수 <code>-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\\TeamHub\\teamhub_inventory.ps1"</code></li>
+      <li>Z: 드라이브는 로그인한 상태에서만 보이므로 작업 속성의 "사용자가 로그온할 때만 실행"(기본값)을 그대로 두세요. PC가 꺼져 있던 날은 작업 속성 → 설정 → "예약된 시작 시간을 놓친 경우 가능한 대로 빨리 작업 시작"을 켜 두면 다음에 켤 때 올라갑니다.</li>
+      <li>만든 작업을 오른쪽 클릭 → <b>실행</b>으로 한 번 시험. 이 화면 위쪽 "기준 파일" 시각이 바뀌면 성공입니다.</li>
+    </ol>
+    <textarea id="psScript" readonly style="font-family:monospace;font-size:12px;min-height:110px">${esc(script(s.upload_key))}</textarea>
+    <div class="actions"><button class="btn primary" id="dlScript">스크립트 파일 받기</button><button class="btn" id="cpScript">복사</button><span class="spacer"></span><button class="btn" data-close>닫기</button></div>`, (bg) => {
+    const save = async body => {
+      const r = await api('/api/inventory/settings', {method: 'PUT', body});
+      $('#upKey', bg).value = r.upload_key; $('#psScript', bg).value = script(r.upload_key);
+      return r;
+    };
+    $('#pfPub', bg).onchange = async e => { const r = await save({profit_public: e.target.value === '1'}); toast(r.profit_public ? '전 직원이 이익분석을 볼 수 있습니다.' : '관리자만 볼 수 있습니다.'); };
+    $('#newKey', bg).onclick = async () => {
+      if ($('#upKey', bg).value && !confirm('키를 새로 만들면 사무실 PC 스크립트의 키도 바꿔야 합니다. 계속할까요?')) return;
+      await save({new_key: true}); toast('키를 만들었습니다. 스크립트를 복사해 PC에 저장하세요.');
+    };
+    $('#dlScript', bg).onclick = () => {   // 한글 경로 때문에 BOM 붙인 UTF-8 (윈도우 PowerShell 5 가 한글을 바르게 읽음)
+      if (!$('#upKey', bg).value) { toast('먼저 키를 만드세요.'); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(['\ufeff' + $('#psScript', bg).value.replace(/\n/g, '\r\n')], {type: 'text/plain'}));
+      a.download = 'teamhub_inventory.ps1'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    $('#cpScript', bg).onclick = () => { navigator.clipboard.writeText($('#psScript', bg).value).then(() => toast('복사했습니다.'), () => { $('#psScript', bg).select(); }); };
+  });
+}
+
+async function renderInventory() {
+  const iv = state.inv ||= {tab: 'stock', q: ''};
+  const d = await api('/api/inventory');
+  const today = d.today, soon = l => l.expiry && /^\d{4}/.test(l.expiry) && (new Date(l.expiry) - new Date(today)) / 864e5 <= 180;
+  const admin = state.me.role === 'admin';
+  const tools = admin ? `<button class="btn" id="invSet">⚙ 자동 업로드</button><button class="btn primary" id="invUp">엑셀 올리기</button>` : '';
+  if (!d.lots.length) {
+    $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">📦 재고</h3><span class="spacer"></span>${tools}</div>
+      <div class="empty">${admin ? '나스 창고관리 폴더의 재고 엑셀을 올려 주세요. ⚙ 자동 업로드를 설정하면 매일 자동으로 들어옵니다.' : '아직 재고 엑셀이 올라오지 않았습니다.'}</div></div>`;
+    if (admin) { $('#invUp').onclick = () => openInvUpload(renderInventory); $('#invSet').onclick = openInvSettings; }
+    return;
+  }
+  const has = l => (l.stock_qty || 0) > 0.001;
+  const filt = {stock: l => has(l) && !isDead(l), soon: l => has(l) && soon(l), dead: l => has(l) && isDead(l), all: () => true}[iv.tab];
+  const ql = iv.q.toLowerCase();
+  const match = l => !ql || [l.item, l.cas, l.lot_no, l.origin, l.location, l.bat_no].some(v => (v || '').toLowerCase().includes(ql));
+  const groups = {};
+  d.lots.filter(l => filt(l) && match(l)).forEach(l => (groups[l.item] ||= []).push(l));
+  const rows = Object.entries(groups).map(([item, lots]) => {
+    const stockLots = lots.filter(has);
+    const exps = stockLots.map(l => l.expiry).filter(e => /^\d{4}-/.test(e || '')).sort();
+    return {item, lots, qty: sum(stockLots.map(l => l.stock_qty || 0)), amt: sum(stockLots.map(l => l.stock_amt || 0)),
+            exp: exps[0] || '', last: lots.map(l => l.last_ship || '').sort().pop() || '',
+            loc: [...new Set(stockLots.map(l => l.location).filter(Boolean))].join(', ')};
+  }).sort((a, b) => a.item.localeCompare(b.item));
+  const live = d.lots.filter(l => has(l) && !isDead(l));
+  const cnt = {stock: live.length, soon: d.lots.filter(l => has(l) && soon(l)).length, dead: d.lots.filter(l => has(l) && isDead(l)).length, all: d.lots.length};
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:4px"><h3 style="margin:0">📦 재고</h3><span class="spacer"></span>${tools}</div>
+    <div style="margin-bottom:10px">${invMetaLine(d.meta)}</div>
+    <div class="stats stats4">
+      <div class="stat" style="cursor:default"><span class="muted">재고 있는 품목</span><b>${new Set(live.map(l => l.item)).size}개</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">재고 로트</span><b>${live.length}개</b></div>
+      ${d.can_cost ? `<div class="stat" style="cursor:default"><span class="muted">재고금액 (원가)</span><b>${krw(sum(live.map(l => l.stock_amt || 0)))}원</b></div>` : ''}
+      <div class="stat" data-goto="soon"><span class="muted">소비기한 6개월 이내</span><b style="color:#b45309">${cnt.soon}개</b></div>
+    </div>
+    <div class="tabs"><button data-t="stock">재고 있음 (${cnt.stock})</button><button data-t="soon">소비기한 임박 (${cnt.soon})</button><button data-t="dead">불용·폐기 (${cnt.dead})</button><button data-t="all">전체 로트 (${cnt.all})</button></div>
+    <div class="row" style="margin-bottom:10px"><input id="invQ" placeholder="품목 / CAS / 재고번호 / Origin / 위치" value="${esc(iv.q)}" style="max-width:300px"><span class="muted">${rows.length}품목</span></div>
+    ${rows.length ? `<div class="mlist">${rows.map(r => `<div class="mrow" data-item="${esc(r.item)}">
+        <div class="l1"><b>${esc(r.item)}</b><span class="amt">${kg(r.qty)} kg</span></div>
+        <div class="l2"><span>로트 ${r.lots.length}</span>${r.loc ? `<span>${esc(r.loc)}</span>` : ''}${d.can_cost && r.amt ? `<span>${krw(r.amt)}원</span>` : ''}${r.exp ? expTag(r.exp, today) : ''}</div></div>`).join('')}</div>
+      <div class="qscroll dtable"><table><thead><tr><th>품목</th><th style="text-align:right">재고량(kg)</th>${d.can_cost ? '<th style="text-align:right">재고금액</th>' : ''}<th style="white-space:nowrap">로트</th><th>위치</th><th style="white-space:nowrap">가장 빠른 소비기한</th><th style="white-space:nowrap">최근 출고</th></tr></thead><tbody>
+      ${rows.map(r => `<tr data-item="${esc(r.item)}"><td class="title">${esc(r.item)}</td><td class="money">${kg(r.qty)}</td>${d.can_cost ? `<td class="money">${r.amt ? won(r.amt) : '-'}</td>` : ''}
+        <td>${r.lots.length}</td><td><small>${esc(r.loc)}</small></td><td style="white-space:nowrap">${expTag(r.exp, today)}</td><td style="white-space:nowrap"><small>${esc(r.last)}</small></td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="empty">해당하는 재고가 없습니다.</div>'}
+  </div>`;
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.t === iv.tab); b.onclick = () => { iv.tab = b.dataset.t; renderInventory(); }; });
+  $$('[data-goto]').forEach(b => b.onclick = () => { iv.tab = b.dataset.goto; renderInventory(); });
+  if (admin) { $('#invUp').onclick = () => openInvUpload(renderInventory); $('#invSet').onclick = openInvSettings; }
+  let timer;
+  $('#invQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { iv.q = e.target.value; renderInventory().then(() => { const i = $('#invQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $$('[data-item]').forEach(el => el.onclick = () => openInvItem(groups[el.dataset.item], d.can_cost, today));
+}
+
+function openInvItem(lots, canCost, today) {
+  const l0 = lots[0];
+  openModal(`<h2>${esc(l0.item)}</h2>
+    <div class="muted">${[l0.cas && 'CAS ' + l0.cas, l0.fema && 'FEMA ' + l0.fema].filter(Boolean).map(esc).join(' · ')}</div>
+    ${lots.map(l => `<div class="ec-box">
+      <div class="row"><b>${esc(l.lot_no || '(재고번호 없음)')}</b>${l.kind ? `<span class="tag p-low">${esc(l.kind)}</span>` : ''}<span class="spacer"></span><b>${kg(l.stock_qty)} kg</b></div>
+      <div class="muted" style="font-size:12px;line-height:1.7">
+        ${[l.location && '위치 ' + l.location, l.info, l.origin && 'Origin ' + l.origin, l.packing && 'Packing ' + l.packing, l.bat_no && 'Bat ' + l.bat_no,
+           l.customs_date && '통관 ' + l.customs_date, l.import_qty != null && '수입 ' + kg(l.import_qty) + 'kg', l.transport].filter(Boolean).map(esc).join(' · ')}
+        <br>소비기한 ${expTag(l.expiry, today) || '-'}
+        ${canCost ? `<br>원가 <b>${l.cost_krw ? won(l.cost_krw) + '원/kg' : '-'}</b>${l.cost_est === 1 ? ' (외화×환율로 계산)' : l.cost_est === 2 ? ' <span class="tag p-high">원가 없음 → 같은 품목 최근 원가 참고</span>' : ''}${l.cost_fx ? ` · 외화 ${l.cost_fx}${l.rate ? ' × ' + l.rate : ''}` : ''}${l.stock_amt ? ` · 재고금액 ${won(l.stock_amt)}원` : ''}` : ''}
+        ${l.order_note ? `<br>발주: ${esc(l.order_note)}` : ''}
+      </div>
+      ${l.ship_count ? `<a href="#" data-lot="${l.id}" style="font-size:13px">출고 기록 ${l.ship_count}건 보기</a><div class="lot-ships"></div>` : '<div class="muted" style="font-size:12px">출고 기록 없음</div>'}
+    </div>`).join('')}
+    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, bg => {
+    bg.firstElementChild.classList.add('wide');
+    $$('[data-lot]', bg).forEach(a => a.onclick = async e => {
+      e.preventDefault();
+      const box = a.nextElementSibling;
+      if (box.innerHTML) { box.innerHTML = ''; return; }
+      const r = await api(`/api/inventory/lot/${a.dataset.lot}`);
+      const u = r.lot.cost_krw;
+      box.innerHTML = `<div class="qscroll"><table class="an-table" style="margin-top:6px"><thead><tr><th>출고일</th><th>거래처</th><th class="num">출고량</th>${r.can_cost ? '<th class="num">납품가</th><th class="num">이익</th><th class="num">이익률</th>' : ''}</tr></thead><tbody>
+        ${r.ships.map(s => { const p = s.price, pr = r.can_cost && p && u ? (p - u) * s.qty : null;
+          return `<tr><td>${esc(s.ship_date)}</td><td>${esc(s.customer)}</td><td class="num">${kg(s.qty)}</td>${r.can_cost ? `<td class="num">${p != null ? won(p) : `<span class="muted">${esc(s.note) || '-'}</span>`}</td>
+            <td class="num ${pr < 0 ? 'down' : ''}">${pr == null ? '-' : won(pr)}</td><td class="num">${pr == null ? '-' : ((p - u) / p * 100).toFixed(1) + '%'}</td>` : ''}</tr>`; }).join('')}
+      </tbody></table></div>`;
+    });
+  });
+}
+
+// ===================================================== 💰 이익 분석 (재고 엑셀 출고 기록 × 원가)
+async function renderProfit() {
+  const pf = state.pf ||= {year: 0, tab: 'cust', low: 10, q: ''};
+  const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}`), excludeNote()]);
+  const admin = state.me.role === 'admin';
+  if (!d.years.length) {
+    $('#main').innerHTML = `<div class="card"><h3>💰 이익분석</h3><div class="empty">재고 엑셀의 출고 기록이 없습니다. 📦 재고에서 엑셀을 올려 주세요.</div></div>`;
+    return;
+  }
+  const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
+  const now = new Date();
+  const cm = d.monthly[Y], pm = d.monthly[P];
+  const lastM = cm.rev.reduce((acc, v, i) => v ? i + 1 : acc, 0);
+  const upto = Y === now.getFullYear() ? now.getMonth() + 1 : (lastM || 12);
+  const ytd = k => sum(cm[k].slice(0, upto)), pytd = k => sum(pm[k].slice(0, upto));
+  const rate = (p, r) => r ? (p / r * 100).toFixed(1) + '%' : '-';
+  const st = d.stats;
+  const ql = pf.q.toLowerCase();
+  const list = (pf.tab === 'cust' ? d.customers : d.items).filter(e => !ql || e.name.toLowerCase().includes(ql));
+  const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item).toLowerCase().includes(ql));
+  $('#main').innerHTML = `<div class="card viz">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>
+      <select id="pfYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
+      <input id="pfQ" placeholder="거래처 / 품목 검색" value="${esc(pf.q)}" style="max-width:180px">${admin ? '<button class="btn" id="pfSet">⚙</button>' : ''}</div>
+    <div style="margin-bottom:6px">${invMetaLine(d.meta)}</div>
+    ${exNote}
+    <div class="stats stats4">
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : ''} 매출 (납품가×출고량)</span><b>${krw(ytd('rev'))}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">원가</span><b>${krw(ytd('cost'))}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">이익 · 전년 같은 기간 ${krw(pytd('profit'))}원</span><b>${krw(ytd('profit'))}원</b><small>${deltaHtml(ytd('profit'), pytd('profit'))}</small></div>
+      <div class="stat" style="cursor:default"><span class="muted">이익률 · 전년 ${rate(pytd('profit'), pytd('rev'))}</span><b>${rate(ytd('profit'), ytd('rev'))}</b></div>
+    </div>
+    <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b></div>
+    <div id="pfChart"></div>
+    <div class="tabs" style="margin-top:12px"><button data-t="cust">거래처별</button><button data-t="item">품목별</button><button data-t="low">⚠ 마진 낮은 출고 (${d.low.length})</button></div>
+    ${pf.tab === 'low' ? `<div class="row" style="margin-bottom:6px"><span class="muted">이익률</span><select id="pfLow" style="width:auto">${[0, 5, 10, 15, 20, 30].map(v => `<option value="${v}" ${v === pf.low ? 'selected' : ''}>${v}% 미만</option>`).join('')}</select><span class="muted" style="font-size:12px">${Y}년 · 0% 미만은 손해</span></div>
+      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>출고일</th><th>거래처</th><th class="num">출고량</th><th class="num">납품가</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
+      ${lows.map(e => `<tr><td title="${esc(e.item)}">${esc(e.item)}</td><td>${esc(e.date)}</td><td>${esc(e.customer)}</td><td class="num">${kg(e.qty)}</td><td class="num">${won(e.price)}</td>
+        <td class="num">${won(e.unit_cost)}${e.est === 2 ? '*' : ''}</td><td class="num ${e.profit < 0 ? 'down' : ''}">${won(e.profit)}</td><td class="num ${e.margin < 0 ? 'down' : ''}">${e.margin.toFixed(1)}%</td></tr>`).join('') || '<tr><td colspan="8" class="empty">없습니다.</td></tr>'}
+      </tbody></table></div>`
+    : `<div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>${pf.tab === 'cust' ? '거래처' : '품목'}</th><th class="num">출고</th><th class="num">수량(kg)</th><th class="num">매출</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
+      ${list.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td><td class="num">${man(e.cost)}</td>
+        <td class="num ${e.profit < 0 ? 'down' : ''}"><b>${man(e.profit)}</b></td><td class="num ${e.profit < 0 ? 'down' : ''}">${rate(e.profit, e.rev)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">없습니다.</td></tr>'}
+      </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원 · ${Y}년</div>`}
+    <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.7">
+      계산: (납품가 − 원가(원화)) × 출고량, 재고 엑셀의 출고 기록 기준. ${Y}년 반영 ${st.priced}건.
+      ${st.unpriced ? `<br>· 납품가가 비어 있거나 글자(반품·차용반납 등)인 출고 ${st.unpriced}건은 뺐습니다.` : ''}
+      ${st.free ? `<br>· 납품가 0원 출고 ${st.free}건(원가 ${krw(st.free_cost)}원)은 매출·이익에서 뺐습니다.` : ''}
+      ${st.nocost ? `<br>· 원가를 알 수 없는 출고 ${st.nocost}건은 뺐습니다.` : ''}
+      ${st.estimated ? `<br>· 원가가 아직 없는 로트 ${st.estimated}건은 같은 품목의 최근 원가로 계산했습니다(*).` : ''}
+      <br>· 엑셀에서 지운 예전 로트의 출고는 들어가지 않으므로 오래된 연도는 실제보다 작게 나올 수 있습니다. 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
+    </div>
+  </div>`;
+  const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
+  $('#pfChart').dataset.cum = '1';
+  lineChart($('#pfChart'), months, [
+    {name: `${Y}년`, color: 'var(--series-1)', values: cum(cm.profit, upto), monthly: cm.profit},
+    {name: `${P}년`, color: 'var(--series-2)', values: cum(pm.profit, 12), monthly: pm.profit}]);
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.t === pf.tab); b.onclick = () => { pf.tab = b.dataset.t; renderProfit(); }; });
+  $('#pfYear').onchange = e => { pf.year = +e.target.value; renderProfit(); };
+  if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
+  if ($('#pfSet')) $('#pfSet').onclick = openInvSettings;
+  let timer;
+  $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  bindExcludeEdit();
+}
+
 // ===================================================== 매출(납품) 분석
 const krw = v => {  // 축/요약용 짧은 금액
   const a = Math.abs(v);
@@ -1685,7 +1936,7 @@ async function openAliases() {
     bg.firstElementChild.classList.add('wide');
     const save = async () => {
       await api('/api/analytics/aliases', {method: 'PUT', body: {map}});
-      close(); toast('저장했습니다.'); renderAnalytics();
+      close(); toast('저장했습니다.'); go(state.view);
     };
     $$('[data-un]', bg).forEach(b => b.onclick = async () => {
       Object.keys(map).forEach(k => { if (map[k] === b.dataset.un) delete map[k]; });
@@ -1712,7 +1963,7 @@ function bindExcludeEdit() {
     const v = prompt('매출분석에서 뺄 거래처 (쉼표로 구분, 이름 일부만 써도 됩니다)', cur);
     if (v === null) return;
     await api('/api/analytics/exclude', {method: 'PUT', body: {value: v}});
-    toast('저장했습니다.'); renderAnalytics();
+    toast('저장했습니다.'); go(state.view);
   };
 }
 
