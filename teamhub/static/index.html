@@ -1541,10 +1541,21 @@ function openInvUpload(after) {
 async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
-  const script = key => `# TeamHub 재고 자동 업로드: 창고관리 폴더에서 파일 이름의 날짜가 가장 최근인 재고 엑셀을 올립니다
+  // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
+  const script = (key, time) => `param([switch]$Install)
+# TeamHub 재고 자동 업로드: 창고관리 폴더에서 파일 이름의 날짜가 가장 최근인 재고 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일을 올림. 날짜가 없으면 수정한 시각 기준)
 $dir = "Z:\\VOL1\\공유문서\\창고관리"
-$key = "${key || '(위에서 키 만들기)'}"
+$key = "${key || '(키 만들기 필요)'}"
+$url = "${host}/api/inventory/upload"
+$log = "C:\\TeamHub\\log.txt"
+function Say($msg) { Write-Host $msg; Add-Content -LiteralPath $log -Value ("{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $msg) -Encoding UTF8 }
+if ($Install) {
+  schtasks.exe /Create /F /TN "TeamHub Inventory" /SC DAILY /ST ${time || '18:00'} /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\TeamHub\\teamhub_inventory.ps1" | Out-Null
+  if ($LASTEXITCODE -eq 0) { Say "작업 스케줄러 등록 완료: 매일 ${time || '18:00'}" } else { Say "작업 스케줄러 등록 실패" }
+  try { $t = Get-ScheduledTask -TaskName "TeamHub Inventory"; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t | Out-Null } catch {}
+}
+if (-not (Test-Path -LiteralPath $dir)) { Say "폴더를 찾을 수 없습니다: $dir  (이 PC에 Z: 드라이브가 연결되어 있는지 확인)"; exit 1 }
 function Get-FileDate($name) {
   if ($name -match '(20\\d{2})[.\\-_ ]?(\\d{1,2})[.\\-_ ]?(\\d{1,2})(?!\\d)') { return '{0}{1:D2}{2:D2}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3] }
   if ($name -match '(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)') { return '20{0}{1}{2}' -f $Matches[1], $Matches[2], $Matches[3] }
@@ -1555,45 +1566,68 @@ $files = Get-ChildItem -LiteralPath $dir -File -Recurse -Depth 2 -ErrorAction Si
          Where-Object { $_.Extension -in '.xlsx', '.xlsm' -and $_.Name -notlike '~$*' } |
          Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
          Select-Object -First 5
+if (-not $files) { Say "엑셀 파일을 찾지 못했습니다: $dir"; exit 1 }
 $tmp = Join-Path $env:TEMP "teamhub_inv.xlsx"   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
 foreach ($f in $files) {   # 재고 시트가 없는 파일이면 다음 파일로
   Copy-Item -LiteralPath $f.FullName $tmp -Force
-  curl.exe -s -f -X POST -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" "${host}/api/inventory/upload"
-  if ($LASTEXITCODE -eq 0) { break }
-}`;
-  openModal(`<h2>⚙ 재고 자동 업로드 · 공개 범위</h2>
+  $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" $url
+  $code = ("$out" -split '\\|')[-1]
+  if ($code -eq '200') { Say "올림 성공: $($f.Name)"; exit 0 }
+  Say "실패($code): $($f.Name)  $out"
+}
+exit 1`;
+  // 더블클릭 설치 파일(.cmd): 아래 PowerShell 부분을 C:\TeamHub 에 저장하고 -Install 로 실행
+  const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
+    `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
+    'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time).replace(/\n/g, '\r\n') + '\r\n';
+  const download = (name, text, bom) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
+    a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  openModal(`<h2>⚙ 재고 자동 업로드</h2>
+    <div class="muted" style="font-size:13px">나스(Z: 드라이브)가 연결된 <b>사무실 PC</b>에서 이 화면을 열고 아래 순서대로 하세요.</div>
+    <div class="ec-box">
+      <b>① 키 만들기</b>
+      <div class="row" style="flex-wrap:nowrap;margin-top:6px"><input id="upKey" readonly value="${esc(s.upload_key || '')}" placeholder="아직 없음"><button class="btn" id="newKey">${s.upload_key ? '새로 만들기' : '키 만들기'}</button></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">${s.upload_key ? '이미 있습니다. 그대로 두고 ②로 가세요. (새로 만들면 예전에 설치한 PC는 다시 설치해야 합니다)' : '버튼을 한 번 누르세요.'}</div>
+    </div>
+    <div class="ec-box">
+      <b>② 설치 파일 받기</b>
+      <div class="row" style="margin-top:6px"><span>매일</span><input type="time" id="upTime" value="18:00" style="width:auto"><span>에 자동으로 올리기</span></div>
+      <button class="btn primary" id="dlInstall" style="margin-top:8px">⬇ 설치 파일 받기 (TeamHub_install.cmd)</button>
+      <div class="muted" style="font-size:12px;margin-top:4px">브라우저가 "위험할 수 있는 파일"이라고 하면 <b>…</b> 또는 <b>^</b> 버튼 → <b>유지</b>를 누르세요.</div>
+    </div>
+    <div class="ec-box">
+      <b>③ 받은 파일 더블클릭</b>
+      <div style="font-size:13px;line-height:1.7;margin-top:4px">다운로드 폴더의 <code>TeamHub_install.cmd</code> 를 더블클릭하세요.<br>
+        파란 창 "Windows의 PC 보호"가 뜨면 <b>추가 정보</b> → <b>실행</b>.<br>
+        검은 창에 <b>"작업 스케줄러 등록 완료"</b>, <b>"올림 성공"</b>이 나오면 끝입니다. 아무 키나 눌러 닫으세요.<br>
+        그 뒤로는 PC가 켜져 있으면 매일 정한 시각에 저절로 올라갑니다. (PC가 꺼져 있던 날은 다음에 켤 때)</div>
+    </div>
+    <details style="margin-top:12px;font-size:13px"><summary class="muted">문제가 있을 때</summary>
+      <div style="line-height:1.7;margin-top:6px">· 기록은 <code>C:\\TeamHub\\log.txt</code> 에 남습니다. "폴더를 찾을 수 없습니다"가 나오면 그 PC에서 Z: 드라이브가 열리는지 확인하세요.<br>
+      · 시각을 바꾸려면 ②에서 시각을 바꿔 다시 받고 다시 실행하면 됩니다.<br>
+      · 지우려면 작업 스케줄러에서 "TeamHub Inventory" 작업을 삭제하세요.</div>
+      <button class="btn sm" id="dlScript" style="margin-top:6px">PowerShell 스크립트만 받기 (.ps1)</button>
+    </details>
     <label>💰 이익분석·원가를 볼 수 있는 사람</label>
     <select id="pfPub"><option value="0">관리자만</option><option value="1" ${s.profit_public ? 'selected' : ''}>전 직원</option></select>
-    <label>자동 업로드 키</label>
-    <div class="row" style="flex-wrap:nowrap"><input id="upKey" readonly value="${esc(s.upload_key || '')}" placeholder="아직 없음"><button class="btn" id="newKey">${s.upload_key ? '새로 만들기' : '키 만들기'}</button></div>
-    <div class="muted" style="font-size:12px;margin-top:4px">키를 새로 만들면 예전 키는 더 이상 쓸 수 없습니다. 키는 사무실 PC 스크립트에만 넣으세요.</div>
-    <h3 style="margin:16px 0 4px;font-size:15px">사무실 PC에서 매일 자동으로 올리기</h3>
-    <ol style="font-size:13px;padding-left:18px;line-height:1.7">
-      <li>나스(Z: 드라이브)가 연결된 사무실 PC에서 이 화면을 열고 아래 <b>스크립트 파일 받기</b> → 받은 <code>teamhub_inventory.ps1</code> 을 <code>C:\\TeamHub</code> 폴더(새로 만들기)로 옮기기</li>
-      <li><b>작업 스케줄러</b> → 기본 작업 만들기 → 이름 "TeamHub 재고" → 매일, 원하는 시각(예: 오후 6시. 하루 두 번이면 작업 속성 → 트리거에서 하나 더 추가)</li>
-      <li>동작: 프로그램 시작 → 프로그램 <code>powershell.exe</code>, 인수 <code>-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\\TeamHub\\teamhub_inventory.ps1"</code></li>
-      <li>Z: 드라이브는 로그인한 상태에서만 보이므로 작업 속성의 "사용자가 로그온할 때만 실행"(기본값)을 그대로 두세요. PC가 꺼져 있던 날은 작업 속성 → 설정 → "예약된 시작 시간을 놓친 경우 가능한 대로 빨리 작업 시작"을 켜 두면 다음에 켤 때 올라갑니다.</li>
-      <li>만든 작업을 오른쪽 클릭 → <b>실행</b>으로 한 번 시험. 이 화면 위쪽 "기준 파일" 시각이 바뀌면 성공입니다.</li>
-    </ol>
-    <textarea id="psScript" readonly style="font-family:monospace;font-size:12px;min-height:110px">${esc(script(s.upload_key))}</textarea>
-    <div class="actions"><button class="btn primary" id="dlScript">스크립트 파일 받기</button><button class="btn" id="cpScript">복사</button><span class="spacer"></span><button class="btn" data-close>닫기</button></div>`, (bg) => {
+    <div class="actions"><span class="spacer"></span><button class="btn" data-close>닫기</button></div>`, (bg) => {
     const save = async body => {
       const r = await api('/api/inventory/settings', {method: 'PUT', body});
-      $('#upKey', bg).value = r.upload_key; $('#psScript', bg).value = script(r.upload_key);
+      $('#upKey', bg).value = r.upload_key;
       return r;
     };
     $('#pfPub', bg).onchange = async e => { const r = await save({profit_public: e.target.value === '1'}); toast(r.profit_public ? '전 직원이 이익분석을 볼 수 있습니다.' : '관리자만 볼 수 있습니다.'); };
     $('#newKey', bg).onclick = async () => {
-      if ($('#upKey', bg).value && !confirm('키를 새로 만들면 사무실 PC 스크립트의 키도 바꿔야 합니다. 계속할까요?')) return;
-      await save({new_key: true}); toast('키를 만들었습니다. 스크립트를 복사해 PC에 저장하세요.');
+      if ($('#upKey', bg).value && !confirm('키를 새로 만들면 이미 설치한 PC는 설치 파일을 다시 받아 실행해야 합니다. 계속할까요?')) return;
+      await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 설치 파일을 받으세요.');
     };
-    $('#dlScript', bg).onclick = () => {   // 한글 경로 때문에 BOM 붙인 UTF-8 (윈도우 PowerShell 5 가 한글을 바르게 읽음)
-      if (!$('#upKey', bg).value) { toast('먼저 키를 만드세요.'); return; }
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob(['\ufeff' + $('#psScript', bg).value.replace(/\n/g, '\r\n')], {type: 'text/plain'}));
-      a.download = 'teamhub_inventory.ps1'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    };
-    $('#cpScript', bg).onclick = () => { navigator.clipboard.writeText($('#psScript', bg).value).then(() => toast('복사했습니다.'), () => { $('#psScript', bg).select(); }); };
+    const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
+    $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
