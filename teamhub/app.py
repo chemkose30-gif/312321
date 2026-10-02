@@ -17,12 +17,14 @@ import html
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 import ecount
 import mailer
+import ai_mail
+import mailin
 import webpush
 
 BASE_DIR = Path(__file__).parent
@@ -256,6 +258,20 @@ def init_db():
                 src_row INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger(year, date);
+            CREATE TABLE IF NOT EXISTS mail_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                uniq TEXT UNIQUE NOT NULL,
+                from_addr TEXT NOT NULL DEFAULT '',
+                from_name TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                sent_at TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                candidates TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'new',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mail_items_owner ON mail_items(owner_id, status, sent_at);
             CREATE TABLE IF NOT EXISTS push_subs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -310,7 +326,9 @@ def init_db():
                                 ("quotes", "ecount_wh", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_old_slips", "TEXT NOT NULL DEFAULT ''"),
                                 ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''"),
-                                ("users", "ical_token", "TEXT NOT NULL DEFAULT ''")):
+                                ("mail_items", "translation", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "summary", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "ai_status", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -2843,117 +2861,172 @@ def run_daily_reminders(today: str):
 
 
 # ---------------------------------------------------------------- Frontend
-# ---------------------------------------------------------------- 내 캘린더(Outlook·Google·아이폰)에 구독
-def _ics_text(v) -> str:
-    return str(v or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r", "").replace("\n", "\\n")
+# ---------------------------------------------------------------- 📥 메일에서 일정 찾기
+def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None) -> dict:
+    """원본 메일을 읽어 저장. 전달한 사람(직원 메일 주소)으로 주인을 정한다. 같은 메일은 한 번만."""
+    items = mailin.parse_raw(raw)
+    ai_queue = []
+    emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
+    added = found = 0
+    for it in items:
+        oid = owner_id or emails.get(it["forwarder"]) or emails.get(it["to"].split(",")[0].strip().lower())
+        uniq = it["msg_id"] or hashlib.sha1(f"{it['from_addr']}|{it['subject']}|{it['sent_at']}".encode()).hexdigest()
+        uniq = f"{oid or 0}:{uniq}"
+        status = "new" if it["candidates"] else "none"
+        cur = c.execute("INSERT OR IGNORE INTO mail_items (owner_id, uniq, from_addr, from_name, subject, sent_at, body,"
+                        " candidates, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (oid, uniq, it["from_addr"], it["from_name"], it["subject"], it["sent_at"], it["body"],
+                         json.dumps(it["candidates"], ensure_ascii=False), status, now()))
+        if cur.rowcount:
+            added += 1
+            found += bool(it["candidates"])
+            if ai_mail.enabled() and (it["candidates"] or ai_mail.is_foreign(it["body"])):
+                c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (cur.lastrowid,))
+                ai_queue.append(cur.lastrowid)
+            elif it["candidates"] and oid:
+                notify(c, oid, f"📥 메일에서 일정 {len(it['candidates'])}건을 찾았습니다: {it['subject'][:40]}")
+    # 일정이 없는 메일은 30일 뒤 정리
+    c.execute("DELETE FROM mail_items WHERE status = 'none' AND created_at < ?",
+              ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),))
+    if ai_queue:
+        threading.Thread(target=run_ai_queue, args=(list(ai_queue),), daemon=True).start()
+    return {"messages": len(items), "added": added, "with_schedule": found}
 
 
-def _ics_fold(line: str) -> str:
-    """한 줄 75바이트 제한 (한글이 깨지지 않게 글자 단위로 자름)."""
-    out, cur = [], ""
-    for ch in line:
-        if len((cur + ch).encode()) > (75 if not out else 74):
-            out.append(cur)
-            cur = ""
-        cur += ch
-    out.append(cur)
-    return "\r\n ".join(out)
+AI_LOCK = threading.Lock()
 
 
-def _ics_dt(v: str):
-    """'2026-10-02' → 종일, '2026-10-02T14:30' → 한국시간을 UTC 로."""
-    v = (v or "").replace(" ", "T")
-    if len(v) <= 10:
-        return None, datetime.strptime(v[:10], "%Y-%m-%d")
-    return datetime.strptime(v[:16], "%Y-%m-%dT%H:%M") - timedelta(hours=9), None
-
-
-def build_ics(c, user: dict) -> str:
-    today = datetime.now().date()
-    start, end = (today - timedelta(days=90)).isoformat(), (today + timedelta(days=400)).isoformat()
-    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    host = urllib.parse.urlparse(mailer.BASE_URL).hostname or "teamhub"
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//TeamHub//KO", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
-             f"X-WR-CALNAME:TeamHub ({_ics_text(user['name'])})", "X-WR-TIMEZONE:Asia/Seoul",
-             "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"]
-
-    def add(uid, title, s_val, e_val, all_day, desc="", url=""):
-        try:
-            if all_day:
-                d0 = datetime.strptime(s_val[:10], "%Y-%m-%d")
-                d1 = datetime.strptime((e_val or s_val)[:10], "%Y-%m-%d") + timedelta(days=1)
-                when = [f"DTSTART;VALUE=DATE:{d0:%Y%m%d}", f"DTEND;VALUE=DATE:{d1:%Y%m%d}"]
-            else:
-                t0, _ = _ics_dt(s_val)
-                t1, _ = _ics_dt(e_val or s_val)
-                if t0 is None or t1 is None:
-                    return add(uid, title, s_val, e_val, True, desc, url)
-                when = [f"DTSTART:{t0:%Y%m%dT%H%M%SZ}", f"DTEND:{max(t1, t0):%Y%m%dT%H%M%SZ}"]
-        except ValueError:
-            return
-        lines.extend(["BEGIN:VEVENT", f"UID:{uid}@{host}", f"DTSTAMP:{stamp}", *when, f"SUMMARY:{_ics_text(title)}"])
-        if desc:
-            lines.append(f"DESCRIPTION:{_ics_text(desc)}")
-        if url:
-            lines.append(f"URL:{url}")
-        lines.append("END:VEVENT")
-
-    clause, params = visible_event_clause(user)
-    for e in c.execute(f"SELECT e.*, u.name AS creator_name FROM events e JOIN users u ON u.id = e.created_by"
-                       f" WHERE {clause} AND e.start <= ? AND e.end >= ?", (*params, end + "T23:59", start)):
-        add(f"event-{e['id']}", e["title"], e["start"], e["end"], bool(e["all_day"]) or len(e["start"]) <= 10,
-            f"{e['description']}\n등록: {e['creator_name']}".strip(), mailer.BASE_URL)
-    for t in c.execute("SELECT t.*, a.name AS assignee_name, g.name AS assigner_name FROM tasks t"
-                       " JOIN users a ON a.id = t.assignee_id JOIN users g ON g.id = t.assigner_id"
-                       " WHERE (t.assignee_id = ? OR t.assigner_id = ?) AND t.due_date BETWEEN ? AND ?",
-                       (user["id"], user["id"], start, end)):
-        mark = "✅" if t["status"] == "done" else "📋"
-        who = f"→ {t['assignee_name']}" if t["assignee_id"] != user["id"] else f"({t['assigner_name']} 지시)"
-        add(f"task-{t['id']}", f"{mark} 마감: {t['title']} {who}", t["due_date"], t["due_date"], True,
-            f"상태: {STATUS_LABEL.get(t['status'], t['status'])}\n{t['description']}".strip(), f"{mailer.BASE_URL}/#task={t['id']}")
-    for sh in c.execute("SELECT * FROM shipments WHERE eta BETWEEN ? AND ?", (start, end)):
-        done = "✅" if sh["status"] == "arrived" else "🚢"
-        qty = f" {sh['qty']:g}{sh['unit']}" if sh["qty"] else ""
-        add(f"ship-{sh['id']}", f"{done} 입고: {sh['item']}{qty}", sh["eta"], sh["eta"], True,
-            "\n".join(x for x in (sh["supplier"] and f"구매처: {sh['supplier']}", sh["customer"] and f"판매처: {sh['customer']}",
-                                  sh["bl_no"] and f"B/L: {sh['bl_no']}", sh["note"]) if x), mailer.BASE_URL)
-    lines.append("END:VCALENDAR")
-    return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"
-
-
-def ical_url(c, user: dict, reset: bool = False) -> str:
-    token = "" if reset else (c.execute("SELECT ical_token FROM users WHERE id = ?", (user["id"],)).fetchone()[0] or "")
-    if not token:
-        token = secrets.token_urlsafe(24)
-        c.execute("UPDATE users SET ical_token = ? WHERE id = ?", (token, user["id"]))
-    return f"{mailer.BASE_URL}/ical/{token}.ics"
-
-
-@app.get("/api/me/ical")
-def my_ical(user: dict = Depends(current_user)):
+def ai_analyze_item(mid: int):
+    """해외 메일 번역 + 일정 찾기 (Claude). 결과로 후보를 바꾸고 주인에게 알림."""
     with db() as c:
-        return {"url": ical_url(c, user)}
-
-
-@app.post("/api/me/ical/reset")
-def my_ical_reset(user: dict = Depends(current_user)):
+        m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
+    if not m:
+        return
+    try:
+        res = ai_mail.analyze(m["subject"], f"{m['from_name']} <{m['from_addr']}>", m["sent_at"], m["body"])
+        cands = ai_mail.to_candidates(res)
+        status, err = "done", ""
+    except Exception as e:
+        res, cands, status, err = {}, None, "error", str(e)[:200]
     with db() as c:
-        return {"url": ical_url(c, user, reset=True)}
+        if status == "done":
+            new_status = m["status"]
+            if m["status"] in ("new", "none"):
+                new_status = "new" if cands else "none"
+            c.execute("UPDATE mail_items SET translation = ?, summary = ?, candidates = ?, status = ?, ai_status = 'done'"
+                      " WHERE id = ?", (res.get("translation", ""), res.get("summary", ""),
+                                        json.dumps(cands, ensure_ascii=False), new_status, mid))
+        else:
+            c.execute("UPDATE mail_items SET ai_status = ? WHERE id = ?", ("error: " + err, mid))
+            cands = json.loads(m["candidates"] or "[]")
+        if cands and m["owner_id"] and m["status"] in ("new", "none"):
+            notify(c, m["owner_id"], f"📥 메일에서 일정 {len(cands)}건을 찾았습니다: {m['subject'][:40]}")
 
 
-@app.get("/ical/{token}.ics")
-def ical_feed(token: str):
-    """비밀 주소로 받는 읽기 전용 일정 (Outlook·Google 캘린더가 주기적으로 가져감)."""
-    if len(token) < 20:
-        raise HTTPException(404)
+def run_ai_queue(ids: list):
+    time.sleep(1)      # 메일 저장(트랜잭션)이 끝난 뒤 시작
+    with AI_LOCK:      # 한 번에 하나씩 (요금·속도 제한)
+        for mid in ids:
+            ai_analyze_item(mid)
+
+
+@app.post("/api/mailin/{mid}/analyze")
+def mailin_analyze(mid: int, user: dict = Depends(current_user)):
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 번역 설정(TEAMHUB_ANTHROPIC_API_KEY)이 없습니다.")
     with db() as c:
-        u = c.execute("SELECT * FROM users WHERE ical_token = ? AND active = 1", (token,)).fetchone()
-        if not u:
-            raise HTTPException(404)
-        body = build_ics(c, dict(u))
-    from fastapi.responses import Response
-    return Response(body, media_type="text/calendar; charset=utf-8",
-                    headers={"Cache-Control": "no-cache", "Content-Disposition": 'inline; filename="teamhub.ics"'})
+        mail_item(c, mid, user)
+        c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (mid,))
+    threading.Thread(target=run_ai_queue, args=([mid],), daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/api/mailin")
+async def mailin_receive(request: Request, x_upload_key: str = Header(default="")):
+    """info@ 메일함(구글 Apps Script)이 받은 메일 원본을 보내는 곳. 업로드 키 필요."""
+    with db() as c:
+        key = get_setting(c, "inv_upload_key", "")
+    if not key or not secrets.compare_digest(key, x_upload_key.strip()):
+        raise HTTPException(403, "업로드 키가 맞지 않습니다.")
+    raw = await request.body()
+    if not raw or len(raw) > 40_000_000:
+        raise HTTPException(400, "메일 내용이 없거나 너무 큽니다.")
+    with db() as c:
+        return save_mail_items(c, raw)
+
+
+@app.post("/api/mailin/upload")
+async def mailin_upload(files: List[UploadFile] = File(...), user: dict = Depends(current_user)):
+    """내 PC에 저장한 메일(.eml)을 직접 올리기."""
+    total = {"messages": 0, "added": 0, "with_schedule": 0}
+    with db() as c:
+        for f in files[:200]:
+            r = save_mail_items(c, await f.read(), owner_id=user["id"])
+            for k in total:
+                total[k] += r[k]
+    return total
+
+
+def mail_visible(user: dict):
+    # 메일은 본인 것만. 관리자는 주인을 못 찾은 메일(직원 메일 주소 미등록)도 본다.
+    if user["role"] == "admin":
+        return "(m.owner_id = ? OR m.owner_id IS NULL)", [user["id"]]
+    return "m.owner_id = ?", [user["id"]]
+
+
+@app.get("/api/mailin")
+def mailin_list(status: str = "new", q: str = "", user: dict = Depends(current_user)):
+    clause, params = mail_visible(user)
+    sql = (f"SELECT m.id, m.owner_id, m.from_addr, m.from_name, m.subject, m.sent_at, m.candidates, m.status, m.summary,"
+           f" m.ai_status, m.translation != '' AS translated FROM mail_items m WHERE {clause}")
+    if status in ("new", "done", "ignored", "none"):
+        sql += " AND m.status = ?"
+        params.append(status)
+    if q.strip():
+        sql += " AND (m.subject LIKE ? OR m.from_name LIKE ? OR m.from_addr LIKE ? OR m.body LIKE ?)"
+        params += [f"%{q.strip()}%"] * 4
+    with db() as c:
+        rows = [dict(r) for r in c.execute(sql + " ORDER BY m.sent_at DESC LIMIT 300", params)]
+        counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {mail_visible(user)[0]}"
+                                                " GROUP BY 1", mail_visible(user)[1])}
+    for r in rows:
+        r["candidates"] = json.loads(r["candidates"] or "[]")
+    return {"items": rows, "counts": counts, "ai": ai_mail.enabled()}
+
+
+def mail_item(c, mid: int, user: dict):
+    clause, params = mail_visible(user)
+    row = c.execute(f"SELECT * FROM mail_items m WHERE m.id = ? AND {clause}", (mid, *params)).fetchone()
+    if not row:
+        raise HTTPException(404, "메일을 찾을 수 없습니다.")
+    return row
+
+
+@app.get("/api/mailin/{mid}")
+def mailin_get(mid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        r = dict(mail_item(c, mid, user))
+    r["candidates"] = json.loads(r["candidates"] or "[]")
+    return r
+
+
+@app.patch("/api/mailin/{mid}")
+def mailin_status(mid: int, body: dict, user: dict = Depends(current_user)):
+    st = body.get("status")
+    if st not in ("new", "done", "ignored"):
+        raise HTTPException(400, "잘못된 상태입니다.")
+    with db() as c:
+        mail_item(c, mid, user)
+        c.execute("UPDATE mail_items SET status = ? WHERE id = ?", (st, mid))
+    return {"ok": True}
+
+
+@app.delete("/api/mailin/{mid}")
+def mailin_delete(mid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        mail_item(c, mid, user)
+        c.execute("DELETE FROM mail_items WHERE id = ?", (mid,))
+    return {"ok": True}
 
 
 @app.get("/api/push/key")

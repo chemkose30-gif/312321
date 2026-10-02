@@ -256,6 +256,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="quotes">🧾 견적서</button>
       <button data-view="statements">📄 거래명세서</button>
       <button data-view="shipments">🚢 입고예정</button>
+      <button data-view="mailin">📥 메일 일정</button>
       <button data-view="analytics">📊 매출분석</button>
       <button data-view="inventory">📦 재고</button>
       <button data-view="profit" class="profit-only">💰 이익분석</button>
@@ -267,7 +268,6 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <div class="dropdown notif-panel hidden" id="notifPanel"></div>
       <div class="dropdown hidden" id="userMenu">
         <button id="pushBtn">🔔 알림 · 앱 설치</button>
-        <button id="icalBtn">📆 내 캘린더에 연결</button>
         <button id="pwBtn" class="admin-only">🔑 비밀번호 변경</button>
         <button id="logoutBtn">🚪 로그아웃</button>
       </div>
@@ -404,7 +404,7 @@ function go(view) {
   if (view === 'profit' && !state.me.can_profit) view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, analytics: renderAnalytics, inventory: renderInventory, profit: renderProfit, users: renderUsers})[view]();
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, mailin: renderMailin, analytics: renderAnalytics, inventory: renderInventory, profit: renderProfit, users: renderUsers})[view]();
 }
 
 $('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
@@ -555,33 +555,156 @@ function bindPushBanner() {
 }
 
 
-// ===================================================== 내 캘린더(Outlook·Google·아이폰)에 TeamHub 일정 구독
-async function openIcal() {
-  const {url} = await api('/api/me/ical');
-  const webcal = url.replace(/^https?:/, 'webcal:');
-  openModal(`<h2>📆 내 캘린더에 연결</h2>
-    <div class="muted" style="font-size:13px">아래 주소를 메일 프로그램의 캘린더에 <b>구독</b>으로 추가하면, TeamHub의 <b>일정 · 내 업무 마감일 · 입고 예정</b>이 Outlook/Gmail 캘린더에 함께 보입니다. TeamHub에서 바꾸면 캘린더에도 자동으로 반영됩니다 (몇 시간 간격, 보기 전용).</div>
-    <label>내 캘린더 주소 <small class="muted">— 나만의 비밀 주소입니다. 다른 사람에게 알려주지 마세요.</small></label>
-    <div class="row" style="flex-wrap:nowrap"><input id="icUrl" readonly value="${esc(url)}"><button class="btn primary" id="icCopy">복사</button></div>
-    <div class="ec-box"><b>Outlook.com / Hotmail (웹)</b>
-      <div style="font-size:13px;line-height:1.7;margin-top:4px">outlook.live.com → 왼쪽 <b>📅 캘린더</b> → <b>캘린더 추가</b> → <b>웹에서 구독</b> → 주소 붙여넣기 → 이름 "TeamHub" → <b>가져오기</b></div></div>
-    <div class="ec-box"><b>Outlook PC 프로그램</b>
-      <div style="font-size:13px;line-height:1.7;margin-top:4px"><a href="${esc(webcal)}">여기를 눌러 바로 추가</a> — 안 되면: 캘린더 → <b>캘린더 추가</b> → <b>인터넷에서</b> → 주소 붙여넣기</div></div>
-    <div class="ec-box"><b>Gmail / Google 캘린더</b>
-      <div style="font-size:13px;line-height:1.7;margin-top:4px">PC에서 calendar.google.com → 왼쪽 <b>다른 캘린더 +</b> → <b>URL로 추가</b> → 주소 붙여넣기 → <b>캘린더 추가</b><br><small class="muted">구글은 반영이 느립니다 (보통 몇 시간~하루).</small></div></div>
-    <div class="ec-box"><b>아이폰 캘린더</b>
-      <div style="font-size:13px;line-height:1.7;margin-top:4px">아이폰에서 이 화면을 열고 <a href="${esc(webcal)}">여기를 눌러 구독</a> → <b>구독</b><br>또는 설정 → 캘린더 → 계정 → 계정 추가 → 기타 → <b>구독 캘린더 추가</b> → 주소 붙여넣기</div></div>
-    <div class="muted" style="font-size:12px;margin-top:10px">주소가 다른 사람에게 알려졌다면 <a href="#" id="icReset">새 주소 만들기</a> (예전 주소는 바로 막히고, 캘린더에 새 주소로 다시 추가해야 합니다)</div>
-    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
-    $('#icCopy', bg).onclick = () => navigator.clipboard.writeText($('#icUrl', bg).value).then(() => toast('복사했습니다.'), () => { $('#icUrl', bg).select(); document.execCommand('copy'); toast('복사했습니다.'); });
-    $('#icReset', bg).onclick = async e => {
-      e.preventDefault();
-      if (!confirm('새 주소를 만들까요? 지금 연결해 둔 캘린더는 더 이상 갱신되지 않습니다.')) return;
-      await api('/api/me/ical/reset', {method: 'POST'}); close(); openIcal(); toast('새 주소를 만들었습니다.');
+
+
+// ===================================================== 📥 메일에서 일정 찾기
+const MK = {ship: ['🚢', '입고'], event: ['📅', '일정'], task: ['📋', '마감']};
+const WD = ['일', '월', '화', '수', '목', '금', '토'];
+const mdw = d => { const x = new Date(d + 'T00:00'); return `${x.getMonth() + 1}/${x.getDate()}(${WD[x.getDay()]})`; };
+
+async function renderMailin() {
+  const mi = state.mi ||= {status: 'new', q: ''};
+  const qs = new URLSearchParams({status: mi.status, q: mi.q});
+  const d = await api('/api/mailin?' + qs);
+  state.miAi = d.ai;
+  const n = k => d.counts[k] || 0;
+  const total = Object.values(d.counts).reduce((a, b) => a + b, 0);
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0">📥 메일 일정</h3><span class="spacer"></span>
+      <button class="btn" id="miHow">⚙ 메일 연결 방법</button><button class="btn primary" id="miUp">메일 파일 올리기</button></div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">info@erc-chem.com 으로 전달한 메일에서 <b>입고(ETA)·미팅·납기</b> 날짜를 찾아 둡니다. 날짜 버튼을 누르면 내용이 채워진 등록 화면이 열립니다.${d.ai ? ' 해외 메일은 AI가 한국어로 번역합니다 (제품명은 원문 그대로).' : ''}</div>
+    <div class="tabs"><button data-s="new">확인할 것 (${n('new')})</button><button data-s="done">등록함 (${n('done')})</button><button data-s="ignored">무시 (${n('ignored')})</button><button data-s="none">일정 못 찾은 메일 (${n('none')})</button></div>
+    <div class="row" style="margin-bottom:10px"><input id="miQ" placeholder="제목 / 보낸 사람 / 내용 검색" value="${esc(mi.q)}" style="max-width:300px"><span class="muted">${d.items.length}건</span></div>
+    ${d.items.length ? d.items.map(m => `<div class="list-item" style="display:block;padding:10px 0;border-bottom:1px solid var(--line)">
+        <div class="row" style="gap:6px"><b style="flex:1;min-width:0;cursor:pointer" data-open="${m.id}">${esc(m.subject || '(제목 없음)')}</b>
+          ${m.status === 'new' ? `<button class="btn sm" data-st="done" data-id="${m.id}">✔ 처리완료</button><button class="btn sm" data-st="ignored" data-id="${m.id}">무시</button>`
+            : `<button class="btn sm" data-st="new" data-id="${m.id}">되돌리기</button>`}</div>
+        <small class="muted">${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
+        ${m.summary ? `<div style="font-size:13px;margin-top:3px">${esc(m.summary)}</div>` : ''}
+        ${m.candidates.length ? `<div class="row" style="gap:6px;margin-top:6px">${m.candidates.map((c, i) => `<button class="btn sm ${c.kind === 'ship' ? 'primary' : ''}" data-c="${m.id}:${i}" title="${esc(c.context)}">${MK[c.kind][0]} ${c.label ? esc(c.label) + ' ' : ''}${mdw(c.date)}${c.time ? ' ' + c.time : ''} ${MK[c.kind][1]}</button>`).join('')}</div>` : ''}
+      </div>`).join('') : `<div class="empty">${total ? '해당하는 메일이 없습니다.' : '아직 받은 메일이 없습니다. ⚙ 메일 연결 방법을 확인하세요.'}</div>`}
+  </div>`;
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.s === mi.status); b.onclick = () => { mi.status = b.dataset.s; renderMailin(); }; });
+  $('#miHow').onclick = openMailinHelp;
+  $('#miUp').onclick = openMailinUpload;
+  let timer;
+  $('#miQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { mi.q = e.target.value; renderMailin().then(() => { const i = $('#miQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  const setSt = (id, st) => api(`/api/mailin/${id}`, {method: 'PATCH', body: {status: st}});
+  $$('[data-st]').forEach(b => b.onclick = async () => { await setSt(b.dataset.id, b.dataset.st); renderMailin(); });
+  $$('[data-open]').forEach(b => b.onclick = () => openMailItem(+b.dataset.open));
+  $$('[data-c]').forEach(b => b.onclick = () => {
+    const [id, i] = b.dataset.c.split(':').map(Number);
+    const m = d.items.find(x => x.id === id);
+    useCandidate(m, m.candidates[i], () => setSt(id, 'done'));
+  });
+}
+
+function useCandidate(m, c, onSaved) {
+  const from = m.from_name || m.from_addr;
+  const desc = `[메일] ${m.subject}\n보낸 사람: ${from} (${m.sent_at})\n"${c.context}"`;
+  const title = c.title || m.subject;
+  if (c.kind === 'ship') {
+    const qty = (m.subject + ' ' + c.context).match(/(\d[\d,.]*)\s*(kg|kgs)\b/i);
+    openShipment(null, c.date, {item: c.item || m.subject.replace(/\b(shipping|shipment|arrival|notice|advice|도착|안내|입고|선적)\b/gi, '').replace(/\s{2,}/g, ' ').trim().slice(0, 80),
+      supplier: c.supplier || m.from_name || '', bl_no: c.bl_no || '', qty: c.qty || (qty ? numVal(qty[1]) : ''), unit: c.unit || 'kg', note: desc, onSaved});
+  } else if (c.kind === 'event') {
+    openEvent(null, c.date, {title, description: desc, time: c.time, allDay: !c.time, onSaved});
+  } else {
+    openTaskForm(null, {title, description: desc, due: c.date, onSaved});
+  }
+}
+
+async function openMailItem(id) {
+  const m = await api(`/api/mailin/${id}`);
+  openModal(`<h2 style="word-break:break-all">${esc(m.subject || '(제목 없음)')}</h2>
+    <div class="muted">${esc(m.from_name)} &lt;${esc(m.from_addr)}&gt; · ${esc(m.sent_at)}</div>
+    ${m.candidates.length ? `<div class="row" style="gap:6px;margin:10px 0">${m.candidates.map((c, i) => `<button class="btn sm ${c.kind === 'ship' ? 'primary' : ''}" data-ci="${i}">${MK[c.kind][0]} ${c.label ? esc(c.label) + ' ' : ''}${mdw(c.date)}${c.time ? ' ' + c.time : ''} ${MK[c.kind][1]}</button>`).join('')}</div>` : '<div class="muted" style="margin:10px 0">찾은 날짜가 없습니다. 아래 버튼으로 직접 등록할 수 있습니다.</div>'}
+    <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn sm" data-mk="ship">🚢 입고예정으로</button><button class="btn sm" data-mk="event">📅 일정으로</button><button class="btn sm" data-mk="task">📋 업무로</button></div>
+    ${m.summary ? `<div style="font-size:13px;margin-bottom:6px"><b>요약</b> ${esc(m.summary)}</div>` : ''}
+    ${m.translation ? '<div class="tabs" style="margin-bottom:6px"><button data-v="tr" class="active">🌐 한국어 번역</button><button data-v="org">원문</button></div>' : ''}
+    <pre id="miBody" style="white-space:pre-wrap;font-family:inherit;font-size:13px;background:var(--bg);padding:10px;border-radius:8px;max-height:50vh;overflow:auto">${esc(m.translation || m.body)}</pre>
+    ${String(m.ai_status).startsWith('error') ? `<div class="err">${esc(m.ai_status)}</div>` : ''}
+    <div class="actions"><button class="btn danger" id="miDel">삭제</button><span class="spacer"></span>${state.miAi ? '<button class="btn" id="miAi">🤖 AI 번역·일정 다시 찾기</button>' : ''}<button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    $$('[data-v]', bg).forEach(b => b.onclick = () => { $$('[data-v]', bg).forEach(x => x.classList.toggle('active', x === b)); $('#miBody', bg).textContent = b.dataset.v === 'tr' ? m.translation : m.body; });
+    if ($('#miAi', bg)) $('#miAi', bg).onclick = async () => { await api(`/api/mailin/${id}/analyze`, {method: 'POST'}); close(); toast('AI가 읽는 중입니다. 잠시 후 새로고침하세요.'); renderMailin(); };
+    bg.firstElementChild.classList.add('wide');
+    const done = () => api(`/api/mailin/${id}`, {method: 'PATCH', body: {status: 'done'}});
+    $$('[data-ci]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, m.candidates[+b.dataset.ci], done); });
+    $$('[data-mk]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, {kind: b.dataset.mk, date: todayStr(), time: null, label: '', context: m.body.slice(0, 120), bl_no: ''}, done); });
+    $('#miDel', bg).onclick = async () => { if (!confirm('이 메일을 TeamHub에서 지울까요? (원래 메일함의 메일은 그대로입니다)')) return; await api(`/api/mailin/${id}`, {method: 'DELETE'}); close(); renderMailin(); };
+  });
+}
+
+function openMailinUpload() {
+  openModal(`<h2>메일 파일 올리기</h2>
+    <div class="muted" style="font-size:13px">저장해 둔 메일 파일(<b>.eml</b>)을 여러 개 한 번에 올릴 수 있습니다.<br>
+      Outlook.com/hotmail: 메일 열기 → 오른쪽 위 <b>⋯</b> → <b>다운로드</b> (.eml 저장)<br>
+      Outlook PC: 메일을 바탕화면으로 끌어다 놓은 뒤 → 파일 → 다른 이름으로 저장 → 형식 <b>텍스트 전용</b>이 아닌 <b>.eml</b> 이 없으면 전달 방식을 쓰세요.</div>
+    <label>메일 파일 (.eml)</label><input type="file" id="miFiles" accept=".eml,message/rfc822" multiple>
+    <div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="miGo">올리기</button></div>`, (bg, close) => {
+    $('#miGo', bg).onclick = async () => {
+      const files = $('#miFiles', bg).files; if (!files.length) return;
+      const fd = new FormData(); [...files].forEach(f => fd.append('files', f));
+      const res = await fetch('/api/mailin/upload', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const r = await res.json();
+      if (!res.ok) { $('.err', bg).textContent = r.detail || '올리기 실패'; return; }
+      close(); toast(`메일 ${r.added}건 추가 · 일정 찾은 메일 ${r.with_schedule}건`); renderMailin();
     };
   });
 }
-$('#icalBtn').onclick = () => { $('#userMenu').classList.add('hidden'); openIcal(); };
+
+async function openMailinHelp() {
+  const admin = state.me.role === 'admin';
+  let script = '';
+  if (admin) {
+    const st = await api('/api/inventory/settings');
+    script = `// TeamHub: info@ 메일함에 온 메일을 10분마다 TeamHub로 보냅니다 (보낸 메일에는 'TeamHub' 라벨이 붙음)
+var KEY = '${st.upload_key || '(⚙ 자동 업로드에서 키 만들기 필요)'}';
+var URL = '${location.origin}/api/mailin';
+
+function teamhub() {
+  var label = GmailApp.getUserLabelByName('TeamHub') || GmailApp.createLabel('TeamHub');
+  var threads = GmailApp.search('in:inbox -label:TeamHub newer_than:60d', 0, 30);
+  threads.forEach(function (t) {
+    var ok = true;
+    t.getMessages().forEach(function (m) {
+      var res = UrlFetchApp.fetch(URL, {method: 'post', contentType: 'message/rfc822',
+        payload: Utilities.newBlob(m.getRawContent()).getBytes(), headers: {'X-Upload-Key': KEY}, muteHttpExceptions: true});
+      if (res.getResponseCode() !== 200) { ok = false; console.log(res.getContentText()); }
+    });
+    if (ok) t.addLabel(label);
+  });
+}
+
+function setup() {   // 처음 한 번만 실행: 10분마다 자동 실행 등록
+  ScriptApp.getProjectTriggers().forEach(function (tr) { ScriptApp.deleteTrigger(tr); });
+  ScriptApp.newTrigger('teamhub').timeBased().everyMinutes(10).create();
+  teamhub();
+}`;
+  }
+  openModal(`<h2>📥 메일 연결 방법</h2>
+    <div class="ec-box"><b>① 직원: 내 메일을 info@erc-chem.com 으로 보내기</b>
+      <div style="font-size:13px;line-height:1.8;margin-top:4px">
+        <b>이미 받은 메일</b> — Outlook.com(hotmail)에서 메일 여러 개를 체크 → 위쪽 <b>전달</b> → 받는 사람 <code>info@erc-chem.com</code> → 보내기 (여러 개를 골라 전달하면 첨부로 한 번에 갑니다)<br>
+        <b>앞으로 올 메일 자동 전달</b> — Outlook.com ⚙ 설정 → <b>메일 → 규칙 → 새 규칙 추가</b><br>
+        &nbsp;· 조건: <b>보낸 사람</b>(공급사·포워더·거래처 주소) 또는 <b>제목 포함</b>(ETA, 선적, 도착, 미팅, 납기 등)<br>
+        &nbsp;· 작업: <b>전달 대상</b> → <code>info@erc-chem.com</code> → 저장<br>
+        <small class="muted">※ 👥 직원관리에 등록된 본인 메일 주소로 전달해야 "내 메일"로 분류됩니다. 메일 내용은 본인만 볼 수 있습니다.</small></div></div>
+    ${admin ? `<div class="ec-box"><b>② 관리자: info@ 메일함 → TeamHub 자동 연결 (한 번만)</b>
+      <div style="font-size:13px;line-height:1.8;margin-top:4px">
+        1. info@erc-chem.com 으로 로그인한 상태에서 <b>script.google.com</b> → <b>새 프로젝트</b><br>
+        2. 원래 있던 코드를 지우고 아래 코드를 붙여넣기 → 💾 저장<br>
+        3. 위쪽 함수 선택에서 <b>setup</b> 고르고 <b>▶ 실행</b> → 권한 검토 → info@ 계정 선택 → <b>고급 → (안전하지 않음)으로 이동 → 허용</b><br>
+        4. 끝. 이후 10분마다 info@ 에 온 메일이 TeamHub로 들어옵니다.</div>
+      <textarea id="miScript" readonly style="font-family:monospace;font-size:12px;min-height:160px;margin-top:6px">${esc(script)}</textarea>
+      <button class="btn sm" id="miCopy" style="margin-top:6px">코드 복사</button></div>` : ''}
+    <div class="muted" style="font-size:12px;margin-top:10px">찾은 날짜는 '후보'입니다. 날짜 버튼을 누르면 등록 화면이 열리고, 확인 후 저장해야 등록됩니다.</div>
+    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg) => {
+    bg.firstElementChild.classList.add('wide');
+    if ($('#miCopy', bg)) $('#miCopy', bg).onclick = () => navigator.clipboard.writeText($('#miScript', bg).value).then(() => toast('복사했습니다.'), () => $('#miScript', bg).select());
+  });
+}
 
 // ===================================================== dashboard
 async function renderDashboard() {
@@ -724,17 +847,18 @@ function openDay(day, items) {
     });
 }
 
-function openEvent(ev, day) {
+function openEvent(ev, day, pre = {}) {
   const canEdit = !ev || ev.created_by === state.me.id || state.me.role === 'admin';
-  const isAll = ev ? !!ev.all_day : false;
+  const isAll = ev ? !!ev.all_day : !!pre.allDay;
   const sd = ev ? ev.start.slice(0, 10) : day, ed = ev ? ev.end.slice(0, 10) : day;
-  const st = ev && !ev.all_day ? ev.start.slice(11, 16) : '09:00', et = ev && !ev.all_day ? ev.end.slice(11, 16) : '10:00';
+  const st = ev && !ev.all_day ? ev.start.slice(11, 16) : (pre.time || '09:00'),
+        et = ev && !ev.all_day ? ev.end.slice(11, 16) : (pre.time ? `${pad(Math.min(23, +pre.time.slice(0, 2) + 1))}:${pre.time.slice(3, 5)}` : '10:00');
   const color = ev ? ev.color : COLORS[0];
   const dis = canEdit ? '' : 'disabled';
   openModal(`<h2>${ev ? (canEdit ? '일정 수정' : '일정 보기') : '새 일정'}</h2>
     ${ev ? `<div class="muted">작성자: ${esc(ev.creator_name)} · ${SCOPE[ev.scope]}</div>` : ''}
     <form id="evForm">
-      <label>제목</label><input name="title" value="${esc(ev?.title)}" required ${dis}>
+      <label>제목</label><input name="title" value="${esc(ev ? ev.title : pre.title)}" required ${dis}>
       <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="all_day" style="width:auto" ${isAll ? 'checked' : ''} ${dis}> 종일</label>
       <div class="grid2">
         <div><label>시작일</label><input type="date" name="sd" value="${sd}" required ${dis}></div>
@@ -746,7 +870,7 @@ function openEvent(ev, day) {
       <select name="scope" ${dis}>${Object.entries(SCOPE).map(([k, v]) => `<option value="${k}" ${(ev?.scope || 'company') === k ? 'selected' : ''}>${v}${k === 'dept' ? ` (${esc(ev ? ev.dept : state.me.dept) || '부서 없음'})` : ''}</option>`).join('')}</select>
       <label>색상</label>
       <div class="colors">${COLORS.map(c => `<label style="margin:0"><input type="radio" name="color" value="${c}" ${c === color ? 'checked' : ''} ${dis}><span style="background:${c}"></span></label>`).join('')}</div>
-      <label>메모</label><textarea name="description" ${dis}>${esc(ev?.description)}</textarea>
+      <label>메모</label><textarea name="description" ${dis}>${esc(ev ? ev.description : pre.description)}</textarea>
       <div class="err"></div>
       <div class="actions">
         ${ev && canEdit ? '<button type="button" class="btn danger" id="evDel">삭제</button><span class="spacer"></span>' : ''}
@@ -768,7 +892,7 @@ function openEvent(ev, day) {
       };
       try {
         await api(ev ? `/api/events/${ev.id}` : '/api/events', {method: ev ? 'PUT' : 'POST', body});
-        close(); toast('저장되었습니다.'); go(state.view);
+        close(); toast('저장되었습니다.'); if (pre.onSaved) await pre.onSaved(); go(state.view);
       } catch (err) { $('.err', bg).textContent = err.message; }
     };
     const del = $('#evDel', bg);
@@ -839,15 +963,15 @@ function assigneePicker(selected = []) {
         ${esc(u.name)} <small class="muted">${esc(u.position)}${u.id === state.me.id ? ' (나)' : ''}</small></label>`).join('')}</div></div>`).join('') + '</div>';
 }
 
-function openTaskForm(task) {
+function openTaskForm(task, pre = {}) {
   const edit = !!task;
   openModal(`<h2>${edit ? '업무 수정' : '새 업무 지시'}</h2>
     <form>
-      <label>업무 제목</label><input name="title" value="${esc(task?.title)}" required>
-      <label>업무 내용</label><textarea name="description" placeholder="구체적인 지시 사항, 산출물, 참고 자료 등">${esc(task?.description)}</textarea>
+      <label>업무 제목</label><input name="title" value="${esc(task ? task.title : pre.title)}" required>
+      <label>업무 내용</label><textarea name="description" placeholder="구체적인 지시 사항, 산출물, 참고 자료 등">${esc(task ? task.description : pre.description)}</textarea>
       <div class="grid2">
         <div><label>우선순위</label><select name="priority">${Object.entries(PRIORITY).map(([k, v]) => `<option value="${k}" ${(task?.priority || 'normal') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div><label>마감일</label><input type="date" name="due" value="${esc(task?.due_date || '')}"></div>
+        <div><label>마감일</label><input type="date" name="due" value="${esc(task?.due_date || pre.due || '')}"></div>
       </div>
       ${edit ? '' : `<label>담당자 (여러 명 선택 시 각자에게 개별 업무로 지시됩니다)</label>${assigneePicker()}`}
       <div class="err"></div>
@@ -888,6 +1012,7 @@ function openTaskForm(task) {
           if (!ids.length) { $('.err', bg).textContent = '담당자를 선택하세요.'; return; }
           await api('/api/tasks', {method: 'POST', body: {title: f.title.value, description: f.description.value, priority: f.priority.value, due_date: f.due.value || null, assignee_ids: ids}});
           close(); toast(`${ids.length}명에게 업무를 지시했습니다.`);
+          if (pre.onSaved) await pre.onSaved();
         }
         go(state.view);
       } catch (err) { $('.err', bg).textContent = err.message; }
@@ -1599,10 +1724,10 @@ async function renderShipments() {
   $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));
 }
 
-async function openShipment(id, day) {
+async function openShipment(id, day, pre = {}) {
   let sh = null;
   if (id) { const all = await api('/api/shipments?view=all'); sh = all.find(x => x.id === id); if (!sh) { toast('찾을 수 없습니다.'); return; } }
-  const v = sh || {eta: day || todayStr(), status: 'ordered', unit: 'kg'};
+  const v = sh || {eta: day || todayStr(), status: 'ordered', unit: 'kg', ...pre};
   const canDel = sh && (sh.created_by === state.me.id || state.me.role === 'admin');
   openModal(`<h2>${sh ? '입고 예정' : '새 입고 예정'}</h2>
     ${sh ? `<div class="muted">등록: ${esc(sh.creator_name)}${sh.arrived_at ? ' · 입고 처리 ' + esc(sh.arrived_at.slice(0, 16)) : ''}</div>` : ''}
@@ -1634,7 +1759,7 @@ async function openShipment(id, day) {
       body.qty = numVal(f.qty.value);
       try {
         await api(sh ? `/api/shipments/${sh.id}` : '/api/shipments', {method: sh ? 'PUT' : 'POST', body});
-        close(); toast('저장되었습니다.'); go(state.view);
+        close(); toast('저장되었습니다.'); if (pre.onSaved) await pre.onSaved(); go(state.view);
       } catch (err) { $('.err', bg).textContent = err.message; }
     };
     const del = $('#shDel', bg);
