@@ -25,6 +25,7 @@ import ecount
 import mailer
 import ai_mail
 import mailin
+import unipass
 import webpush
 
 BASE_DIR = Path(__file__).parent
@@ -34,6 +35,7 @@ DB_PATH = os.getenv("TEAMHUB_DB", str(BASE_DIR / "teamhub.db"))
 @asynccontextmanager
 async def lifespan(_app):
     mailer.start_scheduler(run_daily_reminders)
+    threading.Thread(target=unipass_loop, daemon=True).start()
     yield
 
 
@@ -333,7 +335,18 @@ def init_db():
                                 ("mail_items", "msg_ref", "TEXT NOT NULL DEFAULT ''"),
                                 ("mail_items", "t_candidates", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("mail_items", "t_count", "INTEGER NOT NULL DEFAULT 1"),
-                                ("mail_items", "fp", "TEXT NOT NULL DEFAULT ''")):
+                                ("mail_items", "fp", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "hbl_no", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_cargo_no", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_status", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_arrived", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_in_at", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_shed", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_cleared_at", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_out_at", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_events", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("shipments", "cs_checked_at", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -2594,11 +2607,13 @@ class ShipmentIn(BaseModel):
     eta: str
     status: str = "ordered"
     bl_no: str = ""
+    hbl_no: str = ""
     warehouse: str = ""
     note: str = ""
 
 
-SHIP_FIELDS = ("item", "spec", "supplier", "customer", "qty", "unit", "eta", "status", "bl_no", "warehouse", "note")
+SHIP_FIELDS = ("item", "spec", "supplier", "customer", "qty", "unit", "eta", "status", "bl_no", "hbl_no", "warehouse",
+               "note")
 
 
 def check_shipment(b: ShipmentIn):
@@ -2622,8 +2637,8 @@ def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current
     elif view == "arrived":
         where.append("s.status = 'arrived'")
     if q:
-        where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ?)")
-        params += [f"%{q}%"] * 4
+        where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ? OR s.hbl_no LIKE ?)")
+        params += [f"%{q}%"] * 5
     order = "s.eta DESC, s.id DESC" if view == "arrived" else "s.eta, s.id"
     with db() as c:
         rows = c.execute(
@@ -2641,7 +2656,23 @@ def create_shipment(body: ShipmentIn, user: dict = Depends(current_user)):
             f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
             f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, ?, ?, ?, ?)",
             (*ship_values(body), ts if body.status == "arrived" else None, user["id"], ts, ts))
+    if body.bl_no.strip() or body.hbl_no.strip():
+        unipass_soon(cur.lastrowid)
     return {"id": cur.lastrowid}
+
+
+def unipass_soon(sid: int):
+    """B/L 이 새로 들어오거나 바뀌면 바로 한 번 조회 (인증키가 있을 때만, 백그라운드)."""
+    def run():
+        time.sleep(1)
+        try:
+            with db() as c:
+                if not get_setting(c, "unipass_key", ""):
+                    return
+            refresh_unipass(sid, quiet=True)
+        except Exception as e:  # noqa: BLE001
+            print("[TeamHub] unipass error:", e)
+    threading.Thread(target=run, daemon=True).start()
 
 
 @app.put("/api/shipments/{sid}")
@@ -2656,6 +2687,13 @@ def update_shipment(sid: int, body: ShipmentIn, user: dict = Depends(current_use
             arrived_at = now()
         c.execute(f"UPDATE shipments SET {', '.join(f + ' = ?' for f in SHIP_FIELDS)}, arrived_at = ?, updated_at = ?"
                   " WHERE id = ?", (*ship_values(body), arrived_at, now(), sid))
+        bl_changed = (old["bl_no"], old["hbl_no"]) != (body.bl_no.strip(), body.hbl_no.strip())
+        if bl_changed:           # B/L 이 바뀌면 예전 조회 결과는 지운다
+            c.execute("UPDATE shipments SET cs_cargo_no = '', cs_status = '', cs_arrived = '', cs_in_at = '', cs_shed = '',"
+                      " cs_cleared_at = '', cs_out_at = '', cs_events = '[]', cs_checked_at = '', cs_error = '' WHERE id = ?",
+                      (sid,))
+    if bl_changed and (body.bl_no.strip() or body.hbl_no.strip()):
+        unipass_soon(sid)
     return {"ok": True}
 
 
@@ -2668,6 +2706,101 @@ def shipment_status(sid: int, body: dict, user: dict = Depends(current_user)):
         c.execute("UPDATE shipments SET status = ?, arrived_at = ?, updated_at = ? WHERE id = ?",
                   (st, now() if st == "arrived" else None, now(), sid))
     return {"ok": True}
+
+
+# ---- UNI-PASS 로 B/L 진행 확인 (입항·반입·통관 수리·반출)
+CS_MILESTONES = (("cs_arrived", "🛳 입항"), ("cs_in_at", "📦 반입"), ("cs_cleared_at", "✅ 통관 수리"), ("cs_out_at", "🚚 반출"))
+
+
+def refresh_unipass(sid: int, quiet: bool = False) -> dict:
+    """입고예정 하나를 UNI-PASS 로 조회해 저장. 새로 생긴 단계(입항·반입·수리·반출)는 등록한 사람에게 알림."""
+    with db() as c:
+        sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
+        key = get_setting(c, "unipass_key", "")
+    if not sh:
+        raise HTTPException(404, "입고 예정을 찾을 수 없습니다.")
+    try:
+        year = int((sh["eta"] or "")[:4] or 0)
+        r = unipass.lookup(key, sh["bl_no"], sh["hbl_no"], 0)
+        if not r.get("found") and year and year not in (datetime.now().year, datetime.now().year - 1):
+            r = unipass.lookup(key, sh["bl_no"], sh["hbl_no"], year)
+        err = "" if r.get("found") else "UNI-PASS 에서 이 B/L 을 찾지 못했습니다 (아직 적하목록이 안 올라왔거나 번호·연도가 다를 수 있음)."
+    except unipass.UnipassError as e:
+        r, err = {"found": False}, str(e)
+    with db() as c:
+        if not r.get("found"):
+            c.execute("UPDATE shipments SET cs_checked_at = ?, cs_error = ? WHERE id = ?", (now(), err, sid))
+            return {"found": False, "error": err}
+        new = {"cs_arrived": r["arrived"], "cs_in_at": r["in_at"], "cs_cleared_at": r["cleared_at"], "cs_out_at": r["out_at"]}
+        status = sh["status"]
+        if status in ("ordered", "shipped") and (r["in_at"] or r["arrived"]):
+            status = "customs"
+        c.execute("UPDATE shipments SET cs_cargo_no = ?, cs_status = ?, cs_arrived = ?, cs_in_at = ?, cs_shed = ?,"
+                  " cs_cleared_at = ?, cs_out_at = ?, cs_events = ?, cs_checked_at = ?, cs_error = '', status = ?,"
+                  " updated_at = ? WHERE id = ?",
+                  (r["cargo_no"], " · ".join(x for x in (r["status"], r["clearance"]) if x), r["arrived"], r["in_at"],
+                   r["shed"], r["cleared_at"], r["out_at"], json.dumps(r["events"], ensure_ascii=False), now(), status,
+                   now(), sid))
+        if not quiet:
+            for col, label in CS_MILESTONES:
+                if new[col] and not sh[col]:
+                    where = f" · {r['shed']}" if col == "cs_in_at" and r["shed"] else ""
+                    notify(c, sh["created_by"], f"{label}: {sh['item']} ({new[col]}{where}) — UNI-PASS")
+    return {"found": True, **r}
+
+
+def unipass_loop():
+    """진행 중인 입고예정(B/L 있음)을 낮 시간(7~21시)에 2시간마다 UNI-PASS 로 확인."""
+    time.sleep(30)
+    while True:
+        try:
+            if 7 <= datetime.now().hour < 21:
+                with db() as c:
+                    key = get_setting(c, "unipass_key", "")
+                    cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+                    ids = [r[0] for r in c.execute(
+                        "SELECT id FROM shipments WHERE status != 'arrived' AND (bl_no != '' OR hbl_no != '')"
+                        " AND cs_out_at = '' AND cs_checked_at < ? ORDER BY eta LIMIT 100", (cutoff,))] if key else []
+                for sid in ids:
+                    try:
+                        refresh_unipass(sid)
+                    except Exception as e:  # noqa: BLE001
+                        print("[TeamHub] unipass error:", e)
+                    time.sleep(2)
+        except Exception as e:  # noqa: BLE001
+            print("[TeamHub] unipass loop error:", e)
+        time.sleep(600)
+
+
+@app.post("/api/shipments/{sid}/unipass")
+def shipment_unipass(sid: int, _: dict = Depends(current_user)):
+    return refresh_unipass(sid)
+
+
+@app.get("/api/unipass/settings")
+def unipass_settings(_: dict = Depends(admin_user)):
+    with db() as c:
+        key = get_setting(c, "unipass_key", "")
+    return {"has_key": bool(key), "key_tail": key[-4:] if key else ""}
+
+
+@app.put("/api/unipass/settings")
+def unipass_put_settings(body: dict, _: dict = Depends(admin_user)):
+    key = str(body.get("key", "")).strip()
+    with db() as c:
+        set_setting(c, "unipass_key", key)
+    return {"ok": True, "has_key": bool(key)}
+
+
+@app.post("/api/unipass/test")
+def unipass_test(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        key = get_setting(c, "unipass_key", "")
+    try:
+        r = unipass.lookup(key, body.get("mbl", ""), body.get("hbl", ""), int(body.get("year") or 0))
+    except unipass.UnipassError as e:
+        raise HTTPException(400, str(e))
+    return r
 
 
 @app.delete("/api/shipments/{sid}")
@@ -3082,7 +3215,8 @@ def thread_rows(c, key: str) -> list:
 
 def match_shipments(c, cands: list, subject: str = "") -> list:
     """입고 후보가 이미 등록된 입고예정(아직 입고 전)과 같으면 연결 → 새로 만들지 않고 날짜 변경을 제안."""
-    open_ships = [dict(r) for r in c.execute("SELECT id, item, eta, bl_no, supplier FROM shipments WHERE status != 'arrived'")]
+    open_ships = [dict(r) for r in c.execute("SELECT id, item, eta, bl_no, hbl_no, supplier FROM shipments"
+                                             " WHERE status != 'arrived'")]
     norm = lambda s: re.sub(r"[^0-9a-z가-힣]", "", str(s or "").lower())
     for cd in cands:
         # 출발(ETD·선적·출항) 날짜는 입고예정일(ETA)이 아니므로 연결하지 않음
@@ -3090,7 +3224,7 @@ def match_shipments(c, cands: list, subject: str = "") -> list:
             continue
         best = None
         for sh in open_ships:
-            if cd.get("bl_no") and sh["bl_no"] and norm(cd["bl_no"]) == norm(sh["bl_no"]):
+            if cd.get("bl_no") and norm(cd["bl_no"]) in {norm(sh["bl_no"]), norm(sh["hbl_no"])} - {""}:
                 best = sh
                 break
             item = norm(cd.get("item") or cd.get("title") or subject)

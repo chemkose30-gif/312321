@@ -1745,6 +1745,57 @@ function shipBlock(title, list, emptyMsg) {
       <div style="text-align:right"><small>${esc(sh.eta)}</small><br>${dday(sh.eta, sh.status)}</div></div>`).join('');
 }
 
+
+// ---- UNI-PASS 통관 진행 (입항 → 반입 → 수입신고 수리 → 반출)
+function csTag(sh) {
+  if (!sh.bl_no && !sh.hbl_no) return '';
+  const md = v => v ? `${+v.slice(5, 7)}/${+v.slice(8, 10)}` : '';
+  if (sh.cs_out_at) return `<span class="tag s-done" title="UNI-PASS">🚚 반출 ${md(sh.cs_out_at)}</span>`;
+  if (sh.cs_cleared_at) return `<span class="tag s-done" title="UNI-PASS">✅ 통관 ${md(sh.cs_cleared_at)}</span>`;
+  if (sh.cs_in_at) return `<span class="tag s-doing" title="${esc(sh.cs_shed)}">📦 반입 ${md(sh.cs_in_at)}</span>`;
+  if (sh.cs_arrived) return `<span class="tag s-doing">🛳 입항 ${md(sh.cs_arrived)}</span>`;
+  if (sh.cs_error) return '<span class="tag s-todo" title="UNI-PASS 에서 아직 못 찾음">UNI-PASS 대기</span>';
+  return '';
+}
+function csPanel(sh) {
+  const ev = (() => { try { return JSON.parse(sh.cs_events || '[]'); } catch { return []; } })();
+  const step = (on, label, v) => `<div style="flex:1;min-width:90px;text-align:center;padding:6px;border-radius:8px;background:${on ? 'var(--primary-weak)' : 'var(--bg)'};${on ? 'color:var(--primary);font-weight:700' : 'color:var(--muted)'}">${label}<br><small>${esc(v || '-')}</small></div>`;
+  return `<div class="row"><b>🛃 UNI-PASS 통관 진행</b><span class="spacer"></span><button type="button" class="btn sm" id="csRefresh">🔄 UNI-PASS 조회</button></div>
+    ${sh.cs_checked_at ? `<div class="muted" style="font-size:12px">마지막 확인 ${esc(sh.cs_checked_at.slice(0, 16))}${sh.cs_status ? ' · ' + esc(sh.cs_status) : ''}${sh.cs_cargo_no ? ' · 화물관리번호 ' + esc(sh.cs_cargo_no) : ''}</div>` : '<div class="muted" style="font-size:12px">아직 조회하지 않았습니다. 진행 중인 건은 낮 시간에 2시간마다 자동으로 확인합니다.</div>'}
+    ${sh.cs_error ? `<div class="muted" style="font-size:12px;color:#b45309">${esc(sh.cs_error)}</div>` : ''}
+    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:nowrap;overflow-x:auto">${step(sh.cs_arrived, '🛳 입항', sh.cs_arrived)}${step(sh.cs_in_at, '📦 반입', sh.cs_in_at ? sh.cs_in_at.slice(5) + (sh.cs_shed ? ' ' + sh.cs_shed : '') : '')}${step(sh.cs_cleared_at, '✅ 수입신고 수리', sh.cs_cleared_at && sh.cs_cleared_at.slice(5))}${step(sh.cs_out_at, '🚚 반출', sh.cs_out_at && sh.cs_out_at.slice(5))}</div>
+    ${ev.length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">처리 이력 ${ev.length}건</summary>
+      <table class="an-table" style="margin-top:4px"><tbody>${ev.slice().reverse().map(e => `<tr><td>${esc(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.shed || '')}${e.memo ? ' · ' + esc(e.memo) : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
+}
+async function openUnipassSettings() {
+  const st = await api('/api/unipass/settings');
+  openModal(`<h2>🛃 UNI-PASS 연결</h2>
+    <div style="font-size:13px;line-height:1.8">관세청 UNI-PASS 의 <b>화물통관진행정보조회</b> 인증키를 넣으면, 입고예정에 적은 <b>M B/L·H B/L</b> 로 입항·반입·통관 수리·반출을 자동으로 확인하고 알림을 보냅니다.<br>
+      인증키 받기: unipass.customs.go.kr 로그인 → <b>서비스 → 웹서비스 신청 → OPEN API 사용 신청</b> → "화물통관진행정보조회" 신청 → 승인 후 <b>마이페이지</b>에서 인증키 확인</div>
+    <label>인증키 ${st.has_key ? `<small class="muted">(등록됨 · 끝자리 ${esc(st.key_tail)})</small>` : ''}</label>
+    <input id="upKey2" type="password" placeholder="${st.has_key ? '바꿀 때만 입력' : '인증키 붙여넣기'}" autocomplete="off">
+    <label>시험 조회 (선택)</label>
+    <div class="row" style="flex-wrap:nowrap"><input id="upM" placeholder="M B/L"><input id="upH" placeholder="H B/L"><button class="btn" id="upTest">조회</button></div>
+    <pre id="upOut" style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:8px;border-radius:8px;display:none"></pre>
+    <div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="upSave">저장</button></div>`, (bg, close) => {
+    $('#upSave', bg).onclick = async () => {
+      const key = $('#upKey2', bg).value.trim(); if (!key) { close(); return; }
+      await api('/api/unipass/settings', {method: 'PUT', body: {key}}); toast('저장했습니다.'); close();
+    };
+    $('#upTest', bg).onclick = async () => {
+      const key = $('#upKey2', bg).value.trim();
+      try {
+        if (key) await api('/api/unipass/settings', {method: 'PUT', body: {key}});
+        const r = await api('/api/unipass/test', {method: 'POST', body: {mbl: $('#upM', bg).value, hbl: $('#upH', bg).value}});
+        $('#upOut', bg).style.display = 'block';
+        $('#upOut', bg).textContent = r.found ? `✅ ${r.item} · ${r.status} / ${r.clearance}\n입항 ${r.arrived || '-'} · 반입 ${r.in_at || '-'} ${r.shed || ''}\n수리 ${r.cleared_at || '-'} · 반출 ${r.out_at || '-'}` : '찾지 못했습니다 (번호·연도 확인)';
+        $('.err', bg).textContent = '';
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
 async function renderShipments() {
   const view = state.shView || 'open';
   const q = new URLSearchParams({view});
@@ -1752,22 +1803,24 @@ async function renderShipments() {
   const list = await api('/api/shipments?' + q);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🚢 입고 예정</h3><span class="spacer"></span>
-      <button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
+      ${state.me.role === 'admin' ? '<button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
     <div class="tabs">
       <button data-v="open">진행중</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
     </div>
-    <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B·L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
+    <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B/L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
     ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
         <div class="l1">${shTag(sh.status)}<b>${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
+        ${csTag(sh) ? `<div class="l2">${csTag(sh)}</div>` : ''}
         <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
-      <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">B/L · 창고</th></tr></thead><tbody>
+      <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">M B/L / H B/L · 창고</th></tr></thead><tbody>
       ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.status)}</td>
         <td class="title">${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
-        <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)}</td><td class="hide-m"><small>${esc(sh.bl_no)}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
+        <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">등록된 입고 예정이 없습니다.</div>'}
   </div>`;
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.v === view); b.onclick = () => { state.shView = b.dataset.v; renderShipments(); }; });
   $('#shNew').onclick = () => openShipment(null, todayStr());
+  if ($('#shUp')) $('#shUp').onclick = openUnipassSettings;
   let timer;
   $('#shSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.shSearch = e.target.value; renderShipments().then(() => { const i = $('#shSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));
@@ -1780,6 +1833,7 @@ async function openShipment(id, day, pre = {}) {
   const canDel = sh && (sh.created_by === state.me.id || state.me.role === 'admin');
   openModal(`<h2>${sh ? '입고 예정' : '새 입고 예정'}</h2>
     ${sh ? `<div class="muted">등록: ${esc(sh.creator_name)}${sh.arrived_at ? ' · 입고 처리 ' + esc(sh.arrived_at.slice(0, 16)) : ''}</div>` : ''}
+    ${sh && (sh.bl_no || sh.hbl_no) ? `<div class="ec-box" id="csBox">${csPanel(sh)}</div>` : ''}
     <form>
       <div class="grid2">
         <div><label>품목 *</label><input name="item" value="${esc(v.item)}" required></div>
@@ -1788,7 +1842,8 @@ async function openShipment(id, day, pre = {}) {
         <div><label>판매처 (받을 고객, 있으면)</label><input name="customer" value="${esc(v.customer)}"></div>
         <div><label>수량</label><div class="row" style="flex-wrap:nowrap"><input name="qty" inputmode="decimal" value="${v.qty ?? ''}"><input name="unit" value="${esc(v.unit)}" style="max-width:80px" placeholder="kg"></div></div>
         <div><label>예상 입고일 (ETA) *</label><input type="date" name="eta" value="${esc(v.eta)}" required></div>
-        <div><label>B/L 번호</label><input name="bl_no" value="${esc(v.bl_no)}"></div>
+        <div><label>M B/L (마스터)</label><input name="bl_no" value="${esc(v.bl_no)}" placeholder="선사 B/L 번호"></div>
+        <div><label>H B/L (하우스)</label><input name="hbl_no" value="${esc(v.hbl_no)}" placeholder="포워더 B/L 번호"></div>
         <div><label>입고 창고</label><input name="warehouse" value="${esc(v.warehouse)}"></div>
       </div>
       <label>진행 상태</label>
@@ -1799,12 +1854,18 @@ async function openShipment(id, day, pre = {}) {
       <div class="actions">${canDel ? '<button type="button" class="btn danger" id="shDel">삭제</button><span class="spacer"></span>' : ''}
         <button type="button" class="btn" data-close>취소</button><button class="btn primary">저장</button></div>
     </form>`, (bg, close) => {
+    const csBind = () => { const b = $('#csRefresh', bg); if (b) b.onclick = async () => {
+      b.disabled = true; b.textContent = '조회 중…';
+      try { await api(`/api/shipments/${sh.id}/unipass`, {method: 'POST'}); const all = await api('/api/shipments?view=all'); const n = all.find(x => x.id === sh.id); $('#csBox', bg).innerHTML = csPanel(n); csBind(); }
+      catch (err) { toast(err.message); b.disabled = false; b.textContent = '🔄 UNI-PASS 조회'; }
+    }; };
+    csBind();
     const f = $('form', bg);
     $$('[data-st]', bg).forEach(b => b.onclick = () => { f.status.value = b.dataset.st; $$('[data-st]', bg).forEach(x => x.classList.toggle('on', x === b)); });
     f.onsubmit = async e => {
       e.preventDefault();
       const body = {};
-      ['item', 'spec', 'supplier', 'customer', 'unit', 'eta', 'status', 'bl_no', 'warehouse', 'note'].forEach(k => body[k] = f[k].value);
+      ['item', 'spec', 'supplier', 'customer', 'unit', 'eta', 'status', 'bl_no', 'hbl_no', 'warehouse', 'note'].forEach(k => body[k] = f[k].value);
       body.qty = numVal(f.qty.value);
       try {
         await api(sh ? `/api/shipments/${sh.id}` : '/api/shipments', {method: sh ? 'PUT' : 'POST', body});
