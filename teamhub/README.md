@@ -56,6 +56,7 @@ python app.py
    git clone <이 저장소 주소> && cd <저장소>/teamhub
    sudo bash deploy/install.sh teamhub.우리회사.com
    ```
+   - 도메인이 아직 없으면 `sudo bash deploy/install.sh ip` 로 IP 주소(HTTP)로 먼저 설치하고, 나중에 도메인으로 다시 실행하면 HTTPS 로 바뀝니다.
    - 자동 시작/재시작(systemd), HTTPS 인증서 자동 발급(Caddy), 방화벽, 매일 DB 백업(30일 보관), 한국 시간대가 설정됩니다.
    - 설치가 끝나면 **서버 공인 IP**가 표시됩니다 → 이카운트 API 허용 IP로 등록하세요.
 4. **설정** — `sudo nano /etc/teamhub.env` 에 메일 설정 입력 → `sudo systemctl restart teamhub`
