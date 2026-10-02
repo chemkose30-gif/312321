@@ -2840,8 +2840,9 @@ def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current
         where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ? OR s.hbl_no LIKE ?)")
         params += [f"%{q}%"] * 5
     order = "s.eta DESC, s.id DESC" if view in ("arrived", "cleared") else "s.eta, s.id"
-    if view == "open":      # 진행중: 이미 반입된 것 → 입항한 것 → 나머지(예정일 순)
-        order = ("CASE WHEN s.cs_in_at != '' THEN 0 WHEN s.cs_arrived != '' THEN 1 ELSE 2 END,"
+    if view == "open":      # 진행중: 반입 → 입항·통관 중 → 선적 → 발주, 같은 단계 안에서는 예정일 순
+        order = ("CASE WHEN s.cs_in_at != '' THEN 0 WHEN s.cs_arrived != '' OR s.status = 'customs' THEN 1"
+                 " WHEN s.status = 'shipped' THEN 2 ELSE 3 END,"
                  " CASE WHEN s.cs_in_at != '' THEN s.cs_in_at ELSE s.eta END, s.id")
     with db() as c:
         rows = c.execute(
