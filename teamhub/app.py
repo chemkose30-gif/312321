@@ -1646,12 +1646,41 @@ def ecount_logs(_: dict = Depends(admin_user)):
 
 
 # ---------------------------------------------------------------- 매출(납품) 분석
+DEFAULT_EXCLUDE = "켐코스, 이알씨"   # 자사·관계사: 매출분석에서 제외
+
+
+def _norm_company(n: str) -> str:
+    return re.sub(r"\(주\)|㈜|주식회사|\(유\)|유한회사|\s", "", str(n or "")).lower()
+
+
+def exclude_matcher(c):
+    """매출분석 제외 거래처 판별 함수 (설정의 쉼표 구분 목록, 이름 일부 일치)."""
+    raw = get_setting(c, "analytics_exclude", DEFAULT_EXCLUDE)
+    keys = [_norm_company(k) for k in raw.split(",") if _norm_company(k)]
+    return lambda name: any(k in _norm_company(name) for k in keys)
+
+
+@app.get("/api/analytics/exclude")
+def get_exclude(_: dict = Depends(current_user)):
+    with db() as c:
+        return {"value": get_setting(c, "analytics_exclude", DEFAULT_EXCLUDE)}
+
+
+@app.put("/api/analytics/exclude")
+def put_exclude(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        set_setting(c, "analytics_exclude", str(body.get("value", "")).strip())
+    return {"ok": True}
+
+
 @app.get("/api/analytics/sales")
 def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(current_user)):
     """거래명세서(발행·출고완료) 기준 거래처별 월별/연별 납품금액."""
     col = "grand_total" if basis == "total" else "supply_total"
-    base = f"FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
+    base = "FROM quotes WHERE doc_type = 'statement' AND status != 'draft' AND NOT excl(customer_name)"
     with db() as c:
+        is_ex = exclude_matcher(c)
+        c.create_function("excl", 1, lambda n: 1 if is_ex(n) else 0, deterministic=True)
         years = [int(r[0]) for r in c.execute(f"SELECT DISTINCT substr(quote_date, 1, 4) {base} ORDER BY 1")]
         if not years:
             return {"years": [], "year": None, "monthly": {}, "customers": [], "yearly": {}}
@@ -1725,8 +1754,10 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
                 out.setdefault(n, {})[item] = (qty or 0, amt or 0, unit or "")
             return out
 
-        cur_c, cmp_c = per_customer(cur_r), per_customer(cmp_r)
-        cur_i, cmp_i = per_item(cur_r), per_item(cmp_r)
+        is_ex = exclude_matcher(c)
+        keep = lambda d: {k: v for k, v in d.items() if not is_ex(k)}
+        cur_c, cmp_c = keep(per_customer(cur_r)), keep(per_customer(cmp_r))
+        cur_i, cmp_i = keep(per_item(cur_r)), keep(per_item(cmp_r))
         rows = []
         for name, before in cmp_c.items():
             now_amt = cur_c.get(name, 0)
@@ -1754,7 +1785,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         prev_year_amt = per_customer(rng(_shift_months(ref, -24) + timedelta(days=1), _shift_months(ref, -12)))
         dormant = []
         for n, ds in dates.items():
-            if len(ds) < 4:
+            if len(ds) < 4 or is_ex(n):
                 continue
             gaps = sorted((b - a).days for a, b in zip(ds, ds[1:]))
             typical = gaps[len(gaps) // 2]  # 중앙값: 가끔 있는 긴 공백에 덜 흔들림
@@ -1781,7 +1812,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
             " WHERE q.doc_type = 'statement' AND q.quote_date >= ? GROUP BY 1, 2", (since5,))}
         overdue = {}
         for (n, item), buys in hist.items():
-            if len(buys) < 3:
+            if len(buys) < 3 or is_ex(n):
                 continue
             gaps = sorted((b[0] - a[0]).days for a, b in zip(buys, buys[1:]) if (b[0] - a[0]).days > 3)
             if len(gaps) < 2:

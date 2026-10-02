@@ -1538,13 +1538,16 @@ function barChart(box, labels, values, name) {
 async function renderAnalytics() {
   const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: '', months: 12, compare: 'last_year'};
   if (an.mode === 'decline') return renderDecline(an);
-  const d = await api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`);
+  const [d, exNote] = await Promise.all([api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`), excludeNote()]);
   if (!d.years.length) {
     $('#main').innerHTML = '<div class="card"><h3>📊 매출분석</h3><div class="empty">거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져오면 분석할 수 있습니다.</div></div>';
     return;
   }
   const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
-  const now = new Date(), upto = Y === now.getFullYear() ? now.getMonth() + 1 : 12;   // 올해는 이번 달까지 같은 기간 비교
+  const now = new Date();
+  // 같은 기간 비교: 올해는 이번 달까지, 자료가 연중에 끝난 마지막 연도는 자료가 있는 달까지
+  const lastDataM = d.monthly[Y].reduce((acc, v, i) => v ? i + 1 : acc, 0);
+  const upto = Y === now.getFullYear() ? now.getMonth() + 1 : (Y === d.years[d.years.length - 1] && lastDataM ? lastDataM : 12);
   const cust = an.cust && d.customers.find(c => c.name === an.cust);
   const curM = cust ? cust.cur : d.monthly[Y], prevM = cust ? cust.prev : (d.monthly[P] || Array(12).fill(0));
   const ytd = sum(curM.slice(0, upto)), pytd = sum(prevM.slice(0, upto));
@@ -1561,6 +1564,7 @@ async function renderAnalytics() {
       <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
     <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
+    ${exNote}
     <div class="stats" style="grid-template-columns:repeat(4,1fr)">
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간</span><b>${krw(pytd)}원</b></div>
@@ -1581,7 +1585,7 @@ async function renderAnalytics() {
           <td class="num">${r.vals.length > 1 ? deltaHtml(r.vals[r.vals.length - 1], r.vals[r.vals.length - 2]) : '-'}</td></tr>`).join('')}
       </tbody></table>`}
     </div>
-    ${Y === now.getFullYear() ? `<div class="muted" style="font-size:12px;margin-top:6px">전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
+    ${upto < 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${upto}월까지라서 전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
   </div>`;
   if (an.mode === 'month') {
     const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
@@ -1597,11 +1601,29 @@ async function renderAnalytics() {
   let timer;
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   if ($('#anAll')) $('#anAll').onclick = () => { an.cust = ''; renderAnalytics(); };
+  bindExcludeEdit();
   $$('tr[data-c]').forEach(tr => tr.onclick = () => { an.cust = an.cust === tr.dataset.c ? '' : tr.dataset.c; renderAnalytics().then(() => window.scrollTo({top: 0, behavior: 'smooth'})); });
 }
 
+async function excludeNote() {
+  const ex = await api('/api/analytics/exclude');
+  return `<div class="muted" style="font-size:12px;margin:-6px 0 10px">제외 거래처: <b>${esc(ex.value || '없음')}</b> (자사·관계사는 집계에서 뺍니다)
+    ${state.me.role === 'admin' ? '<a href="#" id="exEdit" style="margin-left:6px">수정</a>' : ''}</div>`;
+}
+function bindExcludeEdit() {
+  const a = $('#exEdit'); if (!a) return;
+  a.onclick = async e => {
+    e.preventDefault();
+    const cur = (await api('/api/analytics/exclude')).value;
+    const v = prompt('매출분석에서 뺄 거래처 (쉼표로 구분, 이름 일부만 써도 됩니다)', cur);
+    if (v === null) return;
+    await api('/api/analytics/exclude', {method: 'PUT', body: {value: v}});
+    toast('저장했습니다.'); renderAnalytics();
+  };
+}
+
 async function renderDecline(an) {
-  const d = await api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`);
+  const [d, exNote] = await Promise.all([api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`), excludeNote()]);
   const ql = an.q.toLowerCase(), f = r => !ql || r.name.toLowerCase().includes(ql);
   const rows = d.rows.filter(f), dormant = d.dormant.filter(f), patterns = (d.patterns || []).filter(f);
   const cycleTxt = i => i.cycle >= 300 ? `약 1년마다${i.month ? ` (보통 ${i.month}월쯤)` : ''}` : i.cycle >= 55 ? `약 ${Math.round(i.cycle / 30)}개월마다` : `약 ${i.cycle}일마다`;
@@ -1617,6 +1639,7 @@ async function renderDecline(an) {
       <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:160px"></div>
     <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
+    ${exNote}
     ${!d.ref ? '<div class="empty">거래명세서가 없습니다.</div>' : `
     <div class="muted" style="font-size:12px;margin-bottom:10px">기준일 ${esc(d.ref)} · 이번 기간 ${esc(d.cur[0])} ~ ${esc(d.cur[1])} vs ${cmpLabel} ${esc(d.cmp[0])} ~ ${esc(d.cmp[1])}</div>
     <div class="stats" style="grid-template-columns:repeat(4,1fr)">
@@ -1660,6 +1683,7 @@ async function renderDecline(an) {
   $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
   let timer;
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  bindExcludeEdit();
   $$('tr[data-k]').forEach(tr => tr.onclick = () => $(`tr[data-detail="${tr.dataset.k}"]`).classList.toggle('hidden'));
   $$('tr[data-p]').forEach(tr => tr.onclick = () => { const m = $('.pmore', tr); if (m) { m.classList.toggle('hidden'); $('.pm-btn', tr).textContent = m.classList.contains('hidden') ? $('.pm-btn', tr).textContent.replace('▴', '▾') : $('.pm-btn', tr).textContent.replace('▾', '▴'); } });
 }
