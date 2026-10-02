@@ -846,7 +846,8 @@ QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer
 
 
 @app.get("/api/quotes")
-def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", user: dict = Depends(current_user)):
+def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: str = "", month: str = "",
+                page: int = 1, size: int = 30, user: dict = Depends(current_user)):
     where, params = ["qt.doc_type = ?"], [doc_type]
     if q:
         where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?"
@@ -855,16 +856,33 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", user: di
     if status:
         where.append("qt.status = ?")
         params.append(status)
-    sql = ("SELECT qt.*, u.name AS creator_name,"
-           " (SELECT name FROM quote_items qi WHERE qi.quote_id = qt.id ORDER BY seq LIMIT 1) AS first_item,"
-           " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = qt.id) AS item_count,"
-           " (SELECT SUM(qty) FROM quote_items qi WHERE qi.quote_id = qt.id) AS total_qty,"
-           " (SELECT CASE WHEN COUNT(DISTINCT unit) = 1 THEN MAX(unit) ELSE '' END FROM quote_items qi"
-           "  WHERE qi.quote_id = qt.id) AS qty_unit"
-           " FROM quotes qt JOIN users u ON u.id = qt.created_by"
-           + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY qt.quote_date DESC, qt.id DESC LIMIT 500")
+    if year:
+        where.append("substr(qt.quote_date, 1, 4) = ?")
+        params.append(year)
+        if month:
+            where.append("substr(qt.quote_date, 6, 2) = ?")
+            params.append(f"{int(month):02d}")
+    cond = " WHERE " + " AND ".join(where)
+    size = max(10, min(size, 200))
+    page = max(1, page)
     with db() as c:
-        return [dict(r) for r in c.execute(sql, params).fetchall()]
+        total, amount = c.execute(f"SELECT COUNT(*), COALESCE(SUM(grand_total), 0) FROM quotes qt{cond}",
+                                  params).fetchone()
+        years = [r[0] for r in c.execute(
+            "SELECT DISTINCT substr(quote_date, 1, 4) FROM quotes WHERE doc_type = ? ORDER BY 1 DESC", (doc_type,))]
+        rows = c.execute(
+            "SELECT qt.*, u.name AS creator_name,"
+            " (SELECT name FROM quote_items qi WHERE qi.quote_id = qt.id ORDER BY seq LIMIT 1) AS first_item,"
+            " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = qt.id) AS item_count,"
+            " (SELECT SUM(qty) FROM quote_items qi WHERE qi.quote_id = qt.id) AS total_qty,"
+            " (SELECT CASE WHEN COUNT(DISTINCT unit) = 1 THEN MAX(unit) ELSE '' END FROM quote_items qi"
+            "  WHERE qi.quote_id = qt.id) AS qty_unit"
+            f" FROM quotes qt JOIN users u ON u.id = qt.created_by{cond}"
+            " ORDER BY qt.quote_date DESC, qt.id DESC LIMIT ? OFFSET ?",
+            (*params, size, (page - 1) * size),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": total, "amount": amount, "page": page, "size": size,
+            "pages": max(1, (total + size - 1) // size), "years": years}
 
 
 @app.get("/api/quotes/suggest")

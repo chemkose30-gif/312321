@@ -807,12 +807,18 @@ function calcLine(qty, price, mode) {
 async function renderQuotes() {
   const isAdmin = state.me.role === 'admin';
   const dt = state.view === 'statements' ? 'statement' : 'quote', D = DOC[dt];
-  if (state.qType !== dt) { state.qType = dt; state.qStatus = ''; state.qSearch = ''; }
-  const q = new URLSearchParams({doc_type: dt});
+  if (state.qType !== dt) { state.qType = dt; state.qStatus = ''; state.qSearch = ''; state.qYear = ''; state.qMonth = ''; state.qPage = 1; }
+  const q = new URLSearchParams({doc_type: dt, page: state.qPage || 1, size: 30});
   if (state.qSearch) q.set('q', state.qSearch);
   if (state.qStatus) q.set('status', state.qStatus);
-  const list = await api('/api/quotes?' + q);
-  const sum = list.reduce((a, x) => a + x.grand_total, 0);
+  if (state.qYear) { q.set('year', state.qYear); if (state.qMonth) q.set('month', state.qMonth); }
+  const res = await api('/api/quotes?' + q);
+  const list = res.items;
+  const pageNums = () => {
+    const cur = res.page, last = res.pages, out = [];
+    for (let i = 1; i <= last; i++) if (i === 1 || i === last || Math.abs(i - cur) <= 2) out.push(i); else if (out[out.length - 1] !== '…') out.push('…');
+    return out.map(n => n === '…' ? '<span class="muted">…</span>' : `<button class="btn sm ${n === cur ? 'primary' : ''}" data-page="${n}">${n}</button>`).join('');
+  };
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">${D.icon} ${D.label}</h3><span class="spacer"></span>
       ${isAdmin ? '<button class="btn" id="qImport">📥 이카운트에서 가져오기</button>' : ''}
@@ -820,8 +826,10 @@ async function renderQuotes() {
       <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     <div class="row" style="margin-bottom:10px">
       <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <select id="qYear" style="width:auto"><option value="">전체 연도</option>${res.years.map(y => `<option value="${y}" ${state.qYear === y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
+      ${state.qYear ? `<select id="qMonth" style="width:auto"><option value="">전체 월</option>${Array.from({length: 12}, (_, i) => i + 1).map(m => `<option value="${m}" ${String(state.qMonth) === String(m) ? 'selected' : ''}>${m}월</option>`).join('')}</select>` : ''}
       <input id="qSearch" placeholder="거래처/품명/건명/${D.no} 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
-      <span class="muted">${list.length}건 · 합계 ${won(sum)}원</span>
+      <span class="muted">${res.total.toLocaleString('ko-KR')}건 · 합계 ${won(res.amount)}원</span>
     </div>
     ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.no}</th><th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
       ${list.map(x => `<tr data-q="${x.id}"><td>${esc(x.quote_no)}</td><td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
@@ -830,13 +838,20 @@ async function renderQuotes() {
         <td class="money">${x.total_qty != null ? Number(x.total_qty).toLocaleString('ko-KR', {maximumFractionDigits: 2}) + (x.qty_unit ? ' ' + esc(x.qty_unit) : '') : ''}</td>
         <td class="money">${won(x.grand_total)}</td><td>${qTag(x.status, dt)}</td><td class="hide-m">${esc(x.creator_name)}</td></tr>`).join('')}
     </tbody></table></div>` : `<div class="empty">${D.label}가 없습니다. [+ 새 ${D.label}]로 작성해 보세요.</div>`}
+    ${res.pages > 1 ? `<div class="row" style="justify-content:center;gap:4px;margin-top:14px">
+      <button class="btn sm" data-page="${res.page - 1}" ${res.page <= 1 ? 'disabled' : ''}>‹ 이전</button>${pageNums()}
+      <button class="btn sm" data-page="${res.page + 1}" ${res.page >= res.pages ? 'disabled' : ''}>다음 ›</button>
+      <span class="muted" style="margin-left:8px">${res.page} / ${res.pages} 페이지</span></div>` : ''}
   </div>`;
+  $$('[data-page]').forEach(b => b.onclick = () => { state.qPage = +b.dataset.page; renderQuotes().then(() => window.scrollTo(0, 0)); });
+  $('#qYear').onchange = e => { state.qYear = e.target.value; state.qMonth = ''; state.qPage = 1; renderQuotes(); };
+  if ($('#qMonth')) $('#qMonth').onchange = e => { state.qMonth = e.target.value; state.qPage = 1; renderQuotes(); };
   $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);
   if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
   if ($('#qImport')) $('#qImport').onclick = () => openStatementImport(dt);
-  $('#qStatus').onchange = e => { state.qStatus = e.target.value; renderQuotes(); };
+  $('#qStatus').onchange = e => { state.qStatus = e.target.value; state.qPage = 1; renderQuotes(); };
   let timer;
-  $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; state.qPage = 1; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   $$('tbody tr').forEach(tr => tr.onclick = () => openQuoteView(+tr.dataset.q));
 }
 
