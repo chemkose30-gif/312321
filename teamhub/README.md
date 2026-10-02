@@ -45,6 +45,25 @@ python app.py
 | `TEAMHUB_DB` | `teamhub/teamhub.db` | 데이터베이스 파일 경로 (이 파일만 백업하면 됨) |
 | `TEAMHUB_ADMIN_PASSWORD` | `admin1234` | 최초 관리자 비밀번호 |
 
+## ☁️ 24시간 운영 (클라우드 서버)
+
+사무실 PC 대신 클라우드 서버(Vultr, AWS Lightsail, 네이버 클라우드 등)에 올리면 **24시간 운영 + 고정 IP**(이카운트 API 허용 IP 등록용)가 해결됩니다.
+
+1. **서버 생성** (예: Vultr → Deploy → Cloud Compute → 지역 **Seoul**, OS **Ubuntu 24.04**, 가장 작은 사양(1 vCPU / 1GB)으로 충분)
+2. **도메인 연결** — 도메인 관리(가비아 등)에서 `teamhub.우리회사.com` 의 **A 레코드**를 서버 IP로 설정
+3. **설치** — 서버에 SSH 접속 후:
+   ```bash
+   git clone <이 저장소 주소> && cd <저장소>/teamhub
+   sudo bash deploy/install.sh teamhub.우리회사.com
+   ```
+   - 자동 시작/재시작(systemd), HTTPS 인증서 자동 발급(Caddy), 방화벽, 매일 DB 백업(30일 보관), 한국 시간대가 설정됩니다.
+   - 설치가 끝나면 **서버 공인 IP**가 표시됩니다 → 이카운트 API 허용 IP로 등록하세요.
+4. **설정** — `sudo nano /etc/teamhub.env` 에 메일 설정 입력 → `sudo systemctl restart teamhub`
+5. **업데이트** — `git pull && sudo bash deploy/update.sh` (업데이트 전 DB 자동 백업)
+
+> 인터넷에 공개되므로 같은 아이디로 10분 안에 10번 로그인에 실패하면 10분간 잠깁니다.
+> 백업 파일(`/var/backups/teamhub`)은 가끔 다른 곳(PC, 클라우드 드라이브)에도 복사해 두세요. Vultr 자동 백업 옵션(유료)을 켜두면 더 안전합니다.
+
 ## 🧾 견적서
 
 1. (관리자) 🧾 견적서 → **🏢 회사 정보** 에서 상호·대표자·사업자번호·주소·업태/종목·전화, **도장 이미지**, 하단 문구를 등록합니다. (견적서의 공급자 칸에 표시)
@@ -104,6 +123,7 @@ python app.py
 
 ## 구성
 - `app.py` — FastAPI 백엔드 + SQLite DB (별도 DB 서버 설치 불필요)
+- `deploy/` — 클라우드 서버 설치/업데이트 스크립트 (systemd, Caddy HTTPS, 백업)
 - `mailer.py` — Outlook 메일 발송(Microsoft 365 Graph API / SMTP), 메일 버튼 서명, 일일 리마인더
 - `static/index.html` — 프론트엔드 (단일 파일, 외부 라이브러리 없음)
 

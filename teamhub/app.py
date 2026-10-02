@@ -3,6 +3,7 @@ import hashlib
 import os
 import secrets
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -247,14 +248,26 @@ class PasswordIn(BaseModel):
     new_password: str
 
 
+# 로그인 실패 제한: 같은 아이디로 10분 안에 10번 틀리면 10분간 잠금 (비밀번호 무작위 대입 방지)
+LOGIN_FAILS: dict = {}
+MAX_FAILS, LOCK_SECONDS = 10, 600
+
+
 @app.post("/api/login")
 def login(body: LoginIn):
+    key = body.username.strip().lower()
+    t = time.time()
+    fails = [f for f in LOGIN_FAILS.get(key, []) if t - f < LOCK_SECONDS]
+    if len(fails) >= MAX_FAILS:
+        raise HTTPException(429, "로그인 실패가 많아 10분간 잠겼습니다. 잠시 후 다시 시도하세요.")
     with db() as c:
         u = c.execute(
             "SELECT * FROM users WHERE username = ? AND active = 1", (body.username.strip(),)
         ).fetchone()
         if not u or hash_pw(body.password, u["salt"]) != u["pw_hash"]:
+            LOGIN_FAILS[key] = fails + [t]
             raise HTTPException(401, "아이디 또는 비밀번호가 올바르지 않습니다.")
+        LOGIN_FAILS.pop(key, None)
         token = secrets.token_urlsafe(32)
         c.execute("INSERT INTO sessions VALUES (?, ?, ?)", (token, u["id"], now()))
     return {"token": token, "user": public_user(u)}
@@ -1063,4 +1076,5 @@ def index():
 init_db()
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8100")))
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8100")),
+                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
