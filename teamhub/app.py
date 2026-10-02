@@ -1647,7 +1647,7 @@ def ecount_logs(_: dict = Depends(admin_user)):
 
 # ---------------------------------------------------------------- 매출(납품) 분석
 @app.get("/api/analytics/sales")
-def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(admin_user)):
+def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(current_user)):
     """거래명세서(발행·출고완료) 기준 거래처별 월별/연별 납품금액."""
     col = "grand_total" if basis == "total" else "supply_total"
     base = f"FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"

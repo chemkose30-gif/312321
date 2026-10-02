@@ -215,7 +215,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="quotes">🧾 견적서</button>
       <button data-view="statements">📄 거래명세서</button>
       <button data-view="shipments">🚢 입고예정</button>
-      <button data-view="analytics" class="admin-only">📊 매출분석</button>
+      <button data-view="analytics">📊 매출분석</button>
       <button data-view="users" class="admin-only">👥 직원관리</button>
     </nav>
     <div class="hdr-right">
@@ -352,7 +352,7 @@ async function boot() {
 // ===================================================== nav / dropdowns
 $$('#nav button').forEach(b => b.onclick = () => go(b.dataset.view));
 function go(view) {
-  if ((view === 'users' || view === 'analytics') && state.me.role !== 'admin') view = 'dashboard';
+  if (view === 'users' && state.me.role !== 'admin') view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, analytics: renderAnalytics, users: renderUsers})[view]();
