@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
 import urllib.parse
 from contextlib import contextmanager
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 
 import ecount
 import mailer
+import webpush
 
 BASE_DIR = Path(__file__).parent
 DB_PATH = os.getenv("TEAMHUB_DB", str(BASE_DIR / "teamhub.db"))
@@ -254,6 +256,15 @@ def init_db():
                 src_row INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger(year, date);
+            CREATE TABLE IF NOT EXISTS push_subs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                endpoint TEXT UNIQUE NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                ua TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS ecount_products (
                 code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', spec TEXT NOT NULL DEFAULT '',
                 unit TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0
@@ -344,6 +355,50 @@ def notify(c, user_id: int, message: str, task_id: Optional[int] = None):
         "INSERT INTO notifications (user_id, message, task_id, created_at) VALUES (?, ?, ?, ?)",
         (user_id, message, task_id, now()),
     )
+    push_async(user_id, {"title": "TeamHub", "body": message, "url": f"/#task={task_id}" if task_id else "/",
+                         "tag": f"task-{task_id}" if task_id else "teamhub"})
+
+
+# ---------------------------------------------------------------- 휴대폰/PC 알림 (Web Push)
+def vapid_keys(c) -> dict:
+    raw = get_setting(c, "vapid", "")
+    if raw:
+        return json.loads(raw)
+    keys = webpush.generate_vapid()
+    set_setting(c, "vapid", json.dumps(keys))
+    return keys
+
+
+def push_send(user_id: int, data: dict) -> list:
+    """사용자의 모든 기기로 알림 발송 → [HTTP 상태코드…]. 끝난 구독(404/410)은 지운다."""
+    with db() as c:
+        vapid = vapid_keys(c)
+        subs = [dict(r) for r in c.execute("SELECT * FROM push_subs WHERE user_id = ?", (user_id,))]
+    subject = f"mailto:{mailer.MAIL_FROM}" if mailer.MAIL_FROM else mailer.BASE_URL
+    results, dead = [], []
+    for sub in subs:
+        try:
+            code = webpush.send(sub, data, vapid, subject)
+        except Exception:
+            code = 0
+        results.append(code)
+        if code in (403, 404, 410):
+            dead.append(sub["id"])
+    if dead:
+        with db() as c:
+            c.executemany("DELETE FROM push_subs WHERE id = ?", [(i,) for i in dead])
+    return results
+
+
+def push_async(user_id: int, data: dict):
+    # 알림 저장(트랜잭션)이 끝난 뒤 보내도록 잠깐 기다렸다가 백그라운드로 발송
+    def run():
+        time.sleep(0.5)
+        try:
+            push_send(user_id, data)
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------------------------------------------------------------- Auth
@@ -2787,6 +2842,62 @@ def run_daily_reminders(today: str):
 
 
 # ---------------------------------------------------------------- Frontend
+@app.get("/api/push/key")
+def push_key(user: dict = Depends(current_user)):
+    with db() as c:
+        n = c.execute("SELECT COUNT(*) FROM push_subs WHERE user_id = ?", (user["id"],)).fetchone()[0]
+        return {"key": vapid_keys(c)["public"], "devices": n}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(body: dict, user: dict = Depends(current_user), user_agent: str = Header(default="")):
+    endpoint = str(body.get("endpoint", ""))
+    keys = body.get("keys") or {}
+    if not endpoint.startswith("https://") or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(400, "알림 구독 정보가 올바르지 않습니다.")
+    with db() as c:
+        c.execute("INSERT INTO push_subs (user_id, endpoint, p256dh, auth, ua, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+                  " ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh,"
+                  " auth = excluded.auth, ua = excluded.ua",
+                  (user["id"], endpoint, keys["p256dh"], keys["auth"], user_agent[:200], now()))
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(body: dict, user: dict = Depends(current_user)):
+    with db() as c:
+        c.execute("DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?", (str(body.get("endpoint", "")), user["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/push/test")
+def push_test(user: dict = Depends(current_user)):
+    res = push_send(user["id"], {"title": "TeamHub", "body": f"{user['name']}님, 알림이 잘 옵니다 ✅", "url": "/",
+                                 "tag": "test"})
+    if not res:
+        raise HTTPException(400, "이 계정에 알림을 켠 기기가 없습니다.")
+    return {"sent": sum(1 for r in res if 200 <= r < 300), "total": len(res), "codes": res}
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(BASE_DIR / "static" / "sw.js", media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(BASE_DIR / "static" / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/icon-{size}.png")
+def icon(size: int):
+    if size not in (180, 192, 512):
+        raise HTTPException(404)
+    return FileResponse(BASE_DIR / "static" / f"icon-{size}.png", media_type="image/png",
+                        headers={"Cache-Control": "max-age=86400"})
+
+
 @app.get("/")
 def index():
     # 업데이트 후 브라우저가 예전 화면을 쓰지 않도록 항상 새로 받게 한다

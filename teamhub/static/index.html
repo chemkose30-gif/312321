@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
+<link rel="icon" href="/icon-192.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="TeamHub">
 <title>TeamHub · 사내 캘린더 & 업무지시</title>
 <style>
 :root{
@@ -261,6 +266,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button class="user-chip" id="userBtn"></button>
       <div class="dropdown notif-panel hidden" id="notifPanel"></div>
       <div class="dropdown hidden" id="userMenu">
+        <button id="pushBtn">🔔 알림 · 앱 설치</button>
         <button id="pwBtn" class="admin-only">🔑 비밀번호 변경</button>
         <button id="logoutBtn">🚪 로그아웃</button>
       </div>
@@ -386,6 +392,8 @@ async function boot() {
   $$('.profit-only').forEach(el => el.classList.toggle('hidden', !state.me.can_profit));
   go(state.view);
   refreshNotifs();
+  openFromHash();
+  pushInit();
 }
 
 // ===================================================== nav / dropdowns
@@ -417,6 +425,7 @@ async function refreshNotifs(renderPanel = false) {
   const b = $('#bellBadge');
   b.textContent = n.unread > 99 ? '99+' : n.unread;
   b.classList.toggle('hidden', !n.unread);
+  document.title = (n.unread ? `(${n.unread}) ` : '') + 'TeamHub · 사내 캘린더 & 업무지시';
   if (!renderPanel) return;
   const p = $('#notifPanel');
   p.innerHTML = `<div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line)">
@@ -432,11 +441,123 @@ async function refreshNotifs(renderPanel = false) {
 }
 setInterval(() => refreshNotifs(), 30000);
 
+
+// ===================================================== 휴대폰·PC 알림 (Web Push) · 앱 설치
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; });
+
+function openFromHash() {   // 알림을 눌러 들어오면 #task=번호 → 그 업무 열기
+  const m = location.hash.match(/task=(\d+)/);
+  if (m && state.me) { history.replaceState(null, '', location.pathname); openTask(+m[1]); }
+}
+window.addEventListener('hashchange', openFromHash);
+
+async function pushInit() {
+  if (!('serviceWorker' in navigator)) return;
+  try { await navigator.serviceWorker.register('/sw.js'); } catch { return; }
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.type === 'open') { const u = new URL(e.data.url); location.hash = u.hash; refreshNotifs(); }
+  });
+  // 이미 켠 기기는 서버에 구독을 다시 알려 둔다 (브라우저가 구독을 바꾸는 경우 대비)
+  const sub = await pushSubscription();
+  if (sub) api('/api/push/subscribe', {method: 'POST', body: sub.toJSON()}).catch(() => {});
+}
+
+async function pushSubscription() {
+  if (!pushSupported() || Notification.permission !== 'granted') return null;
+  const reg = await navigator.serviceWorker.getRegistration('/');
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function pushEnable() {
+  if (!pushSupported()) throw new Error(isIOS() && !isStandalone()
+    ? '아이폰은 먼저 "홈 화면에 추가"로 앱을 설치한 뒤, 설치된 TeamHub 앱에서 알림을 켜야 합니다.'
+    : '이 브라우저는 알림을 지원하지 않습니다. 크롬이나 엣지를 쓰세요.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('알림이 차단되어 있습니다. 주소창 왼쪽 자물쇠(🔒) → 알림 → 허용으로 바꾼 뒤 다시 누르세요.');
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  await navigator.serviceWorker.ready;
+  const {key} = await api('/api/push/key');
+  const raw = Uint8Array.from(atob(key.replace(/-/g, '+').replace(/_/g, '/')), ch => ch.charCodeAt(0));
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    try { sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: raw}); }
+    catch (e) { throw new Error('브라우저가 알림 등록을 거부했습니다. 시크릿(InPrivate) 창이 아닌 일반 창에서, 크롬이나 엣지로 다시 해 보세요. (' + e.message + ')'); }
+  }
+  await api('/api/push/subscribe', {method: 'POST', body: sub.toJSON()});
+}
+
+async function pushDisable() {
+  const sub = await pushSubscription();
+  if (sub) { await api('/api/push/unsubscribe', {method: 'POST', body: {endpoint: sub.endpoint}}).catch(() => {}); await sub.unsubscribe(); }
+}
+
+async function openPushSettings() {
+  const on = !!(await pushSubscription());
+  const info = await api('/api/push/key').catch(() => ({devices: 0}));
+  const ios = isIOS(), standalone = isStandalone();
+  openModal(`<h2>🔔 알림 · 앱 설치</h2>
+    <div class="ec-box">
+      <b>이 기기에서 알림 받기</b>
+      <div class="muted" style="font-size:13px;margin:4px 0 8px">업무 지시·상태 변경·코멘트가 생기면 TeamHub 창을 닫아 두어도 윈도우·휴대폰 알림으로 뜹니다. 알림을 누르면 그 업무가 바로 열립니다.</div>
+      <div class="row"><span class="tag ${on ? 's-done' : 's-todo'}">${on ? '켜짐' : '꺼짐'}</span>
+        <span class="muted" style="font-size:12px">내 계정에서 알림 켠 기기 ${info.devices || 0}대</span><span class="spacer"></span>
+        ${on ? '<button class="btn" id="pTest">테스트 알림</button><button class="btn" id="pOff">끄기</button>' : '<button class="btn primary" id="pOn">알림 켜기</button>'}</div>
+      ${ios && !standalone ? '<div class="muted" style="font-size:12px;margin-top:6px">⚠ 아이폰은 아래 방법으로 <b>홈 화면에 추가</b>한 뒤, 홈 화면의 TeamHub 아이콘으로 열어서 알림을 켜야 합니다 (iOS 16.4 이상).</div>' : ''}
+      <div class="err"></div>
+    </div>
+    <div class="ec-box">
+      <b>📲 앱으로 설치 (바탕화면·홈 화면 아이콘)</b>
+      ${standalone ? '<div class="muted" style="font-size:13px;margin-top:4px">✅ 지금 설치된 앱으로 보고 있습니다.</div>'
+        : ios ? `<div style="font-size:13px;line-height:1.7;margin-top:4px">사파리 아래쪽 <b>공유 버튼(□↑)</b> → <b>홈 화면에 추가</b> → <b>추가</b></div>`
+        : `<div style="font-size:13px;line-height:1.7;margin-top:4px">${installPrompt ? '<button class="btn primary" id="pInstall">TeamHub 앱 설치</button><br>' : ''}
+            PC(크롬·엣지): 주소창 오른쪽 끝의 <b>설치 아이콘(⊕ 또는 모니터 모양)</b> → <b>설치</b><br>
+            엣지 메뉴 ⋯ → <b>앱 → 이 사이트를 앱으로 설치</b> / 크롬 메뉴 ⋮ → <b>저장 및 공유 → 앱 설치</b><br>
+            안드로이드(크롬): 메뉴 ⋮ → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b></div>`}
+      <div class="muted" style="font-size:12px;margin-top:6px">설치하면 시작 메뉴·작업 표시줄·바탕화면에 TeamHub 아이콘이 생기고, 따로 된 창으로 열립니다.</div>
+    </div>
+    <div class="muted" style="font-size:12px;margin-top:10px">PC에서 창을 다 닫아도 알림을 받으려면 크롬/엣지 설정의 <b>"브라우저를 닫아도 백그라운드 앱 계속 실행"</b>이 켜져 있어야 합니다 (기본값은 켜짐).</div>
+    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    const err = m => $('.err', bg).textContent = m;
+    const reopen = () => { close(); openPushSettings(); };
+    if ($('#pOn', bg)) $('#pOn', bg).onclick = async () => {
+      try { await pushEnable(); toast('알림을 켰습니다.'); await api('/api/push/test', {method: 'POST'}).catch(() => {}); reopen(); }
+      catch (e) { err(e.message); }
+    };
+    if ($('#pOff', bg)) $('#pOff', bg).onclick = async () => { await pushDisable(); toast('이 기기의 알림을 껐습니다.'); reopen(); };
+    if ($('#pTest', bg)) $('#pTest', bg).onclick = async () => {
+      try { const r = await api('/api/push/test', {method: 'POST'}); toast(`${r.sent}/${r.total}대 기기로 보냈습니다.`); } catch (e) { err(e.message); }
+    };
+    if ($('#pInstall', bg)) $('#pInstall', bg).onclick = async () => { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; reopen(); };
+  });
+}
+$('#pushBtn').onclick = () => { $('#userMenu').classList.add('hidden'); openPushSettings(); };
+
+// 홈 화면 안내: 알림을 아직 안 켠 기기면 한 번 보여 줌 ('나중에'를 누르면 이 기기에서는 숨김)
+async function pushBanner() {
+  let hide = false;
+  try { hide = localStorage.getItem('th_push_banner') === 'off'; } catch {}
+  if (hide || (pushSupported() && Notification.permission === 'denied')) return '';
+  if (await pushSubscription()) return '';
+  if (!pushSupported() && !isIOS()) return '';
+  return `<div class="card" id="pushBanner" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--primary-weak)">
+    <span style="font-size:22px">🔔</span><div style="flex:1;min-width:200px"><b>업무 알림을 이 기기에서 받아 보세요</b><br><small class="muted">업무 지시·완료·코멘트가 생기면 창을 닫아 두어도 알림이 뜹니다. 바탕화면 앱으로도 설치할 수 있어요.</small></div>
+    <button class="btn primary" id="pbOn">알림 켜기</button><button class="btn" id="pbLater">나중에</button></div>`;
+}
+function bindPushBanner() {
+  const b = $('#pushBanner'); if (!b) return;
+  $('#pbOn').onclick = () => openPushSettings();
+  $('#pbLater').onclick = () => { try { localStorage.setItem('th_push_banner', 'off'); } catch {} b.remove(); };
+}
+
 // ===================================================== dashboard
 async function renderDashboard() {
-  const d = await api('/api/dashboard');
+  const [d, banner] = await Promise.all([api('/api/dashboard'), pushBanner().catch(() => '')]);
   const c = d.counts;
-  $('#main').innerHTML = `
+  $('#main').innerHTML = `${banner}
     <h2 style="margin:0 0 4px">안녕하세요, ${esc(state.me.name)}님 👋</h2>
     <div class="muted" style="margin-bottom:16px">${esc(d.today)} · ${esc(state.me.dept)} ${esc(state.me.position)}</div>
     <div class="stats">
@@ -495,6 +616,7 @@ async function renderDashboard() {
   $$('[data-task]').forEach(el => el.onclick = () => openTask(+el.dataset.task));
   $('#dNewEv').onclick = () => openEvent(null, d.today);
   $('#dNewTask').onclick = () => openTaskForm();
+  bindPushBanner();
 }
 
 // ===================================================== calendar
