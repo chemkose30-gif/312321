@@ -274,6 +274,22 @@ def init_db():
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_mail_items_owner ON mail_items(owner_id, status, sent_at);
+            CREATE TABLE IF NOT EXISTS bl_watch (
+                number TEXT PRIMARY KEY,
+                kind TEXT NOT NULL DEFAULT '',
+                owner_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                mail_id INTEGER,
+                subject TEXT NOT NULL DEFAULT '',
+                sender TEXT NOT NULL DEFAULT '',
+                eta_hint TEXT NOT NULL DEFAULT '',
+                item_hint TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'wait',
+                shipment_id INTEGER,
+                tries INTEGER NOT NULL DEFAULT 0,
+                last_try TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS push_subs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2761,6 +2777,7 @@ def unipass_loop():
                     ids = [r[0] for r in c.execute(
                         "SELECT id FROM shipments WHERE status != 'arrived' AND (bl_no != '' OR hbl_no != '')"
                         " AND cs_out_at = '' AND cs_checked_at < ? ORDER BY eta LIMIT 100", (cutoff,))] if key else []
+                process_bl_watch()
                 for sid in ids:
                     try:
                         refresh_unipass(sid)
@@ -2770,6 +2787,154 @@ def unipass_loop():
         except Exception as e:  # noqa: BLE001
             print("[TeamHub] unipass loop error:", e)
         time.sleep(600)
+
+
+# ---- 메일에 나온 B/L·운송장 번호 → UNI-PASS 조회 → 입고예정 자동 등록
+def shipment_by_number(c, num: str):
+    n = mailin.norm_bl(num)
+    for r in c.execute("SELECT id, bl_no, hbl_no FROM shipments WHERE bl_no != '' OR hbl_no != ''"):
+        if n and n in (mailin.norm_bl(r["bl_no"]), mailin.norm_bl(r["hbl_no"])):
+            return r["id"]
+    return None
+
+
+def watch_bl_numbers(c, mail_id: int, owner_id, it: dict, bulk: bool):
+    """메일 본문에서 B/L·운송장 번호를 찾아 대기 목록에 넣는다 (이미 입고예정에 있는 번호는 제외)."""
+    text = f"{it['subject']}\n{mailin.own_text(it['body']) or it['body']}"
+    nums = mailin.find_bl_numbers(text)
+    if not nums:
+        return
+    eta = next((cd["date"] for cd in it["candidates"] if cd["kind"] == "ship" and not
+                re.match(r"(etd|선적|출항)", (cd.get("label") or "").lower())), "")
+    for num, kind in nums:
+        if shipment_by_number(c, num):
+            continue
+        c.execute("INSERT OR IGNORE INTO bl_watch (number, kind, owner_id, mail_id, subject, sender, eta_hint, created_at)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (num, kind, owner_id, mail_id, it["subject"][:200],
+                                                       it["from_name"][:100], eta, now()))
+
+
+def _first_admin(c):
+    r = c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1 ORDER BY id LIMIT 1").fetchone()
+    return r[0] if r else 1
+
+
+def register_from_bl(num: str, kind: str = "", owner_id=None, subject: str = "", sender: str = "",
+                     eta_hint: str = "", quiet: bool = False) -> dict:
+    """번호 하나를 UNI-PASS 로 조회해서 찾으면 입고예정을 만든다. → {state, shipment_id, message}"""
+    with db() as c:
+        key = get_setting(c, "unipass_key", "")
+        existing = shipment_by_number(c, num)
+    if existing:
+        return {"state": "exists", "shipment_id": existing, "message": "이미 입고예정에 있는 번호입니다."}
+    if not key:
+        return {"state": "wait", "message": "UNI-PASS 인증키가 없습니다."}
+    r = {"found": False}
+    order = [("hbl", "mbl")] if kind == "H" else [("mbl", "hbl")]
+    for first, second in order:
+        for as_ in (first, second):
+            r = unipass.lookup(key, num if as_ == "mbl" else "", num if as_ == "hbl" else "")
+            if r.get("found"):
+                break
+    if not r.get("found"):
+        return {"state": "wait", "message": "UNI-PASS 에 아직 없습니다 (적하목록 제출 전일 수 있음). 2시간마다 다시 찾습니다."}
+    # 이미 반출된 지 오래된 화물은 등록하지 않음 (예전 메일을 한꺼번에 가져온 경우)
+    if r["out_at"] and r["out_at"][:10] < (date.today() - timedelta(days=3)).isoformat():
+        return {"state": "old", "message": f"이미 {r['out_at'][:10]} 에 반출된 화물이라 등록하지 않았습니다."}
+    w = re.match(r"([\d.]+)\s*(\w*)", r["weight"] or "")
+    item = (r["item"] or mailin.clean_subject(subject) or num)[:120]
+    eta = r["arrived"] or eta_hint or date.today().isoformat()
+    status = "customs" if (r["arrived"] or r["in_at"]) else "shipped"
+    with db() as c:
+        if shipment_by_number(c, r["mbl_no"] or num) or shipment_by_number(c, r["hbl_no"] or num):
+            return {"state": "exists", "message": "이미 입고예정에 있는 번호입니다."}
+        oid = owner_id or _first_admin(c)
+        ts = now()
+        cur = c.execute(
+            f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
+            f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, NULL, ?, ?, ?)",
+            (item, "", sender[:100], "", float(w[1]) if w else 0, (w[2] or "kg").lower() if w else "kg", eta, status,
+             r["mbl_no"] or (num if kind != "H" else ""), r["hbl_no"] or (num if kind == "H" else ""), "",
+             f"[자동 등록] UNI-PASS {num}" + (f" · 메일: {subject}" if subject else ""), oid, ts, ts))
+        sid = cur.lastrowid
+    refresh_unipass(sid, quiet=True)
+    with db() as c:      # 같은 번호가 대기 목록에 있으면 끝난 것으로
+        c.execute("UPDATE bl_watch SET state = 'done', shipment_id = ?, message = '입고예정에 등록했습니다.' WHERE number = ?",
+                  (sid, mailin.norm_bl(num)))
+    if not quiet:
+        with db() as c:
+            notify(c, oid, f"🚢 입고예정 자동 등록: {item} · {num}" + (f" · 입항 {r['arrived']}" if r["arrived"] else "")
+                   + (f" · 반입 {r['in_at'][:10]}" if r["in_at"] else ""))
+    return {"state": "done", "shipment_id": sid, "message": "입고예정에 등록했습니다."}
+
+
+BL_LOCK = threading.Lock()
+
+
+def process_bl_watch():
+    """대기 목록의 번호를 UNI-PASS 로 다시 찾아본다. 3주 동안 못 찾으면 그만 찾는다."""
+    if not BL_LOCK.acquire(blocking=False):
+        return
+    try:
+        with db() as c:
+            if not get_setting(c, "unipass_key", ""):
+                return
+            cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+            stale = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("UPDATE bl_watch SET state = 'gave_up' WHERE state = 'wait' AND created_at < ?", (stale,))
+            rows = [dict(r) for r in c.execute("SELECT * FROM bl_watch WHERE state = 'wait' AND last_try < ?"
+                                               " ORDER BY created_at DESC LIMIT 50", (cutoff,))]
+        for w in rows:
+            try:
+                res = register_from_bl(w["number"], w["kind"], w["owner_id"], w["subject"], w["sender"], w["eta_hint"])
+            except unipass.UnipassError as e:
+                res = {"state": "wait", "message": str(e)}
+            with db() as c:
+                c.execute("UPDATE bl_watch SET state = ?, shipment_id = ?, tries = tries + 1, last_try = ?, message = ?"
+                          " WHERE number = ?", (res["state"], res.get("shipment_id"), now(), res["message"], w["number"]))
+            time.sleep(2)
+    finally:
+        BL_LOCK.release()
+
+
+def bl_watch_soon():
+    threading.Thread(target=lambda: (time.sleep(2), process_bl_watch()), daemon=True).start()
+
+
+class BlIn(BaseModel):
+    number: str
+    kind: str = ""
+
+
+@app.post("/api/shipments/from-bl")
+def shipment_from_bl(body: BlIn, user: dict = Depends(current_user)):
+    """B/L·운송장 번호를 넣으면 UNI-PASS 로 찾아 바로 입고예정 등록. 아직 없으면 대기 목록에 넣는다."""
+    num = mailin.norm_bl(body.number)
+    if len(num) < 6:
+        raise HTTPException(400, "번호를 확인하세요.")
+    try:
+        res = register_from_bl(num, body.kind, user["id"], quiet=True)
+    except unipass.UnipassError as e:
+        raise HTTPException(400, str(e))
+    if res["state"] == "wait":
+        with db() as c:
+            c.execute("INSERT OR REPLACE INTO bl_watch (number, kind, owner_id, state, last_try, tries, message, created_at)"
+                      " VALUES (?, ?, ?, 'wait', ?, 1, ?, ?)", (num, body.kind, user["id"], now(), res["message"], now()))
+    return res
+
+
+@app.get("/api/bl-watch")
+def bl_watch_list(user: dict = Depends(current_user)):
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM bl_watch WHERE state = 'wait' ORDER BY created_at DESC LIMIT 100")]
+        return [r for r in rows if not shipment_by_number(c, r["number"])]
+
+
+@app.delete("/api/bl-watch/{number}")
+def bl_watch_delete(number: str, user: dict = Depends(current_user)):
+    with db() as c:
+        c.execute("UPDATE bl_watch SET state = 'removed' WHERE number = ?", (number,))
+    return {"ok": True}
 
 
 @app.post("/api/shipments/{sid}/unipass")
@@ -3034,6 +3199,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
         if cur.rowcount:
             added += 1
             touched[key] = oid
+            watch_bl_numbers(c, cur.lastrowid, oid, it, bulk)
     found, ai_queue, heads = 0, [], []
     for key in touched:
         head_id, cands, foreign = refresh_thread(c, key)
@@ -3052,6 +3218,8 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
               " AND thread_key NOT IN (SELECT thread_key FROM mail_items WHERE created_at >= ?)", (cutoff,))
     if ai_queue:
         threading.Thread(target=run_ai_queue, args=(ai_queue,), daemon=True).start()
+    if added and not bulk:
+        bl_watch_soon()
     out = {"messages": len(items), "added": added, "duplicates": dup, "with_schedule": found}
     if bulk:
         out["heads"] = heads
@@ -3170,6 +3338,7 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
                            + (f" (중복 {dup}통 제외)" if dup else ""))
         _set_import(uid, status="done", read=total, added=added, duplicates=dup, skipped_old=old, threads=len(live),
                     finished_at=now())
+        bl_watch_soon()
         if ai_ids:
             run_ai_queue(ai_ids, quiet=True)      # 알림은 위에서 한 번만
     except Exception as e:
@@ -3378,8 +3547,8 @@ def mailin_list(status: str = "new", q: str = "", user: dict = Depends(current_u
         rows = [dict(r) for r in c.execute(sql + " ORDER BY m.sent_at DESC LIMIT 300", params)]
         vc, vp = mail_visible(user)
         counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {vc} GROUP BY 1", vp)}
-    for r in rows:
-        r["candidates"] = json.loads(r["candidates"] or "[]")
+        for r in rows:        # 그 사이 등록된 입고예정과 다시 맞춰 봄 (자동 등록된 B/L 등)
+            r["candidates"] = match_shipments(c, json.loads(r["candidates"] or "[]"), r["subject"])
     return {"items": rows, "counts": counts, "ai": ai_mail.enabled()}
 
 
@@ -3397,7 +3566,7 @@ def mailin_get(mid: int, user: dict = Depends(current_user)):
         r = dict(mail_item(c, mid, user))
         r["thread"] = [{"id": t["id"], "from_name": t["from_name"], "from_addr": t["from_addr"], "sent_at": t["sent_at"],
                         "subject": t["subject"], "body": t["body"]} for t in thread_rows(c, r["thread_key"])]
-    r["candidates"] = json.loads(r["t_candidates"] or "[]")
+        r["candidates"] = match_shipments(c, json.loads(r["t_candidates"] or "[]"), r["subject"])
     return r
 
 

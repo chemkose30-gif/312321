@@ -1807,6 +1807,8 @@ async function renderShipments() {
     <div class="tabs">
       <button data-v="open">진행중</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
     </div>
+    <div class="row" style="margin-bottom:8px;gap:6px"><input id="shBl" placeholder="B/L·항공 운송장 번호로 바로 등록 (UNI-PASS 조회)" style="max-width:340px"><button class="btn" id="shBlGo">🛃 조회해서 등록</button></div>
+    <div id="shWatch"></div>
     <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B/L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
     ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
         <div class="l1">${shTag(sh.status)}<b>${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
@@ -1821,6 +1823,22 @@ async function renderShipments() {
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.v === view); b.onclick = () => { state.shView = b.dataset.v; renderShipments(); }; });
   $('#shNew').onclick = () => openShipment(null, todayStr());
   if ($('#shUp')) $('#shUp').onclick = openUnipassSettings;
+  $('#shBlGo').onclick = async () => {
+    const number = $('#shBl').value.trim(); if (!number) return;
+    $('#shBlGo').disabled = true; $('#shBlGo').textContent = '조회 중…';
+    try {
+      const r = await api('/api/shipments/from-bl', {method: 'POST', body: {number}});
+      toast(r.message);
+      if (r.shipment_id) { await renderShipments(); openShipment(r.shipment_id); return; }
+      renderShipments();
+    } catch (err) { toast(err.message); $('#shBlGo').disabled = false; $('#shBlGo').textContent = '🛃 조회해서 등록'; }
+  };
+  $('#shBl').onkeydown = e => { if (e.key === 'Enter') $('#shBlGo').click(); };
+  api('/api/bl-watch').then(ws => {
+    if (!ws.length || !$('#shWatch')) return;
+    $('#shWatch').innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:8px">⏳ UNI-PASS 에 아직 안 올라와 기다리는 번호 (2시간마다 다시 찾아 자동 등록): ${ws.map(w => `<span class="tag s-todo" title="${esc(w.subject || '')} ${esc(w.message || '')}">${esc(w.number)} <a href="#" data-unwatch="${esc(w.number)}" style="margin-left:2px">✕</a></span>`).join(' ')}</div>`;
+    $$('[data-unwatch]').forEach(a => a.onclick = async e => { e.preventDefault(); if (!confirm(a.dataset.unwatch + ' 번호 찾기를 그만할까요?')) return; await api('/api/bl-watch/' + encodeURIComponent(a.dataset.unwatch), {method: 'DELETE'}); renderShipments(); });
+  }).catch(() => {});
   let timer;
   $('#shSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.shSearch = e.target.value; renderShipments().then(() => { const i = $('#shSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));

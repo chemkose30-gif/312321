@@ -290,3 +290,43 @@ def parse_raw(raw: bytes) -> list:
                       "body": text[:20000], "candidates": extract(subject, text, sent), "forwarder": forwarder,
                       "to": ", ".join(a for _, a in getaddresses([str(msg.get("to", "") or "")]))[:300]})
     return items
+
+
+# ---- B/L · 항공 운송장(AWB) 번호 찾기
+BL_LABEL = re.compile(
+    r"(?P<lab>M\s*\.?\s*B\s*/?\s*L|H\s*\.?\s*B\s*/?\s*L|MASTER\s*B/?L|HOUSE\s*B/?L|M?AWB|H?AWB|B\s*/\s*L|\bBL\b|"
+    r"BILL\s+OF\s+LADING|AIR\s*WAY\s*BILL|운송장|선하증권|비엘)"
+    r"\s*(?:NO\.?|NUMBER|#|번호)?\s*[:：.\-]?\s*(?P<num>[A-Z]{4}\s\d{6,12}(?![\w\-])|\d{3}[\s\-]\d{8}(?!\d)|[A-Z0-9][A-Z0-9\-]{6,24}[A-Z0-9])",
+    re.I)
+AWB_BARE = re.compile(r"(?<![\d\-])(\d{3})[\s\-]?(\d{8})(?![\d\-])")
+
+
+def awb_ok(num: str) -> bool:
+    """항공 운송장 11자리: 뒤 8자리 중 앞 7자리를 7로 나눈 나머지가 마지막 숫자."""
+    d = re.sub(r"\D", "", num)
+    return len(d) == 11 and int(d[3:10]) % 7 == int(d[10])
+
+
+def norm_bl(num: str) -> str:
+    return re.sub(r"[^0-9A-Z]", "", str(num or "").upper())
+
+
+def find_bl_numbers(text: str) -> list:
+    """[(번호, 'M'|'H'|'')] — 'B/L No:' 같은 표시가 붙은 번호 + 표시 없이 쓴 항공 운송장(검증 숫자가 맞는 것)."""
+    out, seen = [], set()
+    for m in BL_LABEL.finditer(text or ""):
+        num = norm_bl(m["num"])
+        if len(num) < 8 or sum(ch.isdigit() for ch in num) < 5 or num in seen:
+            continue
+        if num.isdigit() and len(num) not in (11, 12) and not re.search(r"B\s*/?\s*L|비엘|선하", m["lab"], re.I):
+            continue                     # 숫자만 있고 길이가 이상하면 (전화번호 등) 제외
+        lab = m["lab"].upper().replace(" ", "")
+        kind = "M" if lab.startswith(("M", "MASTER")) else "H" if lab.startswith(("H", "HOUSE")) else ""
+        seen.add(num)
+        out.append((num, kind))
+    for m in AWB_BARE.finditer(text or ""):
+        num = m[1] + m[2]
+        if num not in seen and awb_ok(num):
+            seen.add(num)
+            out.append((num, ""))
+    return out[:10]
