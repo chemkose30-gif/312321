@@ -1411,12 +1411,18 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
             )
             insert_import_items(c, cur.lastrowid, g["items"])
             created += 1
-    preview = [{"date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
-                "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]}
-               for g in slips[:8]]
+    by_date = sorted(slips, key=lambda g: g["date"])
+    pick = by_date if len(by_date) <= 10 else by_date[:4] + [None] + by_date[-5:]
+    preview = [None if g is None else {
+        "date": g["date"], "slip": g["slip"], "customer": g["customer"], "lines": len(g["items"]),
+        "total": sum(i["supply"] + i["vat"] for i in g["items"]), "duplicate": g["duplicate"]} for g in pick]
+    years = {}
+    for g in slips:
+        years[g["date"][:4]] = years.get(g["date"][:4], 0) + 1
+    period = [by_date[0]["date"], by_date[-1]["date"]] if by_date else []
     vat_assumed = not ({"supply", "total", "vat"} & set(cols))
     return {"slips": len(slips), "lines": sum(len(g["items"]) for g in slips), "created": created,
-            "skipped": skipped, "updated": updated, "vat_assumed": vat_assumed, "columns": cols, "preview": preview, "dry_run": dry_run}
+            "skipped": skipped, "updated": updated, "vat_assumed": vat_assumed, "years": years, "period": period, "columns": cols, "preview": preview, "dry_run": dry_run}
 
 
 @app.get("/api/ecount/logs")

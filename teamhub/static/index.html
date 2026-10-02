@@ -1212,10 +1212,10 @@ function openStatementImport(dt = 'statement') {
         const r = await send(true);
         const over = $('#impOver', bg).checked;
         const fresh = over ? r.slips : r.slips - r.skipped;
-        $('#impRes', bg).innerHTML = `<b>전표 ${r.slips}건 (품목 ${r.lines}줄)</b> 확인 · ${over ? '가져오기/덮어쓰기' : '새로 가져올 것'} <b>${fresh}건</b>${!over && r.skipped ? ` · 이미 있음 ${r.skipped}건` : ''}
+        $('#impRes', bg).innerHTML = `${r.period.length ? `<div style="margin-bottom:6px">기간 <b>${esc(r.period[0])} ~ ${esc(r.period[1])}</b> · 연도별 ${Object.entries(r.years).sort().map(([y, n]) => `<b>${y}년</b> ${n}건`).join(', ')}</div>` : ''}<b>전표 ${r.slips}건 (품목 ${r.lines}줄)</b> 확인 · ${over ? '가져오기/덮어쓰기' : '새로 가져올 것'} <b>${fresh}건</b>${!over && r.skipped ? ` · 이미 있음 ${r.skipped}건` : ''}
           <div class="qscroll"><table style="margin-top:8px"><thead><tr><th>일자</th><th>전표</th><th>거래처</th><th style="text-align:right">품목</th><th style="text-align:right">합계</th><th></th></tr></thead><tbody>
-          ${r.preview.map(g => `<tr style="cursor:default"><td>${esc(g.date)}</td><td>${esc(g.slip || '-')}</td><td>${esc(g.customer)}</td><td class="money">${g.lines}</td><td class="money">${won(g.total)}</td><td>${g.duplicate ? '<span class="tag s-todo">이미 있음</span>' : ''}</td></tr>`).join('')}
-          </tbody></table></div>${r.slips > r.preview.length ? `<small class="muted">… 외 ${r.slips - r.preview.length}건</small>` : ''}
+          ${r.preview.map(g => !g ? '<tr style="cursor:default"><td colspan="6" class="muted" style="text-align:center">⋯</td></tr>' : `<tr style="cursor:default"><td>${esc(g.date)}</td><td>${esc(g.slip || '-')}</td><td>${esc(g.customer)}</td><td class="money">${g.lines}</td><td class="money">${won(g.total)}</td><td>${g.duplicate ? '<span class="tag s-todo">이미 있음</span>' : ''}</td></tr>`).join('')}
+          </tbody></table></div>
           ${r.vat_assumed ? '<div class="tag s-hold" style="margin-top:6px">파일에 금액 열이 없어 공급가액 = 수량 × 단가, 부가세 10%로 계산합니다</div>' : ''}
           <div class="muted" style="font-size:12px;margin-top:6px">인식한 열: ${esc(r.columns.join(', '))}</div>`;
         if (fresh > 0) { $('#impGo', bg).classList.remove('hidden'); $('#impGo', bg).textContent = `${fresh}건 가져오기`; }
