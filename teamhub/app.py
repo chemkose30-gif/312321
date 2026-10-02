@@ -39,6 +39,17 @@ async def lifespan(_app):
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
+            if get_setting(c, "mail_topics_v", "") != "2":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
+                for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
+                                   " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():
+                    c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
+                c.execute("UPDATE mail_items SET topic = 'order' WHERE topic = 'sales'")
+                for u in c.execute("SELECT id, name, mail_topics FROM users").fetchall():
+                    t = str(u["mail_topics"] or "").replace("sales", "order")
+                    if not t and u["name"].replace(" ", "") in MAIL_TOPIC_SEED:
+                        t = MAIL_TOPIC_SEED[u["name"].replace(" ", "")]
+                    c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
+                set_setting(c, "mail_topics_v", "2")
             for r in c.execute("SELECT id, subject, body FROM mail_items WHERE topic = '' AND status != 'merged'").fetchall():
                 c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
     except Exception as e:  # noqa: BLE001
@@ -4118,10 +4129,12 @@ def notify_thread(c, head_id: int):
     if cands and m["status"] == "new" and not m["private"] and m["topic"]:
         owner = c.execute("SELECT name FROM users WHERE id IS ?", (m["owner_id"],)).fetchone()
         share = get_setting(c, "mail_share_all", "1") == "1"
-        members = [r[0] for r in c.execute("SELECT id FROM users WHERE active = 1")] if share else topic_members(c, m["topic"])
+        members = topic_members(c, m["topic"])         # 담당자에게 / 전체 공개인데 담당자가 없으면 모두에게
+        if share and not members:
+            members = [r[0] for r in c.execute("SELECT id FROM users WHERE active = 1")]
         for u in members:
             if u != m["owner_id"]:
-                notify(c, u, f"📥 [{MAIL_TOPICS.get(m['topic'], '')}] {owner['name'] + '님 ' if owner else ''}메일 일정: {m['subject'][:40]}")
+                notify(c, u, f"📥 [{MAIL_TOPICS.get(m['topic'], '')} 담당] {owner['name'] + '님 ' if owner else ''}메일 일정: {m['subject'][:40]}")
 
 
 AI_LOCK = threading.Lock()
@@ -4195,8 +4208,10 @@ async def mailin_receive(request: Request, x_upload_key: str = Header(default=""
         return save_mail_items(c, raw)
 
 
-MAIL_TOPICS = {"import": "🚢 수입·통관", "sales": "🧾 영업·주문", "finance": "💳 회계·결제", "quality": "🧪 샘플·품질",
-               "etc": "📁 기타"}
+MAIL_TOPICS = {"import": "🚢 수입·통관", "overseas": "🌏 해외 영업", "order": "🧾 발주 문의", "finance": "💳 회계·결제",
+               "quality": "🧪 샘플·품질", "etc": "📁 기타"}
+# 처음 한 번 담당자 지정 (직원관리에서 바꿀 수 있음)
+MAIL_TOPIC_SEED = {"조정무": "import,order", "이수철": "overseas,order", "심혜지": "overseas", "오근학": "order"}
 
 
 def user_topics(user: dict) -> list:
@@ -4206,6 +4221,16 @@ def user_topics(user: dict) -> list:
 def topic_members(c, topic: str) -> list:
     return [r["id"] for r in c.execute("SELECT id, mail_topics FROM users WHERE active = 1")
             if topic in str(r["mail_topics"] or "").split(",")]
+
+
+def topic_people() -> dict:
+    out = {}
+    with db() as c:
+        for r in c.execute("SELECT name, mail_topics FROM users WHERE active = 1 ORDER BY name"):
+            for t in str(r["mail_topics"] or "").split(","):
+                if t in MAIL_TOPICS:
+                    out.setdefault(t, []).append(r["name"])
+    return out
 
 
 def mail_share_all() -> bool:
@@ -4246,6 +4271,10 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
     if topic == "mine":
         sql += " AND m.owner_id = ?"
         params.append(user["id"])
+    elif topic == "assigned":
+        tops = user_topics(user) or ["-"]
+        sql += f" AND m.topic IN ({', '.join('?' * len(tops))})"
+        params += tops
     elif topic in MAIL_TOPICS:
         sql += " AND m.topic = ?"
         params.append(topic)
@@ -4263,7 +4292,7 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
         for r in rows:        # 그 사이 등록된 입고예정과 다시 맞춰 봄 (자동 등록된 B/L 등)
             r["candidates"] = match_shipments(c, json.loads(r["candidates"] or "[]"), r["subject"])
     return {"items": rows, "counts": counts, "ai": ai_mail.enabled(), "topics": MAIL_TOPICS, "my_topics": user_topics(user),
-            "share_all": mail_share_all(),
+            "share_all": mail_share_all(), "topic_people": topic_people(),
             "topic_counts": tcounts}
 
 

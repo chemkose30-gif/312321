@@ -588,16 +588,16 @@ async function renderMailin() {
     <div class="muted" style="font-size:13px;margin-bottom:8px">info@erc-chem.com 으로 전달한 메일에서 <b>입고(ETA)·미팅·납기</b> 날짜를 찾아 둡니다. 같은 대화로 오간 메일은 한 묶음(쓰레드)으로 읽어 <b>최신 일정</b>만 보여 주고, 중복 메일은 뺍니다. 날짜 버튼을 누르면 내용이 채워진 등록 화면이 열립니다.${d.ai ? ' 해외 메일은 AI가 한국어로 번역합니다 (제품명은 원문 그대로).' : ''}</div>
     <div class="tabs"><button data-s="new">확인할 것 (${n('new')})</button><button data-s="done">등록함 (${n('done')})</button><button data-s="ignored">무시 (${n('ignored')})</button><button data-s="none">일정 못 찾은 메일 (${n('none')})</button></div>
     <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
-      <button class="btn sm ${mi.topic === '' ? 'primary' : ''}" data-tp="">전체</button><button class="btn sm ${mi.topic === 'mine' ? 'primary' : ''}" data-tp="mine">👤 내 메일</button>
-      ${Object.entries(d.topics).map(([k, v]) => `<button class="btn sm ${mi.topic === k ? 'primary' : ''}" data-tp="${k}">${v}${d.topic_counts[k] ? ` <b>${d.topic_counts[k]}</b>` : ''}</button>`).join('')}
-      <span class="muted" style="font-size:12px">${d.share_all ? '👀 모든 직원이 모든 메일을 같이 봅니다 (🔒 나만 보기 제외)' : d.my_topics.length ? `같이 보는 업무: ${d.my_topics.map(t => d.topics[t]).join(', ')} <small>(👥 직원관리에서 관리자가 정함)</small>` : '같이 보는 업무가 없어 내 메일만 보입니다 <small>(👥 직원관리에서 관리자가 정함)</small>'}</span>
+      <button class="btn sm ${mi.topic === '' ? 'primary' : ''}" data-tp="">전체</button>${d.my_topics.length ? `<button class="btn sm ${mi.topic === 'assigned' ? 'primary' : ''}" data-tp="assigned">⭐ 내 담당</button>` : ''}
+      ${Object.entries(d.topics).map(([k, v]) => `<button class="btn sm ${mi.topic === k ? 'primary' : ''}" data-tp="${k}" title="${(d.topic_people[k] || []).length ? '담당: ' + esc(d.topic_people[k].join(', ')) : '담당자 없음'}">${v}${d.topic_counts[k] ? ` <b>${d.topic_counts[k]}</b>` : ''}</button>`).join('')}
+      <span class="muted" style="font-size:12px">${d.share_all ? `👀 모든 직원이 모든 메일을 같이 봅니다 · 알림은 업무 담당자에게${d.my_topics.length ? ` · 내 담당: ${d.my_topics.map(t => d.topics[t]).join(', ')}` : ''}` : d.my_topics.length ? `같이 보는 업무: ${d.my_topics.map(t => d.topics[t]).join(', ')} <small>(👥 직원관리에서 관리자가 정함)</small>` : '같이 보는 업무가 없어 내 메일만 보입니다 <small>(👥 직원관리에서 관리자가 정함)</small>'}</span>
       ${state.me.role === 'admin' ? `<span class="spacer"></span><label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miShare" style="width:auto" ${d.share_all ? 'checked' : ''}>모든 직원이 전체 메일 보기</label>` : ''}</div>
     <div class="row" style="margin-bottom:10px"><input id="miQ" placeholder="제목 / 보낸 사람 / 내용 검색" value="${esc(mi.q)}" style="max-width:300px"><span class="muted">${d.items.length}건</span></div>
     ${d.items.length ? d.items.map(m => `<div class="list-item" style="display:block;padding:10px 0;border-bottom:1px solid var(--line)">
         <div class="row" style="gap:6px"><b style="flex:1;min-width:0;cursor:pointer" data-open="${m.id}">${esc(m.subject || '(제목 없음)')}</b>
           ${m.status === 'new' ? `<button class="btn sm" data-st="done" data-id="${m.id}">✔ 처리완료</button><button class="btn sm" data-st="ignored" data-id="${m.id}">무시</button>`
             : `<button class="btn sm" data-st="new" data-id="${m.id}">되돌리기</button>`}</div>
-        <small class="muted"><span class="tag s-todo">${esc(d.topics[m.topic] || '분류 전')}</span>${m.owner_id && m.owner_id !== state.me.id ? ` <span class="tag s-doing">👤 ${esc(m.owner_name)}</span>` : ''}${m.private ? ' 🔒' : ''} ${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id || d.share_all ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
+        <small class="muted"><span class="tag s-todo">${esc(d.topics[m.topic] || '분류 전')}${(d.topic_people[m.topic] || []).length ? ' · ' + esc(d.topic_people[m.topic].join(', ')) : ''}</span>${m.owner_id && m.owner_id !== state.me.id ? ` <span class="tag s-doing">👤 ${esc(m.owner_name)}</span>` : ''}${m.private ? ' 🔒' : ''} ${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id || d.share_all ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
         ${m.summary ? `<div style="font-size:13px;margin-top:3px">${esc(m.summary)}</div>` : ''}
         ${m.candidates.length ? `<div class="row" style="gap:6px;margin-top:6px">${m.candidates.map((c, i) => candChip(c, `data-c="${m.id}:${i}"`)).join('')}</div>` : ''}
       </div>`).join('') : `<div class="empty">${total ? '해당하는 메일이 없습니다.' : '아직 받은 메일이 없습니다. ⚙ 메일 연결 방법을 확인하세요.'}</div>`}
@@ -1169,16 +1169,16 @@ async function openTask(id) {
 }
 
 // ===================================================== users (admin)
-const MAIL_TOPICS = {import: '🚢 수입·통관', sales: '🧾 영업·주문', finance: '💳 회계·결제', quality: '🧪 샘플·품질', etc: '📁 기타'};
+const MAIL_TOPICS = {import: '🚢 수입·통관', overseas: '🌏 해외 영업', order: '🧾 발주 문의', finance: '💳 회계·결제', quality: '🧪 샘플·품질', etc: '📁 기타'};
 async function renderUsers() {
   state.users = await api('/api/users');
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">직원관리</h3><span class="muted">${state.users.filter(u => u.active).length}명 재직</span>
       <span class="spacer"></span><button class="btn primary" id="uNew">+ 직원 등록</button></div>
-    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th class="hide-m">메일</th><th class="hide-m">메일 같이 보는 업무</th><th>권한</th><th>상태</th></tr></thead><tbody>
+    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th class="hide-m">메일</th><th class="hide-m">메일 담당 업무</th><th>권한</th><th>상태</th></tr></thead><tbody>
     ${state.users.map(u => `<tr data-u="${u.id}" style="${u.active ? '' : 'opacity:.5'}">
       <td class="title">${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.dept)}</td><td class="hide-m">${esc(u.position)}</td><td class="hide-m">${u.email ? esc(u.email) : '<span class="muted">미등록</span>'}</td>
-      <td class="hide-m"><small>${(u.mail_topics || '').split(',').filter(t => MAIL_TOPICS[t]).map(t => MAIL_TOPICS[t]).join(', ') || '<span class="muted">본인 메일만</span>'}</small></td>
+      <td class="hide-m"><small>${(u.mail_topics || '').split(',').filter(t => MAIL_TOPICS[t]).map(t => MAIL_TOPICS[t]).join(', ') || '<span class="muted">-</span>'}</small></td>
       <td>${u.role === 'admin' ? '<span class="tag p-high">관리자</span>' : '<span class="tag p-low">직원</span>'}</td>
       <td>${u.active ? '<span class="tag s-done">재직</span>' : '<span class="tag s-todo">비활성</span>'}</td></tr>`).join('')}
     </tbody></table></div>
@@ -1220,7 +1220,7 @@ function openUser(u) {
         <div><label>부서</label><input name="dept" list="deptList" value="${esc(u?.dept)}"></div>
         <div><label>직급</label><input name="position" value="${esc(u?.position)}"></div>
         <div style="grid-column:1/-1"><label>Outlook 메일 주소 (업무 알림 수신)</label><input name="email" type="email" value="${esc(u?.email)}" placeholder="name@company.com"></div>
-        <div style="grid-column:1/-1"><label>메일 같이 보는 업무 <small class="muted">(고른 업무로 분류된 다른 직원의 메일도 📥 메일 일정에 보입니다 — 주인이 🔒 표시한 메일은 제외)</small></label>
+        <div style="grid-column:1/-1"><label>메일 담당 업무 <small class="muted">(그 업무로 분류된 메일의 일정 알림을 받고 ⭐ 내 담당에 모입니다)</small></label>
           <div class="row" style="gap:10px;flex-wrap:wrap">${Object.entries(MAIL_TOPICS).map(([k, v]) => `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400"><input type="checkbox" name="mt" value="${k}" style="width:auto" ${(u?.mail_topics || '').split(',').includes(k) ? 'checked' : ''}>${v}</label>`).join('')}</div></div>
         <div><label>권한</label><select name="role"><option value="member">직원</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>관리자</option></select></div>
         <div><label>${u ? '새 비밀번호 (변경 시만 입력)' : '비밀번호 (6자 이상)'}</label><input name="password" type="text" minlength="6" autocomplete="off" ${u ? '' : 'required'}></div>
