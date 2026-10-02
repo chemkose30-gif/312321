@@ -1660,6 +1660,66 @@ def exclude_matcher(c):
     return lambda name: any(k in _norm_company(name) for k in keys)
 
 
+# 같은 회사 다른 이름 합치기 (예: 녹원 / 녹원산업 / (주)녹원)
+COMPANY_SUFFIX = r"(산업|상사|무역|화학|코리아|인터내셔널|기업|컴퍼니|corporation|corp|coltd|ltd|inc|co)$"
+
+
+def _company_key(n: str) -> str:
+    """이름 비교용 키: (주)·주식회사·띄어쓰기·기호를 빼고, 끝에 붙는 산업/상사 등도 뺀다.
+    '1공장', '2공장' 처럼 공장·지점 표시는 남겨 서로 다른 곳으로 본다."""
+    k = re.sub(r"[\s.,\-_·&＆()\[\]]", "", _norm_company(n))
+    for _ in range(2):
+        k = re.sub(COMPANY_SUFFIX, "", k)
+    return k
+
+
+def alias_map(c) -> dict:
+    try:
+        return json.loads(get_setting(c, "analytics_alias", "{}")) or {}
+    except ValueError:
+        return {}
+
+
+def canon_fn(c):
+    m = alias_map(c)
+    return lambda n: m.get(n, n)
+
+
+@app.get("/api/analytics/aliases")
+def get_aliases(_: dict = Depends(current_user)):
+    with db() as c:
+        amap = alias_map(c)
+        names = c.execute("SELECT customer_name, COUNT(*), SUM(supply_total) FROM quotes WHERE doc_type = 'statement'"
+                          " AND status != 'draft' GROUP BY 1").fetchall()
+    groups = {}
+    for n, cnt, amt in names:
+        groups.setdefault(_company_key(n), []).append({"name": n, "count": cnt, "amount": amt or 0})
+    suggestions = []
+    for key, g in groups.items():
+        if len(g) < 2 or not key:
+            continue
+        canon = {amap.get(x["name"], x["name"]) for x in g}
+        if len(canon) == 1 and all(x["name"] in amap or x["name"] in canon for x in g):
+            continue   # 이미 하나로 합쳐짐
+        g.sort(key=lambda x: -x["amount"])
+        suggestions.append({"names": g, "canonical": g[0]["name"]})
+    suggestions.sort(key=lambda s: -sum(x["amount"] for x in s["names"]))
+    merged = {}
+    for alias, canon in amap.items():
+        merged.setdefault(canon, []).append(alias)
+    return {"map": amap, "merged": [{"canonical": k, "aliases": sorted(v)} for k, v in sorted(merged.items())],
+            "suggestions": suggestions, "all_names": sorted(n for n, _c, _a in names)}
+
+
+@app.put("/api/analytics/aliases")
+def put_aliases(body: dict, _: dict = Depends(admin_user)):
+    amap = {str(k).strip(): str(v).strip() for k, v in (body.get("map") or {}).items()
+            if str(k).strip() and str(v).strip() and str(k).strip() != str(v).strip()}
+    with db() as c:
+        set_setting(c, "analytics_alias", json.dumps(amap, ensure_ascii=False))
+    return {"ok": True, "count": len(amap)}
+
+
 @app.get("/api/analytics/exclude")
 def get_exclude(_: dict = Depends(current_user)):
     with db() as c:
@@ -1679,8 +1739,9 @@ def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(curr
     col = "grand_total" if basis == "total" else "supply_total"
     base = "FROM quotes WHERE doc_type = 'statement' AND status != 'draft' AND NOT excl(customer_name)"
     with db() as c:
-        is_ex = exclude_matcher(c)
-        c.create_function("excl", 1, lambda n: 1 if is_ex(n) else 0, deterministic=True)
+        is_ex, canon = exclude_matcher(c), canon_fn(c)
+        c.create_function("excl", 1, lambda n: 1 if is_ex(canon(n)) else 0, deterministic=True)
+        c.create_function("canon", 1, canon, deterministic=True)
         years = [int(r[0]) for r in c.execute(f"SELECT DISTINCT substr(quote_date, 1, 4) {base} ORDER BY 1")]
         if not years:
             return {"years": [], "year": None, "monthly": {}, "customers": [], "yearly": {}}
@@ -1695,13 +1756,13 @@ def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(curr
         # 거래처 × (기준연도 월별, 전년도 월별)
         cust = {}
         for name, y, m, v in c.execute(
-                f"SELECT customer_name, CAST(substr(quote_date, 1, 4) AS INT), CAST(substr(quote_date, 6, 2) AS INT),"
+                f"SELECT canon(customer_name), CAST(substr(quote_date, 1, 4) AS INT), CAST(substr(quote_date, 6, 2) AS INT),"
                 f" SUM({col}) {base} AND substr(quote_date, 1, 4) IN (?, ?) GROUP BY 1, 2, 3", (str(year), str(year - 1))):
             e = cust.setdefault(name, {"name": name, "cur": [0] * 12, "prev": [0] * 12})
             (e["cur"] if y == year else e["prev"])[m - 1] = v or 0
         # 거래처 × 연도 합계
         yearly = {}
-        for name, y, v in c.execute(f"SELECT customer_name, CAST(substr(quote_date, 1, 4) AS INT), SUM({col}) {base}"
+        for name, y, v in c.execute(f"SELECT canon(customer_name), CAST(substr(quote_date, 1, 4) AS INT), SUM({col}) {base}"
                                     " GROUP BY 1, 2"):
             yearly.setdefault(name, {})[y] = v or 0
         year_totals = {y: v or 0 for y, v in c.execute(
@@ -1726,6 +1787,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
     item_col = "supply + vat" if basis == "total" else "supply"
     months = max(1, min(months, 24))
     with db() as c:
+        c.create_function("canon", 1, canon_fn(c), deterministic=True)
         last = c.execute("SELECT MAX(quote_date) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'").fetchone()[0]
         if not last:
             return {"ref": None, "rows": [], "dormant": []}
@@ -1741,13 +1803,13 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
 
         def per_customer(r):
             return {n: v or 0 for n, v in c.execute(
-                f"SELECT customer_name, SUM({col}) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
+                f"SELECT canon(customer_name), SUM({col}) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
                 " AND quote_date BETWEEN ? AND ? GROUP BY 1", r)}
 
         def per_item(r):
             out = {}
             for n, item, unit, qty, amt in c.execute(
-                    f"SELECT q.customer_name, qi.name, MAX(qi.unit), SUM(qi.qty), SUM(qi.{item_col})"
+                    f"SELECT canon(q.customer_name), qi.name, MAX(qi.unit), SUM(qi.qty), SUM(qi.{item_col})"
                     " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
                     " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
                     " GROUP BY 1, 2", r):
@@ -1777,7 +1839,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         # 주문 간격 분석: 거래처별 주문 날짜(최근 3년)
         since = _shift_months(ref, -36).strftime("%Y-%m-%d")
         dates = {}
-        for n, d in c.execute("SELECT customer_name, quote_date FROM quotes WHERE doc_type = 'statement'"
+        for n, d in c.execute("SELECT canon(customer_name), quote_date FROM quotes WHERE doc_type = 'statement'"
                               " AND status != 'draft' AND quote_date BETWEEN ? AND ? GROUP BY 1, 2 ORDER BY 2",
                               (since, ref.strftime("%Y-%m-%d"))):
             dates.setdefault(n, []).append(datetime.strptime(d, "%Y-%m-%d").date())
@@ -1802,13 +1864,13 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         since5 = _shift_months(ref, -60).strftime("%Y-%m-%d")
         hist = {}
         for n, item, d, q, a in c.execute(
-                f"SELECT q.customer_name, qi.name, q.quote_date, SUM(qi.qty), SUM(qi.{item_col})"
+                f"SELECT canon(q.customer_name), qi.name, q.quote_date, SUM(qi.qty), SUM(qi.{item_col})"
                 " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
                 " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
                 " GROUP BY 1, 2, 3 ORDER BY 3", (since5, ref.strftime("%Y-%m-%d"))):
             hist.setdefault((n, item), []).append((datetime.strptime(d, "%Y-%m-%d").date(), q or 0, a or 0))
         units = {(n, i): u for n, i, u in c.execute(
-            "SELECT q.customer_name, qi.name, MAX(qi.unit) FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
+            "SELECT canon(q.customer_name), qi.name, MAX(qi.unit) FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
             " WHERE q.doc_type = 'statement' AND q.quote_date >= ? GROUP BY 1, 2", (since5,))}
         overdue = {}
         for (n, item), buys in hist.items():

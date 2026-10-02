@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
 <title>TeamHub · 사내 캘린더 & 업무지시</title>
 <style>
@@ -154,6 +154,14 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
 .ev.ship.done{text-decoration:line-through;color:var(--muted)}
 .dday{font-size:11px;font-weight:700;border-radius:6px;padding:1px 6px;background:#f3f4f6}
 .dday.late{background:#fee2e2;color:#b91c1c}.dday.today{background:#dbeafe;color:#1d4ed8}
+.stats4{grid-template-columns:repeat(4,1fr)}
+.mlist{display:none}
+.mrow{display:block;padding:10px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+.mrow:active{background:var(--bg)}
+.mrow .l1{display:flex;align-items:center;gap:8px}
+.mrow .l1 b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+.mrow .l1 .amt{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mrow .l2{font-size:12px;color:var(--muted);margin-top:3px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .viz{--series-1:#2a78d6;--series-2:#eb6834;--grid:#ececea;--axis:#6b7280;--ink:#1f2937;--ink-2:#52514e;--surface:#fff}
 .viz-wrap{position:relative}
 .viz-wrap svg{display:block;width:100%;overflow:visible}
@@ -170,8 +178,34 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
 .up{color:#15803d;font-weight:700}.down{color:#b91c1c;font-weight:700}
 /* ---------- responsive */
 @media (max-width:860px){
-  header{padding:0 12px;gap:8px}
+  body{font-size:13px}
+  /* iPhone 은 16px 미만 입력칸을 누르면 화면을 확대해 버림 → 입력칸은 16px */
+  input,select,textarea{font-size:16px;padding:7px 9px}
+  header{padding:0 12px;gap:8px;height:50px}
   .logo{font-size:16px}
+  .card{padding:12px;border-radius:12px}
+  .card h3{font-size:15px}
+  .btn{padding:6px 10px;font-size:13px}
+  .btn.sm{padding:4px 8px;font-size:12px}
+  .row{gap:8px}
+  .stats,.stats4{grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .stats4{grid-template-columns:repeat(2,1fr)}
+  .stat{padding:10px 12px;border-radius:10px}
+  .stat span{font-size:12px}
+  .stat b{font-size:19px;margin-top:2px;word-break:keep-all}
+  .tabs{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .tabs button{white-space:nowrap;padding:8px 10px;font-size:13px}
+  .list-item{padding:8px 0;gap:8px}
+  h2{font-size:18px}
+  .modal-bg{padding:0;align-items:stretch}
+  .modal{border-radius:0;min-height:100%;padding:16px 14px 90px;max-width:none}
+  .modal.wide{max-width:none}
+  .modal .actions{position:sticky;bottom:0;background:var(--panel);padding:10px 0;margin-top:12px;border-top:1px solid var(--line);flex-wrap:wrap}
+  label{margin:10px 0 3px}
+  .mlist{display:block}
+  .dtable{display:none}
+  .qitems input{font-size:16px;padding:6px}
+  .viz-legend{font-size:11px}
   nav{position:fixed;bottom:0;left:0;right:0;background:var(--panel);border-top:1px solid var(--line);justify-content:space-around;padding:6px;z-index:20}
   nav{overflow-x:auto;justify-content:flex-start}
   nav button{flex:0 0 auto;font-size:12px;padding:8px 10px;white-space:nowrap}
@@ -179,7 +213,8 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
   .stats{grid-template-columns:repeat(2,1fr)}
   .dash-grid{grid-template-columns:1fr}
   .day{min-height:64px;padding:2px}
-  .cal-head h2{min-width:0;font-size:17px;margin:0 4px}
+  .cal-head h2{min-width:0;font-size:16px;margin:0 2px;white-space:nowrap}
+  .cal-head{flex-wrap:wrap;gap:6px}
   .toast{bottom:80px}
   .ev{font-size:10px;padding:1px 3px}
   .hide-m{display:none}
@@ -609,7 +644,10 @@ async function renderTasks() {
       <input id="tSearch" placeholder="제목/이름 검색" style="max-width:240px">
       <span class="muted">${tasks.length}건</span>
     </div>
-    ${tasks.length ? `<table><thead><tr>
+    ${tasks.length ? `<div class="mlist">${tasks.map(t => `<div class="mrow" data-task="${t.id}" data-search="${esc((t.title + ' ' + t.assigner_name + ' ' + t.assignee_name).toLowerCase())}">
+        <div class="l1">${pTag(t.priority)}<b>${esc(t.title)}</b>${sTag(t.status)}</div>
+        <div class="l2">${showAssigner ? `지시 ${esc(t.assigner_name)}` : ''}${showAssigner && showAssignee ? ' · ' : ''}${showAssignee ? `담당 ${esc(t.assignee_name)}` : ''} · 마감 ${dueHtml(t)}${t.comment_count ? ` · 💬${t.comment_count}` : ''}</div></div>`).join('')}</div>
+      <table class="dtable"><thead><tr>
         <th>우선순위</th><th>제목</th>${showAssigner ? '<th class="hide-m">지시자</th>' : ''}${showAssignee ? '<th class="hide-m">담당자</th>' : ''}
         <th>마감일</th><th>상태</th></tr></thead><tbody>
       ${tasks.map(t => `<tr data-task="${t.id}" data-search="${esc((t.title + ' ' + t.assigner_name + ' ' + t.assignee_name).toLowerCase())}">
@@ -627,9 +665,9 @@ async function renderTasks() {
   $('#tStatus').onchange = e => { state.taskStatus = e.target.value; renderTasks(); };
   $('#tSearch').oninput = e => {
     const v = e.target.value.toLowerCase();
-    $$('tbody tr').forEach(tr => tr.classList.toggle('hidden', !tr.dataset.search.includes(v)));
+    $$('tbody tr, .mrow').forEach(tr => tr.classList.toggle('hidden', !tr.dataset.search.includes(v)));
   };
-  $$('tbody tr').forEach(tr => tr.onclick = () => openTask(+tr.dataset.task));
+  $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openTask(+tr.dataset.task));
   $('#tNew').onclick = () => openTaskForm();
 }
 
@@ -902,7 +940,10 @@ async function renderQuotes() {
       <input id="qSearch" placeholder="거래처/품명/건명 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
       <span class="muted">${res.total.toLocaleString('ko-KR')}건 · 합계 ${won(res.amount)}원</span>
     </div>
-    ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
+    ${list.length ? `<div class="mlist">${list.map(x => `<div class="mrow" data-q="${x.id}">
+        <div class="l1"><b>${esc(x.customer_name)}</b><span class="amt">${won(x.grand_total)}</span></div>
+        <div class="l2"><span>${esc(x.quote_date)}</span><span>${esc(x.first_item || '')}${x.item_count > 1 ? ` 외 ${x.item_count - 1}건` : ''}</span>${x.total_qty != null ? `<span>· ${Number(x.total_qty).toLocaleString('ko-KR', {maximumFractionDigits: 2})}${x.qty_unit ? ' ' + esc(x.qty_unit) : ''}</span>` : ''}${qTag(x.status, dt)}</div></div>`).join('')}</div>
+      <div class="qscroll dtable"><table><thead><tr><th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
       ${list.map(x => `<tr data-q="${x.id}"><td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
         <td>${esc(x.first_item || '')}${x.item_count > 1 ? ` <small class="muted">외 ${x.item_count - 1}건</small>` : ''}
           ${x.title && !x.title.startsWith(x.first_item || '\u0000') ? `<br><small class="muted">${esc(x.title)}</small>` : ''}</td>
@@ -923,7 +964,7 @@ async function renderQuotes() {
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; state.qPage = 1; renderQuotes(); };
   let timer;
   $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; state.qPage = 1; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
-  $$('tbody tr').forEach(tr => tr.onclick = () => openQuoteView(+tr.dataset.q));
+  $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openQuoteView(+tr.dataset.q));
 }
 
 async function openQuoteForm(quote, task, template, docType) {
@@ -1384,7 +1425,10 @@ async function renderShipments() {
       <button data-v="open">진행중</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
     </div>
     <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B·L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
-    ${list.length ? `<div class="qscroll"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">B/L · 창고</th></tr></thead><tbody>
+    ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
+        <div class="l1">${shTag(sh.status)}<b>${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
+        <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
+      <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">B/L · 창고</th></tr></thead><tbody>
       ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.status)}</td>
         <td class="title">${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
         <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)}</td><td class="hide-m"><small>${esc(sh.bl_no)}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
@@ -1394,7 +1438,7 @@ async function renderShipments() {
   $('#shNew').onclick = () => openShipment(null, todayStr());
   let timer;
   $('#shSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.shSearch = e.target.value; renderShipments().then(() => { const i = $('#shSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
-  $$('tbody tr').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));
+  $$('tbody tr, .mrow').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));
 }
 
 async function openShipment(id, day) {
@@ -1465,7 +1509,7 @@ function niceMax(v) {
 
 // 꺾은선 (최대 3계열) + 십자선 툴팁
 function lineChart(box, labels, series) {
-  const W = Math.max(box.clientWidth, 320), H = 280, L = 56, R = 64, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
+  const W = Math.max(box.clientWidth, 320), H = box.clientWidth < 600 ? 220 : 280, L = 56, R = 64, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
   const max = niceMax(Math.max(1, ...series.flatMap(s => s.values.filter(v => v != null))));
   const x = i => L + (labels.length === 1 ? iw / 2 : i * iw / (labels.length - 1)), y = v => T + ih - v / max * ih;
   let g = '';
@@ -1473,7 +1517,8 @@ function lineChart(box, labels, series) {
     const v = max * k / 4, yy = y(v);
     g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--grid)"/><text x="${L - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="var(--axis)">${krw(v)}</text>`;
   }
-  labels.forEach((l, i) => g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--axis)">${l}</text>`);
+  const step = iw / labels.length < 34 ? 2 : 1;   // 좁은 화면에선 한 달 건너 표시
+  labels.forEach((l, i) => { if (i % step === 0) g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--axis)">${l}</text>`; });
   series.forEach(s => {
     const pts = s.values.map((v, i) => [i, v]).filter(([, v]) => v != null);   // 아직 오지 않은 달(null)은 그리지 않음
     g += `<path d="${pts.map(([i, v], k) => (k ? 'L' : 'M') + x(i) + ' ' + y(v)).join('')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
@@ -1505,7 +1550,7 @@ function lineChart(box, labels, series) {
 
 // 막대 (1계열) + 막대별 툴팁
 function barChart(box, labels, values, name) {
-  const W = Math.max(box.clientWidth, 320), H = 280, L = 56, R = 16, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
+  const W = Math.max(box.clientWidth, 320), H = box.clientWidth < 600 ? 220 : 280, L = 56, R = 16, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
   const max = niceMax(Math.max(1, ...values)), y = v => T + ih - v / max * ih;
   const slot = iw / labels.length, bw = Math.max(6, Math.min(56, slot - 2));
   let g = '';
@@ -1565,7 +1610,7 @@ async function renderAnalytics() {
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
     <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
     ${exNote}
-    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+    <div class="stats stats4">
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간</span><b>${krw(pytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">전년 대비</span><b style="font-size:20px">${deltaHtml(ytd, pytd)}</b></div>
@@ -1606,11 +1651,58 @@ async function renderAnalytics() {
 }
 
 async function excludeNote() {
-  const ex = await api('/api/analytics/exclude');
+  const [ex, al] = await Promise.all([api('/api/analytics/exclude'), api('/api/analytics/aliases')]);
+  const admin = state.me.role === 'admin';
   return `<div class="muted" style="font-size:12px;margin:-6px 0 10px">제외 거래처: <b>${esc(ex.value || '없음')}</b> (자사·관계사는 집계에서 뺍니다)
-    ${state.me.role === 'admin' ? '<a href="#" id="exEdit" style="margin-left:6px">수정</a>' : ''}</div>`;
+    ${admin ? '<a href="#" id="exEdit" style="margin-left:6px">수정</a>' : ''}
+    · 이름 합친 거래처 ${al.merged.length}곳 ${admin ? `<a href="#" id="alEdit" style="margin-left:4px">같은 회사 이름 합치기${al.suggestions.length ? ` <span class="tag p-high">${al.suggestions.length}건 추천</span>` : ''}</a>` : ''}</div>`;
+}
+
+async function openAliases() {
+  const al = await api('/api/analytics/aliases');
+  const map = {...al.map};
+  openModal(`<h2>같은 회사 이름 합치기</h2>
+    <div class="muted" style="font-size:13px">이카운트에 같은 회사가 여러 이름으로 들어가 있으면(예: 녹원 / 녹원산업 / (주)녹원) 하나로 합쳐서 분석합니다.
+      거래명세서 자체는 바뀌지 않고 <b>매출분석에서만</b> 합쳐집니다. '1공장', '2공장'처럼 공장·지점이 다른 곳은 추천하지 않습니다.</div>
+    <h3 style="margin:14px 0 6px">추천 (${al.suggestions.length})</h3>
+    ${al.suggestions.length ? al.suggestions.map((g, k) => `<div class="ec-box" data-g="${k}" style="margin-top:8px">
+      <label style="display:flex;gap:8px;align-items:center;margin:0"><input type="checkbox" class="gOn" style="width:auto" checked> <b>하나로 합치기</b></label>
+      <div style="margin:6px 0 4px;font-size:13px">${g.names.map(x => `${esc(x.name)} <small class="muted">(${x.count}건 · ${krw(x.amount)}원)</small>`).join('<br>')}</div>
+      <div class="row" style="flex-wrap:nowrap"><small class="muted" style="white-space:nowrap">대표 이름</small>
+        <select class="gCanon">${g.names.map(x => `<option ${x.name === g.canonical ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div></div>`).join('')
+      : '<div class="muted">추천할 이름이 없습니다.</div>'}
+    <h3 style="margin:18px 0 6px">직접 합치기</h3>
+    <div class="grid2"><div><label>대표 이름</label><input id="mCanon" list="allNames" placeholder="예: 녹원산업"></div>
+      <div><label>합칠 이름 (쉼표로 구분)</label><input id="mAliases" list="allNames" placeholder="예: 녹원, 녹원상사"></div></div>
+    <datalist id="allNames">${al.all_names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    <h3 style="margin:18px 0 6px">합쳐진 거래처 (${al.merged.length})</h3>
+    ${al.merged.length ? al.merged.map(m => `<div class="list-item" style="cursor:default"><div style="flex:1"><b>${esc(m.canonical)}</b><br><small class="muted">← ${m.aliases.map(esc).join(', ')}</small></div>
+      <button class="btn sm danger" data-un="${esc(m.canonical)}">풀기</button></div>`).join('') : '<div class="muted">없음</div>'}
+    <div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="alSave">저장</button></div>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    const save = async () => {
+      await api('/api/analytics/aliases', {method: 'PUT', body: {map}});
+      close(); toast('저장했습니다.'); renderAnalytics();
+    };
+    $$('[data-un]', bg).forEach(b => b.onclick = async () => {
+      Object.keys(map).forEach(k => { if (map[k] === b.dataset.un) delete map[k]; });
+      await save();
+    });
+    $('#alSave', bg).onclick = async () => {
+      $$('[data-g]', bg).forEach(box => {
+        if (!$('.gOn', box).checked) return;
+        const g = al.suggestions[+box.dataset.g], canon = $('.gCanon', box).value;
+        g.names.forEach(x => { if (x.name !== canon) map[x.name] = canon; else delete map[x.name]; });
+      });
+      const mc = $('#mCanon', bg).value.trim();
+      $('#mAliases', bg).value.split(',').map(x => x.trim()).filter(x => x && x !== mc).forEach(x => { if (mc) map[x] = mc; });
+      try { await save(); } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
 }
 function bindExcludeEdit() {
+  const b = $('#alEdit'); if (b) b.onclick = e => { e.preventDefault(); openAliases(); };
   const a = $('#exEdit'); if (!a) return;
   a.onclick = async e => {
     e.preventDefault();
@@ -1642,7 +1734,7 @@ async function renderDecline(an) {
     ${exNote}
     ${!d.ref ? '<div class="empty">거래명세서가 없습니다.</div>' : `
     <div class="muted" style="font-size:12px;margin-bottom:10px">기준일 ${esc(d.ref)} · 이번 기간 ${esc(d.cur[0])} ~ ${esc(d.cur[1])} vs ${cmpLabel} ${esc(d.cmp[0])} ~ ${esc(d.cmp[1])}</div>
-    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+    <div class="stats stats4">
       <div class="stat" style="cursor:default"><span class="muted">이번 기간 납품</span><b>${krw(d.cur_total)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${cmpLabel}</span><b>${krw(d.cmp_total)}원</b></div>
       <div class="stat red" style="cursor:default"><span class="muted">구매 주기가 지난 거래처</span><b>${(d.patterns || []).length}곳</b></div>
