@@ -3889,7 +3889,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
             heads.append(head_id)
             continue
         notify_watchers(c, head_id)
-        if foreign and gtranslate_key(c):     # 구글 번역이 켜져 있으면 해외 메일은 바로 번역 (AI 요약·일정은 따로)
+        if foreign and auto_translate_on(c):  # 해외 메일은 들어오자마자 구글 번역 (AI 요약·일정은 따로)
             gtranslate_soon(head_id)
         if ai_mail.enabled() and (cands or foreign):
             c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (head_id,))
@@ -4294,15 +4294,10 @@ def _known_products(c) -> list:
     return sorted(names, key=len, reverse=True)[:3000]
 
 
-def google_translate(c, text: str) -> str:
-    """영문 등 → 한국어. 제품명(재고·입고예정·명세서에 있는 이름)과 제품 코드·B/L 번호 등은 번역하지 않게 묶어서 보낸다."""
-    key = gtranslate_key(c)
-    if not key:
-        raise HTTPException(400, "구글 번역 API 키가 없습니다.")
-    text = text[:30000]
-    keep = []
-    low = text.lower()
-    for n in _known_products(c):              # 이미 아는 제품명 위치
+def _keep_spans(c, text: str) -> list:
+    """번역하지 않을 곳: 이미 아는 제품명(재고·입고예정·명세서) + 제품 코드·B/L·인보이스 번호 (F13865, 937450, HDMU1234567)"""
+    keep, low = [], text.lower()
+    for n in _known_products(c):
         i = low.find(n.lower())
         while i >= 0:
             if not any(a < i + len(n) and i < b for a, b in keep):
@@ -4310,8 +4305,60 @@ def google_translate(c, text: str) -> str:
             i = low.find(n.lower(), i + len(n))
     for m in re.finditer(r"\b(?=[A-Z0-9\-]*\d)[A-Z0-9][A-Z0-9\-]{4,}\b", text):
         if not any(a < m.end() and m.start() < b for a, b in keep):
-            keep.append((m.start(), m.end()))       # 제품 코드·B/L·인보이스 번호 (F13865, 937450, HDMU1234567)
-    keep.sort()
+            keep.append((m.start(), m.end()))
+    return sorted(keep)
+
+
+def _free_translate(text: str) -> str:
+    """API 키 없이 구글 번역 (웹 번역기와 같은 무료 주소). 4천 자씩 나눠 보낸다."""
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) > 4000 and cur:
+            chunks.append(cur)
+            cur = ""
+        cur += line[:4000] + "\n"
+    chunks.append(cur)
+    out = []
+    for ch in chunks:
+        if not ch.strip():
+            out.append(ch)
+            continue
+        req = urllib.request.Request(
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t",
+            data=urllib.parse.urlencode({"q": ch}).encode(), method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8", "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        out.append("".join(seg[0] for seg in (data[0] or []) if seg and seg[0]))
+    return "".join(out).rstrip("\n")
+
+
+def google_translate(c, text: str) -> str:
+    """영문 등 → 한국어. 제품명·코드·번호는 번역하지 않는다.
+    API 키가 있으면 Cloud Translation API, 없으면 무료 웹 번역 주소."""
+    key = gtranslate_key(c)
+    text = text[:30000]
+    keep = _keep_spans(c, text)
+    if not key:
+        # 지킬 부분은 표시(ZQZ번호ZQZ)로 바꿔 보내고 번역 뒤 되돌린다
+        parts, pos, saved = [], 0, []
+        for a, b in keep:
+            parts.append(text[pos:a])
+            parts.append(f" ZQZ{len(saved)}ZQZ ")
+            saved.append(text[a:b])
+            pos = b
+        parts.append(text[pos:])
+        try:
+            out = _free_translate("".join(parts))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"구글 번역에 연결하지 못했습니다: {e}")
+        out = re.sub(r"\s?Z\s*Q\s*Z\s*(\d+)\s*Z\s*Q\s*Z\s?",
+                     lambda m: f" {saved[int(m[1])]} " if int(m[1]) < len(saved) else m[0], out, flags=re.I)
+        out = re.sub(r"[ \t]{2,}", " ", out).replace(" \n", "\n")
+        out = re.sub(r" ([,.:;!?)])", r"\1", out)
+        for tok in set(saved):          # 'Vanillin 를' → 'Vanillin를' 처럼 조사 앞 띄어쓰기 정리
+            out = re.sub(re.escape(tok) + r" (?=(을|를|이|가|은|는|의|와|과|에|에서|로|으로|도|만|까지|부터)(?![가-힣]))", tok, out)
+        return out.strip()
     parts, pos = [], 0
     for a, b in keep:
         parts.append(html.escape(text[pos:a]))
@@ -4333,6 +4380,10 @@ def google_translate(c, text: str) -> str:
     out = re.sub(r"<br\s*/?>", "\n", out)
     out = re.sub(r'</?span[^>]*>', "", out)
     return html.unescape(out)
+
+
+def auto_translate_on(c) -> bool:
+    return get_setting(c, "auto_translate", "1") == "1"
 
 
 def gtranslate_mail(mid: int) -> str:
@@ -4364,14 +4415,17 @@ def mailin_gtranslate(mid: int, user: dict = Depends(current_user)):
 @app.get("/api/mailin/gtranslate")
 def get_gtranslate(_: dict = Depends(current_user)):
     with db() as c:
-        return {"enabled": bool(gtranslate_key(c))}
+        return {"enabled": True, "api_key": bool(gtranslate_key(c)), "auto": auto_translate_on(c)}
 
 
 @app.put("/api/mailin/gtranslate")
 def put_gtranslate(body: dict, _: dict = Depends(admin_user)):
     with db() as c:
-        set_setting(c, "gtranslate_key", str(body.get("key", "")).strip())
-        return {"enabled": bool(gtranslate_key(c))}
+        if "key" in body:
+            set_setting(c, "gtranslate_key", str(body.get("key", "")).strip())
+        if "auto" in body:
+            set_setting(c, "auto_translate", "1" if body["auto"] else "0")
+        return {"enabled": True, "api_key": bool(gtranslate_key(c)), "auto": auto_translate_on(c)}
 
 
 @app.post("/api/mailin/{mid}/analyze")
