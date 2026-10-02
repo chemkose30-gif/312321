@@ -103,9 +103,12 @@ td.title{font-weight:600}
 .modal{background:var(--panel);border-radius:14px;width:100%;max-width:560px;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
 .modal h2{margin:0 0 6px;font-size:18px}
 .modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
-.assignee-box{border:1px solid var(--line);border-radius:8px;max-height:180px;overflow:auto;padding:6px}
-.assignee-box label{display:flex;align-items:center;gap:8px;font-weight:400;margin:0;padding:5px 6px;border-radius:6px}
+.assignee-box{border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.assignee-box .people{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:2px 6px}
+.assignee-box label{display:flex;align-items:center;gap:6px;font-weight:400;margin:0;padding:5px 6px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .assignee-box label:hover{background:var(--bg)}
+.assignee-box label:has(input:checked){background:var(--primary-weak)}
+.dept-grp + .dept-grp{border-top:1px solid var(--line);margin-top:4px}
 .assignee-box input{width:auto}
 .dept-head{font-size:11px;font-weight:700;color:var(--muted);padding:6px 6px 2px}
 .detail-meta{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;margin:14px 0;font-size:13px}
@@ -579,11 +582,13 @@ async function renderTasks() {
 function assigneePicker(selected = []) {
   const groups = {};
   state.users.filter(u => u.active).forEach(u => (groups[u.dept || '부서 미지정'] ||= []).push(u));
-  return `<input id="aFilter" placeholder="이름/부서 검색" style="margin-bottom:6px"><div class="assignee-box">` +
-    Object.entries(groups).map(([dept, us]) => `<div class="dept-grp"><div class="dept-head">${esc(dept)}
-        <a href="#" data-alldept style="font-weight:400;margin-left:6px">전체선택</a></div>
-      ${us.map(u => `<label data-s="${esc((u.name + ' ' + u.dept).toLowerCase())}"><input type="checkbox" name="assignee" value="${u.id}" ${selected.includes(u.id) ? 'checked' : ''}>
-        ${esc(u.name)} <small class="muted">${esc(u.position)}${u.id === state.me.id ? ' (나)' : ''}</small></label>`).join('')}</div>`).join('') + '</div>';
+  return `<div class="row" style="margin-bottom:6px;flex-wrap:nowrap"><input id="aFilter" placeholder="이름/부서 검색">
+      <button type="button" class="btn sm" id="aAll">전 직원 선택</button><span class="muted" id="aCount" style="white-space:nowrap">0명 선택</span></div>
+    <div class="assignee-box">` +
+    Object.entries(groups).map(([dept, us]) => `<div class="dept-grp"><div class="dept-head">${esc(dept)} <span style="font-weight:400">(${us.length})</span>
+        <a href="#" data-alldept style="font-weight:400;margin-left:6px">부서 전체선택</a></div>
+      <div class="people">${us.map(u => `<label data-s="${esc((u.name + ' ' + u.dept).toLowerCase())}" title="${esc(u.name + ' ' + u.position)}"><input type="checkbox" name="assignee" value="${u.id}" ${selected.includes(u.id) ? 'checked' : ''}>
+        ${esc(u.name)} <small class="muted">${esc(u.position)}${u.id === state.me.id ? ' (나)' : ''}</small></label>`).join('')}</div></div>`).join('') + '</div>';
 }
 
 function openTaskForm(task) {
@@ -606,12 +611,24 @@ function openTaskForm(task) {
       const v = filter.value.toLowerCase();
       $$('.assignee-box label', bg).forEach(l => l.classList.toggle('hidden', !l.dataset.s.includes(v)));
     };
+    const countSel = () => { const n = $$('input[name=assignee]:checked', bg).length; if ($('#aCount', bg)) $('#aCount', bg).textContent = `${n}명 선택`; };
     $$('[data-alldept]', bg).forEach(a => a.onclick = e => {
       e.preventDefault();
       const boxes = $$('input', a.closest('.dept-grp'));
       const on = boxes.some(b => !b.checked);
       boxes.forEach(b => b.checked = on);
+      countSel();
     });
+    const allBtn = $('#aAll', bg);
+    if (allBtn) allBtn.onclick = () => {
+      const boxes = $$('input[name=assignee]', bg);
+      const on = boxes.some(b => !b.checked);
+      boxes.forEach(b => b.checked = on);
+      allBtn.textContent = on ? '전체 해제' : '전 직원 선택';
+      countSel();
+    };
+    bg.addEventListener('change', e => { if (e.target.name === 'assignee') countSel(); });
+    countSel();
     f.onsubmit = async e => {
       e.preventDefault();
       try {
