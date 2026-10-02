@@ -1875,7 +1875,7 @@ async function renderShipments() {
         <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
       <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">M B/L / H B/L · 창고</th></tr></thead><tbody>
       ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}</td>
-        <td class="title">${sh.src_key ? '<span title="인바운딩 엑셀에서 자동 등록">📋</span> ' : ''}${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
+        <td class="title">${sh.src_key ? '<span title="인바운딩 엑셀에서 자동 등록">📋</span> ' : ''}${(sh.note || '').startsWith('[특송]') ? '<span title="특송(DHL·FedEx·UPS 등) 메일에서 자동 등록">✈️</span> ' : ''}${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
         <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">등록된 입고 예정이 없습니다.</div>'}
   </div>`;

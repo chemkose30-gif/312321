@@ -3221,6 +3221,12 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
         status = sh["status"]
         if status in ("ordered", "shipped") and (r["in_at"] or r["arrived"]):
             status = "customs"
+        if sh["item"] == COURIER_ITEM and r.get("item"):      # 특송: 품명을 몰랐으면 UNI-PASS 품명·중량으로
+            w = re.match(r"([\d.]+)\s*(\w*)", r.get("weight") or "")
+            c.execute("UPDATE shipments SET item = ?, qty = CASE WHEN qty = 0 THEN ? ELSE qty END,"
+                      " unit = CASE WHEN qty = 0 THEN ? ELSE unit END WHERE id = ?",
+                      (clean_prnm(r["item"])[:120] or COURIER_ITEM, float(w[1]) if w else 0,
+                       (w[2] or "kg").lower() if w else "kg", sid))
         c.execute("UPDATE shipments SET cs_cargo_no = ?, cs_status = ?, cs_arrived = ?, cs_in_at = ?, cs_shed = ?,"
                   " cs_cleared_at = ?, cs_out_at = ?, cs_events = ?, cs_checked_at = ?, cs_error = '', status = ?,"
                   " updated_at = ? WHERE id = ?",
@@ -3285,6 +3291,88 @@ def watch_bl_numbers(c, mail_id: int, owner_id, it: dict, bulk: bool):
         c.execute("INSERT OR IGNORE INTO bl_watch (number, kind, owner_id, mail_id, subject, sender, eta_hint, created_at)"
                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (num, kind, owner_id, mail_id, it["subject"][:200],
                                                        it["from_name"][:100], eta, now()))
+
+
+COURIER_ITEM = "특송 화물"
+
+
+def courier_mail(c, owner_id, it: dict, bulk: bool = False):
+    """특송사(DHL·FedEx·UPS…) 운송장 번호가 있는 메일 → 입고예정을 바로 만든다 (H B/L = 운송장 번호로 UNI-PASS 확인).
+    이미 있는 번호면 예정일만 고치고, '배송 완료' 메일이면 입고완료로."""
+    body = mailin.own_text(it["body"]) or it["body"]
+    courier = mailin.courier_of(it["from_addr"], it["subject"], body)
+    if not courier:
+        return
+    nums = mailin.find_tracking_numbers(it["subject"], body, courier)
+    if not nums:
+        return
+    try:
+        sent = datetime.strptime(it["sent_at"][:10], "%Y-%m-%d").date()
+    except ValueError:
+        sent = date.today()
+    if bulk and sent < date.today() - timedelta(days=60):
+        return                           # 예전 메일 한꺼번에 가져올 때 오래된 운송장은 이미 끝난 것
+    eta = mailin.courier_eta(body, sent)
+    delivered = mailin.is_delivered(it["subject"])
+    ship_c = next((cd for cd in it["candidates"] if cd.get("kind") == "ship"), None)
+    if not eta and ship_c and ship_c.get("label") != "ETD" and ship_c["date"] >= sent.isoformat():
+        eta = ship_c["date"]             # 본문의 'ETA 10/09' 같은 날짜
+    for num, co in nums:
+        sid = shipment_by_number(c, num)
+        if sid:
+            sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
+            if sh["status"] == "arrived":
+                continue
+            if delivered:
+                c.execute("UPDATE shipments SET status = 'arrived', arrived_at = ?, updated_at = ? WHERE id = ?",
+                          (it["sent_at"] + ":00", now(), sid))
+                notify(c, sh["created_by"], f"📦 {co} 배송 완료: {sh['item']} · {num}")
+            elif eta and eta != sh["eta"]:
+                c.execute("UPDATE shipments SET eta = ?, updated_at = ? WHERE id = ?", (eta, now(), sid))
+            continue
+        if delivered and sent < date.today() - timedelta(days=3):
+            continue
+        oid = owner_id or _first_admin(c)
+        shipper = mailin.courier_shipper(body)
+        item = (ship_c or {}).get("item") or ""
+        if item:
+            same = find_open_shipment(c, item, eta or sent.isoformat())
+            if same:                     # 인바운딩 등에 이미 있는 건이면 운송장만 붙인다
+                c.execute("UPDATE shipments SET hbl_no = ?, eta = CASE WHEN ? != '' THEN ? ELSE eta END, note = note || ?,"
+                          " updated_at = ? WHERE id = ?",
+                          (num, eta, eta, f" · {co} {num}", now(), same["id"]))
+                c.execute("DELETE FROM bl_watch WHERE number = ?", (num,))
+                unipass_soon(same["id"])
+                continue
+        ts = now()
+        cur = c.execute(
+            f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
+            f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, ?, ?, ?, ?)",
+            ((item or COURIER_ITEM)[:120], co, shipper, "", (ship_c or {}).get("qty") or 0, (ship_c or {}).get("unit") or "kg",
+             eta or (sent + timedelta(days=3)).isoformat(), "arrived" if delivered else "shipped", "", num, "",
+             f"[특송] {co} 운송장 {num}" + (f" · 메일: {it['subject'][:150]}" if it["subject"] else "")
+             + ("" if eta else " · 도착일 미정 — 발송일+3일로 추정"),
+             it["sent_at"] + ":00" if delivered else None, oid, ts, ts))
+        c.execute("DELETE FROM bl_watch WHERE number = ?", (num,))
+        if not delivered and not bulk:
+            unipass_soon(cur.lastrowid)
+            notify(c, oid, f"📦 {co} 특송 입고예정 등록: {item or shipper or num}" + (f" · 도착 {eta}" if eta else ""))
+
+
+def fill_courier_items(c, cands: list):
+    """AI 가 메일 쓰레드에서 운송장 번호와 함께 찾은 품목·수량·수출사로, 품명을 몰라 '특송 화물'로 둔 입고예정을 채운다."""
+    for cd in cands:
+        num = mailin.norm_bl(cd.get("bl_no") or "")
+        if not num or not cd.get("item"):
+            continue
+        sid = shipment_by_number(c, num)
+        sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone() if sid else None
+        if sh and sh["item"] == COURIER_ITEM:
+            c.execute("UPDATE shipments SET item = ?, qty = CASE WHEN qty = 0 THEN ? ELSE qty END,"
+                      " unit = CASE WHEN qty = 0 AND ? != '' THEN ? ELSE unit END,"
+                      " supplier = CASE WHEN supplier = '' THEN ? ELSE supplier END, updated_at = ? WHERE id = ?",
+                      (cd["item"][:120], cd.get("qty") or 0, cd.get("unit") or "", cd.get("unit") or "",
+                       "" if "@" in (cd.get("supplier") or "") else (cd.get("supplier") or "")[:100], now(), sid))
 
 
 def _first_admin(c):
@@ -3734,11 +3822,12 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
     collect = (mailer.MAIL_FROM or "").lower()
     added, dup, skipped, touched = 0, 0, 0, {}
     for it in items:
+        # 모으는 주소(info@ = 발송 메일함)는 주인 판단에서 뺀다 (관리자 메일로 등록돼 있어도 모든 메일이 관리자 것이 되지 않게)
+        oid = owner_id or next((emails[a] for a in it["owners"] if a in emails and a != collect), None)
+        courier_mail(c, oid, it, bulk)       # DHL·FedEx·UPS 운송장 → 입고예정 (자동 발송 알림 메일도)
         if it["bulk"]:
             skipped += 1
             continue                     # 광고·뉴스레터·자동 발송 메일은 저장하지 않음
-        # 모으는 주소(info@ = 발송 메일함)는 주인 판단에서 뺀다 (관리자 메일로 등록돼 있어도 모든 메일이 관리자 것이 되지 않게)
-        oid = owner_id or next((emails[a] for a in it["owners"] if a in emails and a != collect), None)
         uniq = it["msg_id"] or hashlib.sha1(f"{it['from_addr']}|{it['subject']}|{it['sent_at']}".encode()).hexdigest()
         if c.execute("SELECT 1 FROM mail_items WHERE owner_id IS ? AND (fp = ? OR (msg_ref != '' AND msg_ref = ?))",
                      (oid, it["fp"], it["msg_id"])).fetchone():
@@ -4030,6 +4119,7 @@ def ai_analyze_item(mid: int, quiet: bool = False):
         if not cur or cur["status"] == "merged":
             return
         if cands is not None:
+            fill_courier_items(c, cands)
             cands = match_shipments(c, cands, m["subject"])
             st = cur["status"]
             if st in ("new", "none"):

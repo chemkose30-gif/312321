@@ -362,3 +362,101 @@ def find_bl_numbers(text: str) -> list:
             seen.add(num)
             out.append((num, ""))
     return out[:10]
+
+
+# ---- 특송(쿠리어) 운송장: DHL · FedEx · UPS · TNT · SF Express · EMS · Aramex
+COURIERS = (("DHL", r"\bdhl\b", r"dhl\."), ("FedEx", r"\bfed\s*ex\b", r"fedex\."), ("UPS", r"\bups\b", r"\bups\.com"),
+            ("TNT", r"\btnt\b", r"tnt\."), ("SF Express", r"\bsf[\s\-]?express\b|顺丰", r"sf-express\."),
+            ("EMS", r"\bems\b|우체국\s*국제", r"epost\.go\.kr|\bems\."), ("Aramex", r"\baramex\b", r"aramex\."))
+TRACK_LABEL = re.compile(
+    r"(?P<co>DHL|FED\s*EX|UPS|TNT|SF[\s\-]?EXPRESS|EMS|ARAMEX)?\s*(?:express\s*)?"
+    r"(?P<lab>AWB|WAY\s*BILL|AIR\s*WAY\s*BILL|TRACKING(?:\s*(?:NUMBER|NO|ID))?|SHIPMENT\s*(?:NUMBER|NO|ID)|"
+    r"운송장(?:\s*번호)?|송장(?:\s*번호)?|트래킹(?:\s*번호)?)"
+    r"\s*(?:NO\.?|NUMBER|ID|#|번호)?\s*(?:is|:|：|\.|-)?\s*(?P<num>1Z[0-9A-Z]{16}|[A-Z]{2}\d{9}[A-Z]{2}|\d[\d ]{7,18}\d)",
+    re.I)
+UPS_RE = re.compile(r"\b1Z[0-9A-Z]{16}\b")
+DELIVERED = re.compile(r"\bdelivered\b|배송\s*완료|배달\s*완료|배송완료|배달완료|已签收", re.I)
+NOT_DELIVERED = re.compile(r"will\s+be\s+delivered|scheduled|estimated|out\s+for\s+delivery|attempt|exception|not\s+delivered",
+                           re.I)
+ETA_LABEL = re.compile(r"(scheduled|estimated|expected|planned)\s+delivery(\s+date)?|delivery\s+(date|by|on)|"
+                       r"배송\s*예정일?|도착\s*예정일?|예상\s*배송일?", re.I)
+
+
+def courier_of(from_addr: str, subject: str = "", text: str = "") -> str:
+    """보낸 주소가 특송사면 그 이름, 아니면 제목·본문에 운송장 표시와 함께 나온 특송사 이름. 없으면 ''."""
+    for name, word, dom in COURIERS:
+        if re.search(dom, from_addr or "", re.I):
+            return name
+    for m in TRACK_LABEL.finditer(f"{subject}\n{text}"):
+        if m["co"]:
+            return _co_name(m["co"])
+    s = f"{subject}\n{text}"
+    if UPS_RE.search(s):
+        return "UPS"
+    if TRACK_LABEL.search(s):            # '운송장/tracking 번호'가 있으면 제목·본문에 나온 특송사 이름
+        for name, word, dom in COURIERS:
+            if re.search(word, s, re.I):
+                return name
+    return ""
+
+
+def _co_name(s: str) -> str:
+    for name, word, dom in COURIERS:
+        if re.search(word, s, re.I):
+            return name
+    return ""
+
+
+def _track_ok(num: str, co: str) -> bool:
+    if num.startswith("1Z"):
+        return co in ("", "UPS")
+    if re.match(r"^[A-Z]{2}\d{9}[A-Z]{2}$", num):
+        return co in ("", "EMS")
+    n = len(num)
+    return {"DHL": n in (10, 11), "FedEx": n in (12, 15, 20), "TNT": n == 9, "SF Express": n in (12, 15),
+            "Aramex": n in (10, 11, 12), "EMS": False, "UPS": False}.get(co, False)
+
+
+def find_tracking_numbers(subject: str, text: str, courier: str) -> list:
+    """[(운송장 번호, 특송사)] — '운송장/Tracking/AWB/Waybill 번호' 표시가 붙은 번호, UPS 1Z…,
+    FedEx 가 보낸 메일이면 표시 없는 12자리 번호도."""
+    s = f"{subject}\n{text}"
+    out, seen = [], set()
+
+    def add(num, co):
+        num = norm_bl(num)
+        if num and num not in seen and co and _track_ok(num, co):
+            seen.add(num)
+            out.append((num, co))
+    for m in TRACK_LABEL.finditer(s):
+        add(m["num"], _co_name(m["co"]) if m["co"] else courier)
+    for m in UPS_RE.finditer(s):
+        add(m[0], "UPS")
+    if courier == "FedEx":
+        for m in re.finditer(r"(?<![\d\-])(\d{4})\s?(\d{4})\s?(\d{4})(?![\d\-])", s):
+            add("".join(m.groups()), "FedEx")
+    return out[:5]
+
+
+def courier_eta(text: str, ref: date) -> str:
+    """'Scheduled delivery: Tuesday, October 6, 2026' / '배송 예정일 10월 6일' → 'YYYY-MM-DD'"""
+    for m in ETA_LABEL.finditer(text or ""):
+        ds = find_dates(text[m.end():m.end() + 80], ref)
+        if ds:
+            return ds[0][0].isoformat()
+    return ""
+
+
+def courier_shipper(text: str) -> str:
+    m = re.search(r"^\s*(?:shipper|sender|ship(?:ped)?\s+from|from\s+company|발송인|보내는\s*(?:분|사람|곳))\s*(?:name)?\s*[:：]\s*(.+)$",
+                  text or "", re.I | re.M)
+    if not m:
+        m = re.search(r"shipment\s+from\s+([A-Za-z0-9][\w&.,()\- ]{2,60}?)\s+(?:is|has|was|will|to)\b", text or "", re.I)
+    if not m:
+        return ""
+    v = re.split(r"\s{2,}|,|\|", m[1].strip())[0].strip()
+    return "" if "@" in v or len(v) < 2 else v[:80]
+
+
+def is_delivered(subject: str) -> bool:
+    return bool(DELIVERED.search(subject or "")) and not NOT_DELIVERED.search(subject or "")
