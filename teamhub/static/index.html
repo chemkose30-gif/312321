@@ -824,7 +824,18 @@ async function renderDashboard() {
 
 // ===================================================== calendar
 // 캘린더 입고예정 표시: 수출사 - 제품명 - 수량
-const shipLabel = sh => [sh.supplier, sh.item, sh.qty ? `${fmtQty(sh.qty)}${sh.unit || ''}` : ''].filter(Boolean).join(' - ');
+// 제품명 정리: 첫 줄만, 포장 표시((in 25kg)·[in 5kg]·(20kg *4))·괄호 속 코드·숫자 코드(100074301, 339544)·메모(' / ' 뒤) 빼기
+function cleanItem(name) {
+  let n = String(name || '').split(/\r?\n/)[0];
+  n = n.replace(/\s+\/\s+.*$/, '')                                   // ' / ' 뒤 메모
+       .replace(/[\(\[]\s*(in\s+)?[\d.,]+\s*(kg|g|l|ml|ea|drums?)\b[^\)\]]*[\)\]]/gi, '')   // 포장
+       .replace(/[\(\[]\s*[A-Z]{0,4}\d{4,}[A-Z]?\s*[\)\]]/gi, '')       // (100184100) 같은 괄호 속 코드
+       .replace(/(^|\s)\d{5,}[A-Z]?(?=\s|$)/g, ' ')                       // 앞뒤의 숫자 코드
+       .replace(/(^|\s)[A-Z]{2,5}\d{3,}(?=\s|$)/g, ' ')                   // TMUP019 같은 공급사 코드
+       .replace(/\s{2,}/g, ' ').replace(/[\s\-_,/]+$/, '').trim();
+  return n || String(name || '').trim();
+}
+const shipLabel = sh => [sh.supplier, cleanItem(sh.item), sh.qty ? `${fmtQty(sh.qty)}${sh.unit || ''}` : ''].filter(Boolean).join(' - ');
 
 async function renderCalendar() {
   const cur = state.calDate;
@@ -856,7 +867,7 @@ async function renderCalendar() {
     const cls = ['day', d.getMonth() !== m && 'other', k === today && 'today', d.getDay() === 0 && 'sun', d.getDay() === 6 && 'sat'].filter(Boolean).join(' ');
     cells += `<div class="${cls}" data-day="${k}"><span class="dnum">${d.getDate()}</span>
       ${items.map(it => it.type === 'ship'
-        ? `<div class="ev ship ${it.sh.status === 'arrived' ? 'done' : ''}" data-ship="${it.sh.id}" title="${esc(shipLabel(it.sh))}">🚢 ${esc(shipLabel(it.sh))}</div>`
+        ? `<div class="ev ship ${it.sh.status === 'arrived' ? 'done' : ''}" data-ship="${it.sh.id}" title="${esc(it.sh.supplier + ' - ' + it.sh.item)}">🚢 ${esc(shipLabel(it.sh))}</div>`
         : it.type === 'ev'
         ? `<div class="ev" data-ev="${it.e.id}" style="background:${esc(it.e.color)}" title="${esc(it.e.title)}">${it.e.all_day ? '' : esc(it.e.start.slice(11, 16)) + ' '}${esc(it.e.title)}</div>`
         : `<div class="ev task ${it.t.status === 'done' ? 'done' : ''}" data-task="${it.t.id}" title="${esc(it.t.title)} (${esc(it.t.assignee_name)})">☑ ${esc(it.t.title)}</div>`).join('')}
