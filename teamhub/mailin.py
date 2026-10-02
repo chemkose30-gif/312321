@@ -7,6 +7,7 @@ info@ 로 전달된 메일(또는 직접 올린 .eml)을 읽어 날짜를 찾고
 사람이 확인하고 등록하도록 '후보'만 만든다.
 """
 import email
+import hashlib
 import html
 import re
 from datetime import date, datetime, timedelta
@@ -198,6 +199,27 @@ def body_lines(text: str) -> list:
     return out
 
 
+def own_text(text: str) -> str:
+    """회신 기록(인용된 예전 메일) 앞까지 = 이 메일에서 새로 쓴 부분."""
+    out = []
+    for line in text.splitlines():
+        started = any(x.strip() for x in out)
+        if REPLY_MARK.match(line) or re.match(r"^\s*(from|보낸\s*사람)\s*[:：]", line, re.I):
+            if started:
+                break
+            continue
+        if not started and HEADER_LINE.match(line):
+            continue                 # 전달 머리글(Date:/Subject:/To: …)은 본문이 아님
+        if not line.lstrip().startswith(">"):
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def thread_subject(subject: str) -> str:
+    """같은 대화 판별용 제목: RE/FW/[태그]·띄어쓰기·대소문자 무시."""
+    return re.sub(r"\s+", " ", clean_subject(subject)).strip().lower()
+
+
 def extract(subject: str, text: str, sent: datetime) -> list:
     """일정 후보 목록: [{kind, date, time, label, context, bl_no}]"""
     ref = sent.date()
@@ -258,7 +280,11 @@ def parse_raw(raw: bytes) -> list:
             subject = fh["subject"]
         sent = _sent_at(msg)
         subject = clean_subject(subject)
-        items.append({"msg_id": str(msg.get("message-id", "") or "").strip()[:250],
+        refs = re.findall(r"<[^<>\s]+>", f"{msg.get('in-reply-to', '') or ''} {msg.get('references', '') or ''}")
+        # 중복 판별용 지문: 보낸 사람 + 제목 + 이 메일에서 새로 쓴 내용 (전달 방식이 달라도 같게 나오도록)
+        core = re.sub(r"\s+", "", own_text(text) or text)[:1500].lower()
+        fp = hashlib.sha1(f"{(addr or '').lower()}|{thread_subject(subject)}|{core}".encode()).hexdigest()
+        items.append({"msg_id": str(msg.get("message-id", "") or "").strip()[:250], "refs": refs[-20:], "fp": fp,
                       "from_addr": (addr or "").lower(), "from_name": name or addr or "",
                       "subject": subject[:300], "sent_at": sent.strftime("%Y-%m-%d %H:%M"),
                       "body": text[:20000], "candidates": extract(subject, text, sent), "forwarder": forwarder,

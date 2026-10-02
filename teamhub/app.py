@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.parse
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -328,7 +328,12 @@ def init_db():
                                 ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''"),
                                 ("mail_items", "translation", "TEXT NOT NULL DEFAULT ''"),
                                 ("mail_items", "summary", "TEXT NOT NULL DEFAULT ''"),
-                                ("mail_items", "ai_status", "TEXT NOT NULL DEFAULT ''")):
+                                ("mail_items", "ai_status", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "thread_key", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "msg_ref", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "t_candidates", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("mail_items", "t_count", "INTEGER NOT NULL DEFAULT 1"),
+                                ("mail_items", "fp", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -346,6 +351,9 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
             CREATE INDEX IF NOT EXISTS idx_mail_log_task ON mail_log(task_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_mail_items_thread ON mail_items(thread_key, sent_at);
+            CREATE INDEX IF NOT EXISTS idx_mail_items_fp ON mail_items(owner_id, fp);
+            CREATE INDEX IF NOT EXISTS idx_mail_items_ref ON mail_items(owner_id, msg_ref);
         """)
         if not c.execute("SELECT 1 FROM settings WHERE key = 'secret'").fetchone():
             c.execute("INSERT INTO settings VALUES ('secret', ?)", (secrets.token_hex(32),))
@@ -2860,67 +2868,160 @@ def run_daily_reminders(today: str):
         mailer.send_async(db, tasks[0]["assigner_email"], subject, body_html, None, "summary")
 
 
-# ---------------------------------------------------------------- Frontend
-# ---------------------------------------------------------------- 📥 메일에서 일정 찾기
+# ---------------------------------------------------------------- 📥 메일에서 일정 찾기 (쓰레드 단위)
+# 같은 대화(회신·전달로 이어진 메일)는 thread_key 로 묶는다. 가장 최근 메일이 '대표'이고, 화면에는 대표만 보인다
+# (나머지는 status='merged'). 일정 후보는 쓰레드 전체를 읽고 대표의 t_candidates 에 넣는다.
+def _thread_key(c, oid, it) -> str:
+    for ref in reversed(it["refs"]):
+        row = c.execute("SELECT thread_key FROM mail_items WHERE owner_id IS ? AND msg_ref = ? AND thread_key != ''",
+                        (oid, ref)).fetchone()
+        if row:
+            return row[0]
+    return f"{oid or 0}:{mailin.thread_subject(it['subject'])}"
+
+
 def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None) -> dict:
     """원본 메일을 읽어 저장. 전달한 사람(직원 메일 주소)으로 주인을 정한다. 같은 메일은 한 번만."""
     items = mailin.parse_raw(raw)
-    ai_queue = []
     emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
-    added = found = 0
+    added, dup, touched = 0, 0, {}
     for it in items:
         oid = owner_id or emails.get(it["forwarder"]) or emails.get(it["to"].split(",")[0].strip().lower())
         uniq = it["msg_id"] or hashlib.sha1(f"{it['from_addr']}|{it['subject']}|{it['sent_at']}".encode()).hexdigest()
-        uniq = f"{oid or 0}:{uniq}"
-        status = "new" if it["candidates"] else "none"
+        if c.execute("SELECT 1 FROM mail_items WHERE owner_id IS ? AND (fp = ? OR (msg_ref != '' AND msg_ref = ?))",
+                     (oid, it["fp"], it["msg_id"])).fetchone():
+            dup += 1
+            continue                     # 같은 메일이 이미 있음 (첨부 전달·자동 전달로 두 번 온 경우 등)
+        key = _thread_key(c, oid, it)
         cur = c.execute("INSERT OR IGNORE INTO mail_items (owner_id, uniq, from_addr, from_name, subject, sent_at, body,"
-                        " candidates, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (oid, uniq, it["from_addr"], it["from_name"], it["subject"], it["sent_at"], it["body"],
-                         json.dumps(it["candidates"], ensure_ascii=False), status, now()))
+                        " candidates, status, created_at, thread_key, msg_ref, fp)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'merged', ?, ?, ?, ?)",
+                        (oid, f"{oid or 0}:{uniq}", it["from_addr"], it["from_name"], it["subject"], it["sent_at"], it["body"],
+                         json.dumps(it["candidates"], ensure_ascii=False), now(), key, it["msg_id"], it["fp"]))
         if cur.rowcount:
             added += 1
-            found += bool(it["candidates"])
-            if ai_mail.enabled() and (it["candidates"] or ai_mail.is_foreign(it["body"])):
-                c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (cur.lastrowid,))
-                ai_queue.append(cur.lastrowid)
-            elif it["candidates"] and oid:
-                notify(c, oid, f"📥 메일에서 일정 {len(it['candidates'])}건을 찾았습니다: {it['subject'][:40]}")
-    # 일정이 없는 메일은 30일 뒤 정리
-    c.execute("DELETE FROM mail_items WHERE status = 'none' AND created_at < ?",
-              ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),))
+            touched[key] = oid
+    found, ai_queue = 0, []
+    for key in touched:
+        head_id, cands, foreign = refresh_thread(c, key)
+        found += bool(cands)
+        if ai_mail.enabled() and (cands or foreign):
+            c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (head_id,))
+            ai_queue.append(head_id)
+        else:
+            notify_thread(c, head_id)
+    # 일정을 못 찾은 쓰레드는 마지막 메일 뒤 30일이 지나면 정리
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("DELETE FROM mail_items WHERE thread_key IN (SELECT thread_key FROM mail_items WHERE status = 'none')"
+              " AND thread_key NOT IN (SELECT thread_key FROM mail_items WHERE created_at >= ?)", (cutoff,))
     if ai_queue:
-        threading.Thread(target=run_ai_queue, args=(list(ai_queue),), daemon=True).start()
-    return {"messages": len(items), "added": added, "with_schedule": found}
+        threading.Thread(target=run_ai_queue, args=(ai_queue,), daemon=True).start()
+    return {"messages": len(items), "added": added, "duplicates": dup, "with_schedule": found}
+
+
+def thread_rows(c, key: str) -> list:
+    return c.execute("SELECT * FROM mail_items WHERE thread_key = ? ORDER BY sent_at, id", (key,)).fetchall()
+
+
+def match_shipments(c, cands: list, subject: str = "") -> list:
+    """입고 후보가 이미 등록된 입고예정(아직 입고 전)과 같으면 연결 → 새로 만들지 않고 날짜 변경을 제안."""
+    open_ships = [dict(r) for r in c.execute("SELECT id, item, eta, bl_no, supplier FROM shipments WHERE status != 'arrived'")]
+    norm = lambda s: re.sub(r"[^0-9a-z가-힣]", "", str(s or "").lower())
+    for cd in cands:
+        # 출발(ETD·선적·출항) 날짜는 입고예정일(ETA)이 아니므로 연결하지 않음
+        if cd["kind"] != "ship" or re.match(r"(etd|선적|출항)", (cd.get("label") or "").lower()):
+            continue
+        best = None
+        for sh in open_ships:
+            if cd.get("bl_no") and sh["bl_no"] and norm(cd["bl_no"]) == norm(sh["bl_no"]):
+                best = sh
+                break
+            item = norm(cd.get("item") or cd.get("title") or subject)
+            if item and len(item) >= 4 and norm(sh["item"]) and (norm(sh["item"]) in item or item in norm(sh["item"])):
+                if not best or abs((date.fromisoformat(sh["eta"]) - date.fromisoformat(cd["date"])).days) < \
+                        abs((date.fromisoformat(best["eta"]) - date.fromisoformat(cd["date"])).days):
+                    best = sh
+        if best:
+            cd.update({"ship_id": best["id"], "ship_eta": best["eta"], "ship_item": best["item"]})
+    return cands
+
+
+def merge_rule_candidates(rows) -> list:
+    """메일마다 찾은 날짜를 시간순으로 합침: 같은 종류·구분은 나중 메일 날짜로 바꾸고 이전 날짜를 prev_date 로."""
+    merged = {}
+    for r in rows:
+        for cd in json.loads(r["candidates"] or "[]"):
+            k = (cd["kind"], cd.get("label") or "", cd.get("time") or "" if cd["kind"] == "event" else "")
+            if cd["kind"] == "event":
+                k = (cd["kind"], cd["date"], cd.get("time") or "")
+            old = merged.get(k)
+            if old and old["date"] != cd["date"]:
+                cd = {**cd, "prev_date": old.get("prev_date") or old["date"]}
+            elif old and old.get("prev_date"):
+                cd = {**cd, "prev_date": old["prev_date"]}
+            merged[k] = cd
+    return sorted(merged.values(), key=lambda c: ({"ship": 0, "event": 1, "task": 2}[c["kind"]], c["date"]))[:12]
+
+
+def refresh_thread(c, key: str):
+    """쓰레드의 대표(가장 최근 메일)를 정하고 규칙 방식 후보를 다시 계산. → (대표 id, 후보, 해외메일 여부)"""
+    rows = thread_rows(c, key)
+    head = rows[-1]
+    prev = next((r for r in reversed(rows[:-1]) if r["status"] != "merged"), None)
+    cands = match_shipments(c, merge_rule_candidates(rows), head["subject"])
+    # 상태: 예전 대표가 '무시'면 계속 무시, 아니면 새 일정이 있으면 '확인할 것'
+    if prev is not None and prev["status"] == "ignored":
+        status = "ignored"
+    else:
+        status = "new" if cands else "none"
+    c.execute("UPDATE mail_items SET status = 'merged' WHERE thread_key = ? AND id != ?", (key, head["id"]))
+    c.execute("UPDATE mail_items SET status = ?, t_candidates = ?, t_count = ?, summary = CASE WHEN ? != '' THEN ? ELSE summary END"
+              " WHERE id = ?", (status, json.dumps(cands, ensure_ascii=False), len(rows),
+                                prev["summary"] if prev else "", prev["summary"] if prev else "", head["id"]))
+    return head["id"], cands, ai_mail.is_foreign(head["body"])
+
+
+def notify_thread(c, head_id: int):
+    m = c.execute("SELECT * FROM mail_items WHERE id = ?", (head_id,)).fetchone()
+    cands = json.loads(m["t_candidates"] or "[]")
+    if m["owner_id"] and cands and m["status"] == "new":
+        changed = [x for x in cands if x.get("prev_date") or x.get("ship_id")]
+        what = f"일정 변경 {len(changed)}건" if changed else f"일정 {len(cands)}건"
+        notify(c, m["owner_id"], f"📥 메일에서 {what}을 찾았습니다: {m['subject'][:40]}")
 
 
 AI_LOCK = threading.Lock()
 
 
 def ai_analyze_item(mid: int):
-    """해외 메일 번역 + 일정 찾기 (Claude). 결과로 후보를 바꾸고 주인에게 알림."""
+    """쓰레드 전체를 Claude 로 읽기: 최신 메일 번역 + 쓰레드 기준 최신 일정. 결과로 후보를 바꾸고 주인에게 알림."""
     with db() as c:
         m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
-    if not m:
-        return
+        if not m or m["status"] == "merged":
+            return                       # 그 사이 새 메일이 와서 대표가 바뀜 → 새 대표가 다시 분석됨
+        rows = thread_rows(c, m["thread_key"])
+    msgs = [{"from": f"{r['from_name']} <{r['from_addr']}>", "sent_at": r["sent_at"], "subject": r["subject"],
+             "body": r["body"] if r["id"] == m["id"] else (mailin.own_text(r["body"]) or r["body"][:3000])} for r in rows]
     try:
-        res = ai_mail.analyze(m["subject"], f"{m['from_name']} <{m['from_addr']}>", m["sent_at"], m["body"])
-        cands = ai_mail.to_candidates(res)
-        status, err = "done", ""
+        res = ai_mail.analyze(m["subject"], f"{m['from_name']} <{m['from_addr']}>", m["sent_at"], ai_mail.thread_text(msgs))
+        cands, err = ai_mail.to_candidates(res), ""
     except Exception as e:
-        res, cands, status, err = {}, None, "error", str(e)[:200]
+        res, cands, err = {}, None, str(e)[:200]
     with db() as c:
-        if status == "done":
-            new_status = m["status"]
-            if m["status"] in ("new", "none"):
-                new_status = "new" if cands else "none"
-            c.execute("UPDATE mail_items SET translation = ?, summary = ?, candidates = ?, status = ?, ai_status = 'done'"
+        cur = c.execute("SELECT status FROM mail_items WHERE id = ?", (mid,)).fetchone()
+        if not cur or cur["status"] == "merged":
+            return
+        if cands is not None:
+            cands = match_shipments(c, cands, m["subject"])
+            st = cur["status"]
+            if st in ("new", "none"):
+                st = "new" if cands else "none"
+            c.execute("UPDATE mail_items SET translation = ?, summary = ?, t_candidates = ?, status = ?, ai_status = 'done'"
                       " WHERE id = ?", (res.get("translation", ""), res.get("summary", ""),
-                                        json.dumps(cands, ensure_ascii=False), new_status, mid))
+                                        json.dumps(cands, ensure_ascii=False), st, mid))
         else:
             c.execute("UPDATE mail_items SET ai_status = ? WHERE id = ?", ("error: " + err, mid))
-            cands = json.loads(m["candidates"] or "[]")
-        if cands and m["owner_id"] and m["status"] in ("new", "none"):
-            notify(c, m["owner_id"], f"📥 메일에서 일정 {len(cands)}건을 찾았습니다: {m['subject'][:40]}")
+        notify_thread(c, mid)
 
 
 def run_ai_queue(ids: list):
@@ -2958,7 +3059,7 @@ async def mailin_receive(request: Request, x_upload_key: str = Header(default=""
 @app.post("/api/mailin/upload")
 async def mailin_upload(files: List[UploadFile] = File(...), user: dict = Depends(current_user)):
     """내 PC에 저장한 메일(.eml)을 직접 올리기."""
-    total = {"messages": 0, "added": 0, "with_schedule": 0}
+    total = {"messages": 0, "added": 0, "duplicates": 0, "with_schedule": 0}
     with db() as c:
         for f in files[:200]:
             r = save_mail_items(c, await f.read(), owner_id=user["id"])
@@ -2977,18 +3078,21 @@ def mail_visible(user: dict):
 @app.get("/api/mailin")
 def mailin_list(status: str = "new", q: str = "", user: dict = Depends(current_user)):
     clause, params = mail_visible(user)
-    sql = (f"SELECT m.id, m.owner_id, m.from_addr, m.from_name, m.subject, m.sent_at, m.candidates, m.status, m.summary,"
-           f" m.ai_status, m.translation != '' AS translated FROM mail_items m WHERE {clause}")
+    sql = (f"SELECT m.id, m.owner_id, m.from_addr, m.from_name, m.subject, m.sent_at, m.t_candidates AS candidates,"
+           f" m.status, m.summary, m.ai_status, m.t_count, m.translation != '' AS translated FROM mail_items m"
+           f" WHERE {clause} AND m.status != 'merged'")
     if status in ("new", "done", "ignored", "none"):
         sql += " AND m.status = ?"
         params.append(status)
     if q.strip():
-        sql += " AND (m.subject LIKE ? OR m.from_name LIKE ? OR m.from_addr LIKE ? OR m.body LIKE ?)"
-        params += [f"%{q.strip()}%"] * 4
+        like = f"%{q.strip()}%"
+        sql += (" AND m.thread_key IN (SELECT thread_key FROM mail_items WHERE subject LIKE ? OR from_name LIKE ?"
+                " OR from_addr LIKE ? OR body LIKE ?)")
+        params += [like] * 4
     with db() as c:
         rows = [dict(r) for r in c.execute(sql + " ORDER BY m.sent_at DESC LIMIT 300", params)]
-        counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {mail_visible(user)[0]}"
-                                                " GROUP BY 1", mail_visible(user)[1])}
+        vc, vp = mail_visible(user)
+        counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {vc} GROUP BY 1", vp)}
     for r in rows:
         r["candidates"] = json.loads(r["candidates"] or "[]")
     return {"items": rows, "counts": counts, "ai": ai_mail.enabled()}
@@ -3006,7 +3110,9 @@ def mail_item(c, mid: int, user: dict):
 def mailin_get(mid: int, user: dict = Depends(current_user)):
     with db() as c:
         r = dict(mail_item(c, mid, user))
-    r["candidates"] = json.loads(r["candidates"] or "[]")
+        r["thread"] = [{"id": t["id"], "from_name": t["from_name"], "from_addr": t["from_addr"], "sent_at": t["sent_at"],
+                        "subject": t["subject"], "body": t["body"]} for t in thread_rows(c, r["thread_key"])]
+    r["candidates"] = json.loads(r["t_candidates"] or "[]")
     return r
 
 
@@ -3016,16 +3122,19 @@ def mailin_status(mid: int, body: dict, user: dict = Depends(current_user)):
     if st not in ("new", "done", "ignored"):
         raise HTTPException(400, "잘못된 상태입니다.")
     with db() as c:
-        mail_item(c, mid, user)
+        if mail_item(c, mid, user)["status"] == "merged":
+            raise HTTPException(400, "이 쓰레드에 새 메일이 와서 목록이 바뀌었습니다. 새로고침하세요.")
         c.execute("UPDATE mail_items SET status = ? WHERE id = ?", (st, mid))
     return {"ok": True}
 
 
 @app.delete("/api/mailin/{mid}")
 def mailin_delete(mid: int, user: dict = Depends(current_user)):
+    """쓰레드 전체를 TeamHub 에서 지운다 (원래 메일함은 그대로)."""
     with db() as c:
-        mail_item(c, mid, user)
-        c.execute("DELETE FROM mail_items WHERE id = ?", (mid,))
+        key = mail_item(c, mid, user)["thread_key"]
+        c.execute("DELETE FROM mail_items WHERE thread_key = ? AND owner_id IS (SELECT owner_id FROM mail_items WHERE id = ?)",
+                  (key, mid))
     return {"ok": True}
 
 
@@ -3066,6 +3175,7 @@ def push_test(user: dict = Depends(current_user)):
     return {"sent": sum(1 for r in res if 200 <= r < 300), "total": len(res), "codes": res}
 
 
+# ---------------------------------------------------------------- Frontend
 @app.get("/sw.js")
 def service_worker():
     return FileResponse(BASE_DIR / "static" / "sw.js", media_type="application/javascript",
