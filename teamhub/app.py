@@ -1224,9 +1224,10 @@ def _num(v) -> float:
 def parse_sales_sheet(rows: list):
     """머리글을 찾아 열을 매핑하고, 전표(일자-No) 단위로 묶은 목록을 반환."""
     import re
-    for hi, header in enumerate(rows[:20]):
+    for hi, header in enumerate(rows[:40]):
         cells = [str(h).replace(" ", "").replace("\n", "").lower() for h in header]
-        if not any("거래처" in h for h in cells) or not any(h in ("수량",) or "공급가액" in h or "금액" in h for h in cells):
+        if not any("거래처" in h for h in cells) or not any(
+                h.startswith("수량") or any(k in h for k in ("공급가액", "금액", "합계", "단가")) for h in cells):
             continue
         col = {}
         for key, names in SALE_COLS.items():
