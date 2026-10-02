@@ -26,13 +26,16 @@ SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨)의 업무 �
    - title: 등록할 제목 (한국어, 제품명은 원문). 입고는 "품목명 수량" 형태 (예: "Vanillin 500kg")
    - item / qty / unit / supplier / bl_no: 입고(ship)일 때 아는 만큼 (모르면 "" 또는 0)
    - context: 근거가 된 원문 문장 (짧게)
-3) summary: 쓰레드 전체 진행 상황을 한국어 1~2문장으로 요약 (예: "Vanillin 500kg 발주 → 선적 완료, 부산 ETA 10/12에서 10/15로 연기")."""
+3) summary: 쓰레드 전체 진행 상황을 한국어 1~2문장으로 요약 (예: "Vanillin 500kg 발주 → 선적 완료, 부산 ETA 10/12에서 10/15로 연기").
+4) topic: 이 쓰레드의 업무 분류 하나 — "import"(수입·선적·통관·운송·특송), "sales"(견적·발주·주문·가격·납품),
+   "finance"(결제·송금·계산서·미수), "quality"(샘플·COA·MSDS·규격·인증·클레임), "etc"(그 밖)"""
 
 SCHEMA = {
     "type": "object",
     "properties": {
         "translation": {"type": "string"},
         "summary": {"type": "string"},
+        "topic": {"type": "string", "enum": ["import", "sales", "finance", "quality", "etc"]},
         "schedules": {"type": "array", "items": {
             "type": "object",
             "properties": {
@@ -54,7 +57,7 @@ SCHEMA = {
             "additionalProperties": False,
         }},
     },
-    "required": ["translation", "summary", "schedules"],
+    "required": ["translation", "summary", "schedules", "topic"],
     "additionalProperties": False,
 }
 

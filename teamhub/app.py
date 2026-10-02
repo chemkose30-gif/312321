@@ -39,6 +39,8 @@ async def lifespan(_app):
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
+            for r in c.execute("SELECT id, subject, body FROM mail_items WHERE topic = '' AND status != 'merged'").fetchall():
+                c.execute("UPDATE mail_items SET topic = ? WHERE id = ?", (mailin.topic_of(r["subject"], r["body"]), r["id"]))
     except Exception as e:  # noqa: BLE001
         print("[TeamHub] merge error:", e)
     yield
@@ -357,6 +359,10 @@ def init_db():
                                 ("mail_items", "t_candidates", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("mail_items", "t_count", "INTEGER NOT NULL DEFAULT 1"),
                                 ("mail_items", "fp", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "topic", "TEXT NOT NULL DEFAULT ''"),
+                                ("mail_items", "topic_set", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mail_items", "private", "INTEGER NOT NULL DEFAULT 0"),
+                                ("users", "mail_topics", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "hbl_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_cargo_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_status", "TEXT NOT NULL DEFAULT ''"),
@@ -566,6 +572,7 @@ class UserIn(BaseModel):
     dept: str = ""
     position: str = ""
     email: str = ""
+    mail_topics: str = ""
     role: str = "member"
     password: str
 
@@ -576,6 +583,7 @@ class UserUpdate(BaseModel):
     dept: Optional[str] = None
     position: Optional[str] = None
     email: Optional[str] = None
+    mail_topics: Optional[str] = None
     role: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
@@ -610,10 +618,11 @@ def create_user(body: UserIn, _: dict = Depends(admin_user)):
     with db() as c:
         try:
             cur = c.execute(
-                "INSERT INTO users (username, name, dept, position, email, role, pw_hash, salt, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users (username, name, dept, position, email, mail_topics, role, pw_hash, salt, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (body.username.strip(), body.name.strip(), body.dept.strip(), body.position.strip(),
-                 body.email.strip(), body.role, hash_pw(body.password, salt), salt, now()),
+                 body.email.strip(), ",".join(t for t in body.mail_topics.split(",") if t in MAIL_TOPICS), body.role,
+                 hash_pw(body.password, salt), salt, now()),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, "이미 사용 중인 아이디입니다.")
@@ -633,6 +642,9 @@ def update_user(uid: int, body: UserUpdate, admin: dict = Depends(admin_user)):
         if val is not None:
             fields.append(f"{key} = ?")
             values.append(val.strip())
+    if body.mail_topics is not None:
+        fields.append("mail_topics = ?")
+        values.append(",".join(t for t in body.mail_topics.split(",") if t in MAIL_TOPICS))
     if body.role is not None:
         if body.role not in ("admin", "member"):
             raise HTTPException(400, "잘못된 권한입니다.")
@@ -4081,10 +4093,18 @@ def refresh_thread(c, key: str):
         status = "done"
     else:
         status = "new" if any(cd["date"] >= soon for cd in cands) else "none"
+    # 업무 분류: 사람이 정했으면 그대로, 아니면 쓰레드 제목·본문으로 다시 / 🔒(공유 안 함)은 이어받음
+    if prev is not None and prev["topic_set"]:
+        topic, topic_set = prev["topic"], 1
+    else:
+        topic, topic_set = mailin.topic_of(head["subject"], "\n".join(mailin.own_text(r["body"]) or r["body"][:2000]
+                                                                       for r in rows[-5:])), 0
+    private = prev["private"] if prev is not None else 0
     c.execute("UPDATE mail_items SET status = 'merged' WHERE thread_key = ? AND id != ?", (key, head["id"]))
-    c.execute("UPDATE mail_items SET status = ?, t_candidates = ?, t_count = ?, summary = CASE WHEN ? != '' THEN ? ELSE summary END"
-              " WHERE id = ?", (status, json.dumps(cands, ensure_ascii=False), len(rows),
-                                prev["summary"] if prev else "", prev["summary"] if prev else "", head["id"]))
+    c.execute("UPDATE mail_items SET status = ?, t_candidates = ?, t_count = ?, summary = CASE WHEN ? != '' THEN ? ELSE summary END,"
+              " topic = ?, topic_set = ?, private = ? WHERE id = ?",
+              (status, json.dumps(cands, ensure_ascii=False), len(rows), prev["summary"] if prev else "",
+               prev["summary"] if prev else "", topic, topic_set, private, head["id"]))
     return head["id"], cands, ai_mail.is_foreign(head["body"])
 
 
@@ -4095,6 +4115,11 @@ def notify_thread(c, head_id: int):
         changed = [x for x in cands if x.get("prev_date") or x.get("ship_id")]
         what = f"일정 변경 {len(changed)}건" if changed else f"일정 {len(cands)}건"
         notify(c, m["owner_id"], f"📥 메일에서 {what}을 찾았습니다: {m['subject'][:40]}")
+    if cands and m["status"] == "new" and not m["private"] and m["topic"]:
+        owner = c.execute("SELECT name FROM users WHERE id IS ?", (m["owner_id"],)).fetchone()
+        for u in topic_members(c, m["topic"]):
+            if u != m["owner_id"]:
+                notify(c, u, f"📥 [{MAIL_TOPICS.get(m['topic'], '')}] {owner['name'] + '님 ' if owner else ''}메일 일정: {m['subject'][:40]}")
 
 
 AI_LOCK = threading.Lock()
@@ -4125,9 +4150,11 @@ def ai_analyze_item(mid: int, quiet: bool = False):
             if st in ("new", "none"):
                 soon = (date.today() - timedelta(days=7)).isoformat()
                 st = "new" if any(cd["date"] >= soon for cd in cands) else "none"
-            c.execute("UPDATE mail_items SET translation = ?, summary = ?, t_candidates = ?, status = ?, ai_status = 'done'"
-                      " WHERE id = ?", (res.get("translation", ""), res.get("summary", ""),
-                                        json.dumps(cands, ensure_ascii=False), st, mid))
+            topic = res.get("topic", "") if res.get("topic") in MAIL_TOPICS else ""
+            c.execute("UPDATE mail_items SET translation = ?, summary = ?, t_candidates = ?, status = ?, ai_status = 'done',"
+                      " topic = CASE WHEN topic_set = 0 AND ? != '' THEN ? ELSE topic END WHERE id = ?",
+                      (res.get("translation", ""), res.get("summary", ""), json.dumps(cands, ensure_ascii=False), st,
+                       topic, topic, mid))
         else:
             c.execute("UPDATE mail_items SET ai_status = ? WHERE id = ?", ("error: " + err, mid))
         if not quiet:
@@ -4166,22 +4193,53 @@ async def mailin_receive(request: Request, x_upload_key: str = Header(default=""
         return save_mail_items(c, raw)
 
 
+MAIL_TOPICS = {"import": "🚢 수입·통관", "sales": "🧾 영업·주문", "finance": "💳 회계·결제", "quality": "🧪 샘플·품질",
+               "etc": "📁 기타"}
+
+
+def user_topics(user: dict) -> list:
+    return [t for t in str(user.get("mail_topics") or "").split(",") if t in MAIL_TOPICS]
+
+
+def topic_members(c, topic: str) -> list:
+    return [r["id"] for r in c.execute("SELECT id, mail_topics FROM users WHERE active = 1")
+            if topic in str(r["mail_topics"] or "").split(",")]
+
+
 def mail_visible(user: dict):
-    # 메일은 본인 것만. 관리자는 주인을 못 찾은 메일(직원 메일 주소 미등록)도 본다.
+    # 본인 메일 + 내가 맡은 업무로 분류된 다른 사람 메일(주인이 🔒 공유 안 함으로 둔 것 제외).
+    # 관리자는 주인을 못 찾은 메일(직원 메일 주소 미등록)도 본다.
+    clause, params = "m.owner_id = ?", [user["id"]]
+    tops = user_topics(user)
+    if tops:
+        clause += f" OR (m.private = 0 AND m.topic IN ({', '.join('?' * len(tops))}))"
+        params += tops
     if user["role"] == "admin":
-        return "(m.owner_id = ? OR m.owner_id IS NULL)", [user["id"]]
-    return "m.owner_id = ?", [user["id"]]
+        clause += " OR m.owner_id IS NULL"
+    return f"({clause})", params
+
+
+def mail_owner_check(row, user: dict):
+    if row["owner_id"] != user["id"] and not (user["role"] == "admin" and row["owner_id"] is None):
+        raise HTTPException(403, "메일 주인만 할 수 있습니다.")
 
 
 @app.get("/api/mailin")
-def mailin_list(status: str = "new", q: str = "", user: dict = Depends(current_user)):
+def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = Depends(current_user)):
     clause, params = mail_visible(user)
     sql = (f"SELECT m.id, m.owner_id, m.from_addr, m.from_name, m.subject, m.sent_at, m.t_candidates AS candidates,"
-           f" m.status, m.summary, m.ai_status, m.t_count, m.translation != '' AS translated FROM mail_items m"
+           f" m.status, m.summary, m.ai_status, m.t_count, m.translation != '' AS translated, m.topic, m.topic_set,"
+           f" m.private, u.name AS owner_name FROM mail_items m LEFT JOIN users u ON u.id = m.owner_id"
            f" WHERE {clause} AND m.status != 'merged'")
     if status in ("new", "done", "ignored", "none"):
         sql += " AND m.status = ?"
         params.append(status)
+    if topic == "mine":
+        sql += " AND m.owner_id = ?"
+        params.append(user["id"])
+    elif topic in MAIL_TOPICS:
+        sql += " AND m.topic = ?"
+        params.append(topic)
     if q.strip():
         like = f"%{q.strip()}%"
         sql += (" AND m.thread_key IN (SELECT thread_key FROM mail_items WHERE subject LIKE ? OR from_name LIKE ?"
@@ -4191,9 +4249,12 @@ def mailin_list(status: str = "new", q: str = "", user: dict = Depends(current_u
         rows = [dict(r) for r in c.execute(sql + " ORDER BY m.sent_at DESC LIMIT 300", params)]
         vc, vp = mail_visible(user)
         counts = {r[0]: r[1] for r in c.execute(f"SELECT m.status, COUNT(*) FROM mail_items m WHERE {vc} GROUP BY 1", vp)}
+        tcounts = {r[0]: r[1] for r in c.execute(f"SELECT m.topic, COUNT(*) FROM mail_items m WHERE {vc}"
+                                                  " AND m.status = 'new' GROUP BY 1", vp)}
         for r in rows:        # 그 사이 등록된 입고예정과 다시 맞춰 봄 (자동 등록된 B/L 등)
             r["candidates"] = match_shipments(c, json.loads(r["candidates"] or "[]"), r["subject"])
-    return {"items": rows, "counts": counts, "ai": ai_mail.enabled()}
+    return {"items": rows, "counts": counts, "ai": ai_mail.enabled(), "topics": MAIL_TOPICS, "my_topics": user_topics(user),
+            "topic_counts": tcounts}
 
 
 def mail_item(c, mid: int, user: dict):
@@ -4208,6 +4269,8 @@ def mail_item(c, mid: int, user: dict):
 def mailin_get(mid: int, user: dict = Depends(current_user)):
     with db() as c:
         r = dict(mail_item(c, mid, user))
+        o = c.execute("SELECT name FROM users WHERE id IS ?", (r["owner_id"],)).fetchone()
+        r["owner_name"] = o["name"] if o else ""
         r["thread"] = [{"id": t["id"], "from_name": t["from_name"], "from_addr": t["from_addr"], "sent_at": t["sent_at"],
                         "subject": t["subject"], "body": t["body"]} for t in thread_rows(c, r["thread_key"])]
         r["candidates"] = match_shipments(c, json.loads(r["t_candidates"] or "[]"), r["subject"])
@@ -4216,13 +4279,23 @@ def mailin_get(mid: int, user: dict = Depends(current_user)):
 
 @app.patch("/api/mailin/{mid}")
 def mailin_status(mid: int, body: dict, user: dict = Depends(current_user)):
-    st = body.get("status")
-    if st not in ("new", "done", "ignored"):
+    """상태(확인할 것/처리함/무시) — 같이 보는 사람 누구나. 업무 분류·🔒 공유 안 함 — 주인(업무 분류는 같은 업무 담당자도)."""
+    st, topic, private = body.get("status"), body.get("topic"), body.get("private")
+    if st is not None and st not in ("new", "done", "ignored"):
         raise HTTPException(400, "잘못된 상태입니다.")
+    if topic is not None and topic not in MAIL_TOPICS:
+        raise HTTPException(400, "잘못된 업무 분류입니다.")
     with db() as c:
-        if mail_item(c, mid, user)["status"] == "merged":
+        row = mail_item(c, mid, user)
+        if row["status"] == "merged":
             raise HTTPException(400, "이 쓰레드에 새 메일이 와서 목록이 바뀌었습니다. 새로고침하세요.")
-        c.execute("UPDATE mail_items SET status = ? WHERE id = ?", (st, mid))
+        if st is not None:
+            c.execute("UPDATE mail_items SET status = ? WHERE id = ?", (st, mid))
+        if topic is not None:
+            c.execute("UPDATE mail_items SET topic = ?, topic_set = 1 WHERE id = ?", (topic, mid))
+        if private is not None:
+            mail_owner_check(row, user)
+            c.execute("UPDATE mail_items SET private = ? WHERE id = ?", (1 if private else 0, mid))
     return {"ok": True}
 
 
@@ -4230,7 +4303,9 @@ def mailin_status(mid: int, body: dict, user: dict = Depends(current_user)):
 def mailin_delete(mid: int, user: dict = Depends(current_user)):
     """쓰레드 전체를 TeamHub 에서 지운다 (원래 메일함은 그대로)."""
     with db() as c:
-        key = mail_item(c, mid, user)["thread_key"]
+        row = mail_item(c, mid, user)
+        mail_owner_check(row, user)
+        key = row["thread_key"]
         c.execute("DELETE FROM mail_items WHERE thread_key = ? AND owner_id IS (SELECT owner_id FROM mail_items WHERE id = ?)",
                   (key, mid))
     return {"ok": True}

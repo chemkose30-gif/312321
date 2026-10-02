@@ -460,3 +460,25 @@ def courier_shipper(text: str) -> str:
 
 def is_delivered(subject: str) -> bool:
     return bool(DELIVERED.search(subject or "")) and not NOT_DELIVERED.search(subject or "")
+
+
+# ---- 업무 분류 (같은 업무 담당자끼리 메일을 같이 봄)
+TOPICS = {
+    "import": r"\bb\s*/\s*l\b|\bbl\b|\betd\b|\beta\b|vessel|shipment|shipping|customs|clearance|container|forwarder|freight|"
+              r"\bawb\b|packing\s*list|booking|dhl|fedex|\bups\b|통관|선적|입항|반입|운송|포워더|컨테이너|수입신고|선박",
+    "finance": r"payment|remittance|\bt\s*/\s*t\b|wire\s+transfer|bank|swift|debit|credit\s+note|overdue|statement\s+of\s+account|"
+               r"송금|결제|입금|세금계산서|계산서|대금|미수|환율",
+    "quality": r"\bsample|\bcoa\b|\bmsds\b|\bsds\b|\bspec(ification)?s?\b|certificate|allergen|halal|kosher|\bgmo\b|"
+               r"analysis|complaint|품질|성적서|시험|샘플|클레임|인증서",
+    "sales": r"\bp\s*/?\s*o\b|purchase\s+order|\border\b|quotation|\bquote\b|\bprice|\boffer\b|proforma|\bpi\b|"
+             r"견적|발주|주문|단가|납품|오퍼|가격",
+}
+
+
+def topic_of(subject: str, text: str) -> str:
+    """제목(가중치 3) + 본문 앞부분에서 업무 낱말을 세어 가장 많은 업무. 없으면 'etc'."""
+    score = {}
+    for k, pat in TOPICS.items():
+        score[k] = 3 * len(re.findall(pat, subject or "", re.I)) + len(re.findall(pat, (text or "")[:4000], re.I))
+    best = max(score, key=score.get)
+    return best if score[best] else "etc"

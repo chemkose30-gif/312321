@@ -576,7 +576,8 @@ function candChip(c, attr) {   // 날짜 후보 버튼: 바뀐 일정·이미 �
 
 async function renderMailin() {
   const mi = state.mi ||= {status: 'new', q: ''};
-  const qs = new URLSearchParams({status: mi.status, q: mi.q});
+  mi.topic ??= '';
+  const qs = new URLSearchParams({status: mi.status, q: mi.q, topic: mi.topic});
   const d = await api('/api/mailin?' + qs);
   state.miAi = d.ai;
   const n = k => d.counts[k] || 0;
@@ -586,17 +587,22 @@ async function renderMailin() {
       <button class="btn" id="miHow">⚙ 메일 연결 방법</button><button class="btn primary" id="miUp">📦 메일함 파일 올리기</button></div>
     <div class="muted" style="font-size:13px;margin-bottom:8px">info@erc-chem.com 으로 전달한 메일에서 <b>입고(ETA)·미팅·납기</b> 날짜를 찾아 둡니다. 같은 대화로 오간 메일은 한 묶음(쓰레드)으로 읽어 <b>최신 일정</b>만 보여 주고, 중복 메일은 뺍니다. 날짜 버튼을 누르면 내용이 채워진 등록 화면이 열립니다.${d.ai ? ' 해외 메일은 AI가 한국어로 번역합니다 (제품명은 원문 그대로).' : ''}</div>
     <div class="tabs"><button data-s="new">확인할 것 (${n('new')})</button><button data-s="done">등록함 (${n('done')})</button><button data-s="ignored">무시 (${n('ignored')})</button><button data-s="none">일정 못 찾은 메일 (${n('none')})</button></div>
+    <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <button class="btn sm ${mi.topic === '' ? 'primary' : ''}" data-tp="">전체</button><button class="btn sm ${mi.topic === 'mine' ? 'primary' : ''}" data-tp="mine">👤 내 메일</button>
+      ${Object.entries(d.topics).map(([k, v]) => `<button class="btn sm ${mi.topic === k ? 'primary' : ''}" data-tp="${k}">${v}${d.topic_counts[k] ? ` <b>${d.topic_counts[k]}</b>` : ''}</button>`).join('')}
+      <span class="muted" style="font-size:12px">${d.my_topics.length ? `같이 보는 업무: ${d.my_topics.map(t => d.topics[t]).join(', ')}` : '같이 보는 업무가 없어 내 메일만 보입니다'} <small>(👥 직원관리에서 관리자가 정함)</small></span></div>
     <div class="row" style="margin-bottom:10px"><input id="miQ" placeholder="제목 / 보낸 사람 / 내용 검색" value="${esc(mi.q)}" style="max-width:300px"><span class="muted">${d.items.length}건</span></div>
     ${d.items.length ? d.items.map(m => `<div class="list-item" style="display:block;padding:10px 0;border-bottom:1px solid var(--line)">
         <div class="row" style="gap:6px"><b style="flex:1;min-width:0;cursor:pointer" data-open="${m.id}">${esc(m.subject || '(제목 없음)')}</b>
           ${m.status === 'new' ? `<button class="btn sm" data-st="done" data-id="${m.id}">✔ 처리완료</button><button class="btn sm" data-st="ignored" data-id="${m.id}">무시</button>`
             : `<button class="btn sm" data-st="new" data-id="${m.id}">되돌리기</button>`}</div>
-        <small class="muted">${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
+        <small class="muted"><span class="tag s-todo">${esc(d.topics[m.topic] || '분류 전')}</span>${m.owner_id && m.owner_id !== state.me.id ? ` <span class="tag s-doing">👤 ${esc(m.owner_name)}</span>` : ''}${m.private ? ' 🔒' : ''} ${esc(m.from_name || m.from_addr)} · ${esc(m.sent_at)}${m.owner_id ? '' : ' · <span class="tag p-high">주인 미지정</span>'}${m.t_count > 1 ? ` · <span class="tag s-todo">💬 ${m.t_count}통</span>` : ''}${m.translated ? ' · <span class="tag s-doing">🌐 번역</span>' : ''}${m.ai_status === 'pending' ? ' · <span class="tag s-todo">AI 읽는 중…</span>' : ''}</small>
         ${m.summary ? `<div style="font-size:13px;margin-top:3px">${esc(m.summary)}</div>` : ''}
         ${m.candidates.length ? `<div class="row" style="gap:6px;margin-top:6px">${m.candidates.map((c, i) => candChip(c, `data-c="${m.id}:${i}"`)).join('')}</div>` : ''}
       </div>`).join('') : `<div class="empty">${total ? '해당하는 메일이 없습니다.' : '아직 받은 메일이 없습니다. ⚙ 메일 연결 방법을 확인하세요.'}</div>`}
   </div>`;
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.s === mi.status); b.onclick = () => { mi.status = b.dataset.s; renderMailin(); }; });
+  $$('[data-tp]').forEach(b => b.onclick = () => { mi.topic = b.dataset.tp; renderMailin(); });
   $('#miHow').onclick = openMailinHelp;
   $('#miUp').onclick = openMailinUpload;
   let timer;
@@ -632,6 +638,10 @@ async function openMailItem(id) {
   const m = await api(`/api/mailin/${id}`);
   openModal(`<h2 style="word-break:break-all">${esc(m.subject || '(제목 없음)')}</h2>
     <div class="muted">${esc(m.from_name)} &lt;${esc(m.from_addr)}&gt; · ${esc(m.sent_at)}</div>
+    <div class="row" style="gap:8px;margin-top:8px;align-items:center"><span class="muted" style="font-size:12px">업무</span>
+      <select id="miTopic" style="width:auto">${Object.entries(MAIL_TOPICS).map(([k, v]) => `<option value="${k}" ${m.topic === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      ${m.owner_id === state.me.id ? `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miPriv" style="width:auto" ${m.private ? 'checked' : ''}>🔒 나만 보기 (같은 업무 담당자와 공유 안 함)</label>`
+        : `<span class="muted" style="font-size:12px">${m.owner_name ? `👤 ${esc(m.owner_name)}님 메일 (같은 업무라 같이 봄)` : ''}</span>`}</div>
     ${m.candidates.length ? `<div class="row" style="gap:6px;margin:10px 0">${m.candidates.map((c, i) => candChip(c, `data-ci="${i}"`)).join('')}</div>` : '<div class="muted" style="margin:10px 0">찾은 날짜가 없습니다. 아래 버튼으로 직접 등록할 수 있습니다.</div>'}
     <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn sm" data-mk="ship">🚢 입고예정으로</button><button class="btn sm" data-mk="event">📅 일정으로</button><button class="btn sm" data-mk="task">📋 업무로</button></div>
     ${m.summary ? `<div style="font-size:13px;margin-bottom:6px"><b>요약</b> ${esc(m.summary)}</div>` : ''}
@@ -642,14 +652,16 @@ async function openMailItem(id) {
     ${m.translation ? '<div class="tabs" style="margin-bottom:6px"><button data-v="tr" class="active">🌐 한국어 번역</button><button data-v="org">원문</button></div>' : ''}
     <pre id="miBody" style="white-space:pre-wrap;font-family:inherit;font-size:13px;background:var(--bg);padding:10px;border-radius:8px;max-height:50vh;overflow:auto">${esc(m.translation || m.body)}</pre>
     ${String(m.ai_status).startsWith('error') ? `<div class="err">${esc(m.ai_status)}</div>` : ''}
-    <div class="actions"><button class="btn danger" id="miDel">삭제</button><span class="spacer"></span>${state.miAi ? '<button class="btn" id="miAi">🤖 AI로 쓰레드 다시 읽기</button>' : ''}<button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    <div class="actions">${m.owner_id === state.me.id || (!m.owner_id && state.me.role === 'admin') ? '<button class="btn danger" id="miDel">삭제</button>' : ''}<span class="spacer"></span>${state.miAi ? '<button class="btn" id="miAi">🤖 AI로 쓰레드 다시 읽기</button>' : ''}<button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
     $$('[data-v]', bg).forEach(b => b.onclick = () => { $$('[data-v]', bg).forEach(x => x.classList.toggle('active', x === b)); $('#miBody', bg).textContent = b.dataset.v === 'tr' ? m.translation : m.body; });
     if ($('#miAi', bg)) $('#miAi', bg).onclick = async () => { await api(`/api/mailin/${id}/analyze`, {method: 'POST'}); close(); toast('AI가 읽는 중입니다. 잠시 후 새로고침하세요.'); renderMailin(); };
     bg.firstElementChild.classList.add('wide');
     const done = () => api(`/api/mailin/${id}`, {method: 'PATCH', body: {status: 'done'}});
     $$('[data-ci]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, m.candidates[+b.dataset.ci], done); });
     $$('[data-mk]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, {kind: b.dataset.mk, date: todayStr(), time: null, label: '', context: m.body.slice(0, 120), bl_no: ''}, done); });
-    $('#miDel', bg).onclick = async () => { if (!confirm('이 쓰레드(메일 묶음)를 TeamHub에서 지울까요? (원래 메일함의 메일은 그대로입니다)')) return; await api(`/api/mailin/${id}`, {method: 'DELETE'}); close(); renderMailin(); };
+    $('#miTopic', bg).onchange = async e => { await api(`/api/mailin/${id}`, {method: 'PATCH', body: {topic: e.target.value}}); toast('업무 분류를 바꿨습니다.'); renderMailin(); };
+    if ($('#miPriv', bg)) $('#miPriv', bg).onchange = async e => { await api(`/api/mailin/${id}`, {method: 'PATCH', body: {private: e.target.checked}}); toast(e.target.checked ? '🔒 나만 봅니다.' : '같은 업무 담당자와 같이 봅니다.'); renderMailin(); };
+    if ($('#miDel', bg)) $('#miDel', bg).onclick = async () => { if (!confirm('이 쓰레드(메일 묶음)를 TeamHub에서 지울까요? (원래 메일함의 메일은 그대로입니다)')) return; await api(`/api/mailin/${id}`, {method: 'DELETE'}); close(); renderMailin(); };
   });
 }
 
@@ -1155,14 +1167,16 @@ async function openTask(id) {
 }
 
 // ===================================================== users (admin)
+const MAIL_TOPICS = {import: '🚢 수입·통관', sales: '🧾 영업·주문', finance: '💳 회계·결제', quality: '🧪 샘플·품질', etc: '📁 기타'};
 async function renderUsers() {
   state.users = await api('/api/users');
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">직원관리</h3><span class="muted">${state.users.filter(u => u.active).length}명 재직</span>
       <span class="spacer"></span><button class="btn primary" id="uNew">+ 직원 등록</button></div>
-    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th class="hide-m">메일</th><th>권한</th><th>상태</th></tr></thead><tbody>
+    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th class="hide-m">메일</th><th class="hide-m">메일 같이 보는 업무</th><th>권한</th><th>상태</th></tr></thead><tbody>
     ${state.users.map(u => `<tr data-u="${u.id}" style="${u.active ? '' : 'opacity:.5'}">
       <td class="title">${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.dept)}</td><td class="hide-m">${esc(u.position)}</td><td class="hide-m">${u.email ? esc(u.email) : '<span class="muted">미등록</span>'}</td>
+      <td class="hide-m"><small>${(u.mail_topics || '').split(',').filter(t => MAIL_TOPICS[t]).map(t => MAIL_TOPICS[t]).join(', ') || '<span class="muted">본인 메일만</span>'}</small></td>
       <td>${u.role === 'admin' ? '<span class="tag p-high">관리자</span>' : '<span class="tag p-low">직원</span>'}</td>
       <td>${u.active ? '<span class="tag s-done">재직</span>' : '<span class="tag s-todo">비활성</span>'}</td></tr>`).join('')}
     </tbody></table></div>
@@ -1204,6 +1218,8 @@ function openUser(u) {
         <div><label>부서</label><input name="dept" list="deptList" value="${esc(u?.dept)}"></div>
         <div><label>직급</label><input name="position" value="${esc(u?.position)}"></div>
         <div style="grid-column:1/-1"><label>Outlook 메일 주소 (업무 알림 수신)</label><input name="email" type="email" value="${esc(u?.email)}" placeholder="name@company.com"></div>
+        <div style="grid-column:1/-1"><label>메일 같이 보는 업무 <small class="muted">(고른 업무로 분류된 다른 직원의 메일도 📥 메일 일정에 보입니다 — 주인이 🔒 표시한 메일은 제외)</small></label>
+          <div class="row" style="gap:10px;flex-wrap:wrap">${Object.entries(MAIL_TOPICS).map(([k, v]) => `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400"><input type="checkbox" name="mt" value="${k}" style="width:auto" ${(u?.mail_topics || '').split(',').includes(k) ? 'checked' : ''}>${v}</label>`).join('')}</div></div>
         <div><label>권한</label><select name="role"><option value="member">직원</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>관리자</option></select></div>
         <div><label>${u ? '새 비밀번호 (변경 시만 입력)' : '비밀번호 (6자 이상)'}</label><input name="password" type="text" minlength="6" autocomplete="off" ${u ? '' : 'required'}></div>
       </div>
@@ -1217,7 +1233,8 @@ function openUser(u) {
     const f = $('form', bg);
     f.onsubmit = async e => {
       e.preventDefault();
-      const body = {username: f.username.value, email: f.email.value, name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
+      const body = {username: f.username.value, email: f.email.value, name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value,
+        mail_topics: $$('[name=mt]', f).filter(x => x.checked).map(x => x.value).join(',')};
       try {
         if (u) {
           if (f.password.value) body.password = f.password.value;
