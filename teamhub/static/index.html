@@ -1805,7 +1805,7 @@ async function renderShipments() {
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🚢 입고 예정</h3><span class="spacer"></span>
       ${state.me.role === 'admin' ? '<button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
     <div class="tabs">
-      <button data-v="open">진행중</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
+      <button data-v="open">진행중</button><button data-v="cleared">통관완료</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
     </div>
     <div class="row" style="margin-bottom:8px;gap:6px"><input id="shBl" placeholder="B/L·항공 운송장 번호로 바로 등록 (UNI-PASS 조회)" style="max-width:340px"><button class="btn" id="shBlGo">🛃 조회해서 등록</button></div>
     <div id="shWatch"></div>
@@ -1813,9 +1813,9 @@ async function renderShipments() {
     ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
         <div class="l1">${shTag(sh.status)}<b>${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
         ${csTag(sh) ? `<div class="l2">${csTag(sh)}</div>` : ''}
-        <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
+        <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
       <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">M B/L / H B/L · 창고</th></tr></thead><tbody>
-      ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.status)}</td>
+      ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}</td>
         <td class="title">${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
         <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">등록된 입고 예정이 없습니다.</div>'}

@@ -2649,13 +2649,15 @@ def ship_values(b: ShipmentIn):
 def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current_user)):
     where, params = [], []
     if view == "open":
-        where.append("s.status != 'arrived'")
+        where.append("s.status != 'arrived' AND s.cs_cleared_at = ''")     # 통관(수입신고 수리)이 끝난 건은 따로
+    elif view == "cleared":
+        where.append("s.status != 'arrived' AND s.cs_cleared_at != ''")
     elif view == "arrived":
         where.append("s.status = 'arrived'")
     if q:
         where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ? OR s.hbl_no LIKE ?)")
         params += [f"%{q}%"] * 5
-    order = "s.eta DESC, s.id DESC" if view == "arrived" else "s.eta, s.id"
+    order = "s.eta DESC, s.id DESC" if view in ("arrived", "cleared") else "s.eta, s.id"
     with db() as c:
         rows = c.execute(
             "SELECT s.*, u.name AS creator_name FROM shipments s JOIN users u ON u.id = s.created_by"
@@ -3038,9 +3040,11 @@ def dashboard(user: dict = Depends(current_user)):
     week_end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
         ships_today = c.execute("SELECT * FROM shipments WHERE eta = ? ORDER BY status = 'arrived', id", (today,)).fetchall()
-        ships_week = c.execute("SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND status != 'arrived' ORDER BY eta",
+        ships_week = c.execute("SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND status != 'arrived'"
+                               " AND cs_cleared_at = '' ORDER BY eta",
                                (today, week_end)).fetchall()
-        ships_late = c.execute("SELECT * FROM shipments WHERE eta < ? AND status != 'arrived' ORDER BY eta",
+        ships_late = c.execute("SELECT * FROM shipments WHERE eta < ? AND status != 'arrived' AND cs_cleared_at = ''"
+                               " ORDER BY eta",
                                (today,)).fetchall()
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
