@@ -700,7 +700,19 @@ async function openMailItem(id) {
     $$('[data-mk]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, {kind: b.dataset.mk, date: todayStr(), time: null, label: '', context: m.body.slice(0, 120), bl_no: ''}, done); });
     if ($('#miGt', bg)) $('#miGt', bg).onclick = async () => {
       const gt = await api('/api/mailin/gtranslate').catch(() => ({}));
-      if (!gt.enabled) {    // API 키가 없으면 구글 번역 사이트에서 바로 (무료)
+      if (!gt.enabled) {
+        // API 키 없이: ① 크롬(PC) 내장 번역기(기기 안에서 번역, 무료) ② 안 되면 구글 번역 사이트
+        if ('Translator' in self && !/[가-힣一-鿿]{20}/.test(m.body)) {
+          $('#miGt', bg).disabled = true; $('#miGtNote', bg).textContent = '크롬 번역기 준비 중… (처음 한 번은 내려받느라 조금 걸립니다)';
+          try {
+            const tr = await Translator.create({sourceLanguage: 'en', targetLanguage: 'ko'});
+            const out = [];
+            for (const part of m.body.slice(0, 20000).split(/\n{2,}/)) out.push(part.trim() ? await tr.translate(part) : '');
+            m.translation = out.join('\n\n');
+            $('#miBody', bg).textContent = m.translation; $('#miGtNote', bg).textContent = '크롬 내장 번역 (API 없이)';
+            return;
+          } catch (err) { $('#miGtNote', bg).textContent = ''; $('#miGt', bg).disabled = false; }
+        }
         window.open('https://translate.google.com/?sl=auto&tl=ko&op=translate&text=' + encodeURIComponent(m.body.slice(0, 4800)), '_blank');
         return;
       }
