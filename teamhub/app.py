@@ -831,7 +831,7 @@ def check_quote(body: QuoteIn):
         raise HTTPException(400, "거래처명을 입력하세요.")
     if body.vat_mode not in VAT_MODES or body.status not in QUOTE_STATUSES or body.doc_type not in DOC_TYPES:
         raise HTTPException(400, "잘못된 입력입니다.")
-    if body.doc_type == "statement" and body.status not in ("draft", "sent"):
+    if body.doc_type == "statement" and body.status not in ("draft", "sent", "won"):
         body.status = "sent"
     items = [i for i in body.items if i.name.strip()]
     if not items:
@@ -1006,7 +1006,7 @@ def update_quote(qid: int, body: QuoteIn, user: dict = Depends(current_user)):
     with db() as c:
         q = editable_quote(c, qid, user)
         body.doc_type = q["doc_type"]
-        if q["doc_type"] == "statement" and body.status not in ("draft", "sent"):
+        if q["doc_type"] == "statement" and body.status not in ("draft", "sent", "won"):
             body.status = "sent"
         c.execute(
             f"UPDATE quotes SET {', '.join(f + ' = ?' for f in QUOTE_FIELDS)}, updated_at = ? WHERE id = ?",
@@ -1020,6 +1020,18 @@ def update_quote(qid: int, body: QuoteIn, user: dict = Depends(current_user)):
     if mail:
         mailer.send_async(db, *mail)
     return {"id": qid, "quote_no": q["quote_no"]}
+
+
+@app.patch("/api/quotes/{qid}/status")
+def quote_status(qid: int, body: dict, user: dict = Depends(current_user)):
+    st = body.get("status")
+    if st not in QUOTE_STATUSES:
+        raise HTTPException(400, "잘못된 상태입니다.")
+    with db() as c:
+        if not c.execute("SELECT 1 FROM quotes WHERE id = ?", (qid,)).fetchone():
+            raise HTTPException(404, "문서를 찾을 수 없습니다.")
+        c.execute("UPDATE quotes SET status = ?, updated_at = ? WHERE id = ?", (st, now(), qid))
+    return {"ok": True}
 
 
 @app.delete("/api/quotes/{qid}")
@@ -1794,7 +1806,21 @@ def dashboard(user: dict = Depends(current_user)):
                                (today, week_end)).fetchall()
         ships_late = c.execute("SELECT * FROM shipments WHERE eta < ? AND status != 'arrived' ORDER BY eta",
                                (today,)).fetchall()
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    with db() as c:
+        stmts = c.execute(
+            "SELECT q.id, q.quote_date, q.customer_name, q.title, q.grand_total, q.status, u.name AS creator_name,"
+            " (SELECT name FROM quote_items qi WHERE qi.quote_id = q.id ORDER BY seq LIMIT 1) AS first_item,"
+            " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = q.id) AS item_count"
+            " FROM quotes q JOIN users u ON u.id = q.created_by"
+            " WHERE q.doc_type = 'statement' AND q.note != ? AND ("
+            "   (q.quote_date = ? AND q.status IN ('sent', 'won'))"
+            "   OR (q.quote_date BETWEEN ? AND ? AND q.status = 'sent'))"
+            " ORDER BY q.status = 'won', q.quote_date, q.id",
+            (IMPORT_NOTE, today, week_ago, today),
+        ).fetchall()
     return {
+        "statements_todo": [dict(r) for r in stmts],
         "ships_today": [dict(r) for r in ships_today],
         "ships_week": [dict(r) for r in ships_week],
         "ships_late": [dict(r) for r in ships_late],

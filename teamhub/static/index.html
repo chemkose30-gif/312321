@@ -403,6 +403,13 @@ async function renderDashboard() {
       </div>
       <div class="card">
         <div class="row"><h3>📋 내 할 일</h3><span class="spacer"></span><button class="btn sm primary" id="dNewTask">+ 업무 지시</button></div>
+        ${d.statements_todo.length ? `<div class="dept-head" style="padding:8px 0 2px">📄 거래명세서 출고 (${d.statements_todo.filter(x => x.status === 'sent').length}건 남음)</div>` +
+          d.statements_todo.map(x => `<div class="list-item" data-stmt="${x.id}" style="${x.status === 'won' ? 'opacity:.55' : ''}">
+            <span class="tag ${x.status === 'won' ? 's-done' : 's-doing'}">${x.status === 'won' ? '출고완료' : '출고'}</span>
+            <div style="flex:1"><b>${esc(x.customer_name)}</b> <small class="muted">${esc(x.first_item || '')}${x.item_count > 1 ? ` 외 ${x.item_count - 1}건` : ''}</small><br>
+              <small class="muted">${x.quote_date < d.today ? `<span class="overdue">${esc(x.quote_date)} 이월</span>` : '오늘'} · ${won(x.grand_total)}원 · 발행 ${esc(x.creator_name)}</small></div>
+            ${x.status === 'sent' ? `<button class="btn sm" data-ship-done="${x.id}">✔ 출고완료</button>` : `<button class="btn sm" data-ship-undo="${x.id}">되돌리기</button>`}</div>`).join('') +
+          '<div class="dept-head" style="padding:10px 0 2px">📋 업무</div>' : ''}
         ${d.my_tasks.length ? d.my_tasks.map(t => `<div class="list-item" data-task="${t.id}">
             ${pTag(t.priority)}<div style="flex:1"><b>${esc(t.title)}</b><br><small class="muted">지시: ${esc(t.assigner_name)} · 기한 ${dueHtml(t)}</small></div>${sTag(t.status)}</div>`).join('')
           : '<div class="empty">처리할 업무가 없습니다. 🎉</div>'}
@@ -413,6 +420,16 @@ async function renderDashboard() {
       ${shipBlock('⚠️ 입고일 지남', d.ships_late)}${shipBlock('오늘 입고', d.ships_today, '오늘 입고 예정이 없습니다.')}${shipBlock('이번 주 (7일 이내)', d.ships_week)}
     </div>`;
   $$('[data-ship]').forEach(el => el.onclick = () => openShipment(+el.dataset.ship));
+  $$('[data-stmt]').forEach(el => el.onclick = e => {
+    const done = e.target.closest('[data-ship-done]'), undo = e.target.closest('[data-ship-undo]');
+    if (done || undo) {
+      e.stopPropagation();
+      api(`/api/quotes/${el.dataset.stmt}/status`, {method: 'PATCH', body: {status: done ? 'won' : 'sent'}})
+        .then(() => { toast(done ? '출고완료 처리했습니다.' : '되돌렸습니다.'); renderDashboard(); });
+      return;
+    }
+    openQuoteView(+el.dataset.stmt);
+  });
   $('#dNewShip').onclick = () => openShipment(null, d.today);
   $('#dAllShip').onclick = () => go('shipments');
   $$('.stat').forEach(s => s.onclick = () => {
@@ -810,7 +827,7 @@ function openUser(u) {
 // ===================================================== quotes (견적서)
 const QSTATUS = {draft: '작성중', sent: '발송', won: '수주', lost: '실주'};
 const VAT = {separate: '부가세 별도', included: '부가세 포함', none: '면세/영세'};
-const TSTATUS = {draft: '작성중', sent: '발행'};
+const TSTATUS = {draft: '작성중', sent: '발행', won: '출고완료'};
 const DOC = {
   quote: {label: '견적서', icon: '🧾', no: '견적번호', date: '견적일', status: QSTATUS},
   statement: {label: '거래명세서', icon: '📄', no: '명세서번호', date: '거래일자', status: TSTATUS},
