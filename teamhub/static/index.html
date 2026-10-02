@@ -815,7 +815,7 @@ async function renderQuotes() {
   const sum = list.reduce((a, x) => a + x.grand_total, 0);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">${D.icon} ${D.label}</h3><span class="spacer"></span>
-      ${isAdmin && dt === 'statement' ? '<button class="btn" id="qImport">📥 이카운트에서 가져오기</button>' : ''}
+      ${isAdmin ? '<button class="btn" id="qImport">📥 이카운트에서 가져오기</button>' : ''}
       ${isAdmin ? '<button class="btn" id="qEcount">🔗 이카운트</button><button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
       <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     <div class="row" style="margin-bottom:10px">
@@ -830,7 +830,7 @@ async function renderQuotes() {
   </div>`;
   $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);
   if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
-  if ($('#qImport')) $('#qImport').onclick = openStatementImport;
+  if ($('#qImport')) $('#qImport').onclick = () => openStatementImport(dt);
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; renderQuotes(); };
   let timer;
   $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -1184,10 +1184,11 @@ async function printStatement(w, q) {
   setTimeout(() => w.print(), 400);
 }
 
-function openStatementImport() {
-  openModal(`<h2>📥 이카운트 거래명세서(판매) 가져오기</h2>
-    <div class="desc" style="font-size:13px">이카운트는 지난 판매를 조회하는 API를 제공하지 않아, <b>엑셀 파일</b>로 가져옵니다.<br>
-      1. 이카운트 → 영업관리 → <b>판매조회</b> (또는 판매현황) 화면에서 기간을 정해 조회<br>
+function openStatementImport(dt = 'statement') {
+  const isSt = dt === 'statement', D = DOC[dt];
+  openModal(`<h2>📥 이카운트 ${isSt ? '거래명세서(판매)' : '견적서'} 가져오기</h2>
+    <div class="desc" style="font-size:13px">이카운트는 지난 ${isSt ? '판매' : '견적서'}를 조회하는 API를 제공하지 않아, <b>엑셀 파일</b>로 가져옵니다.<br>
+      1. 이카운트 → 영업관리 → <b>${isSt ? '판매조회</b> (또는 판매현황)' : '견적서조회</b>'} 화면에서 기간을 정해 조회<br>
       2. 화면의 <b>[Excel]</b> 버튼으로 내려받기 (거래처명·일자-No.·품목·수량·단가·공급가액·부가세 열이 보이게)<br>
       3. 아래에 그 파일을 올리면 미리보기 후 가져옵니다. 이미 가져온 전표(같은 일자-No.)는 건너뜁니다.</div>
     <input type="file" id="impFile" accept=".xlsx,.csv">
@@ -1198,7 +1199,7 @@ function openStatementImport() {
     const send = async (dry) => {
       const file = $('#impFile', bg).files[0]; if (!file) return;
       const fd = new FormData(); fd.append('file', file);
-      const res = await fetch(`/api/statements/import?dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const res = await fetch(`/api/docs/import?doc_type=${dt}&dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || '가져오기 실패');
       return data;
@@ -1218,7 +1219,7 @@ function openStatementImport() {
     };
     $('#impGo', bg).onclick = async e => {
       e.target.disabled = true; e.target.textContent = '가져오는 중…';
-      try { const r = await send(false); close(); toast(`거래명세서 ${r.created}건을 가져왔습니다.`); renderQuotes(); }
+      try { const r = await send(false); close(); toast(`${D.label} ${r.created}건을 가져왔습니다.`); renderQuotes(); }
       catch (err) { $('#impErr', bg).textContent = err.message; e.target.disabled = false; }
     };
   });

@@ -1197,7 +1197,7 @@ def ecount_send(qid: int, body: EcountSendIn, user: dict = Depends(current_user)
 # ---------------------------------------------------------------- 이카운트 판매(거래명세서) 엑셀 가져오기
 # 이카운트는 판매 조회 API 를 제공하지 않으므로 [판매조회/판매현황] 화면에서 내려받은 엑셀을 올려 가져온다.
 SALE_COLS = {
-    "slip": ("일자-no", "일자no", "전표번호"),
+    "slip": ("일자-no", "일자no", "전표번호", "견적번호"),
     "date": ("일자", "판매일", "거래일"),
     "cust_cd": ("거래처코드",),
     "customer": ("거래처명", "거래처"),
@@ -1271,11 +1271,25 @@ def parse_sales_sheet(rows: list):
                                          "supply": int(round(supply)), "vat": int(round(vat)), "note": get("note")})
         return [groups[k] for k in order], sorted(col)
     raise HTTPException(400, "머리글에서 '거래처명'과 '일자(일자-No.)', '수량/공급가액' 열을 찾지 못했습니다."
-                             " 이카운트 판매조회 화면에서 내려받은 엑셀을 그대로 올려주세요.")
+                             " 이카운트 판매조회·견적서조회 화면에서 내려받은 엑셀을 그대로 올려주세요.")
 
 
 @app.post("/api/statements/import")
 async def import_statements(file: UploadFile = File(...), dry_run: bool = True, user: dict = Depends(admin_user)):
+    return await import_docs(file, "statement", dry_run, user)
+
+
+@app.post("/api/docs/import")
+async def import_docs_api(file: UploadFile = File(...), doc_type: str = "statement", dry_run: bool = True,
+                          user: dict = Depends(admin_user)):
+    if doc_type not in DOC_TYPES:
+        raise HTTPException(400, "잘못된 문서 종류입니다.")
+    return await import_docs(file, doc_type, dry_run, user)
+
+
+async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict):
+    """이카운트 판매조회(거래명세서) / 견적서조회(견적서) 엑셀 가져오기."""
+    slip_col = "ecount_sale_slip" if doc_type == "statement" else "ecount_quote_slip"
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
@@ -1285,7 +1299,7 @@ async def import_statements(file: UploadFile = File(...), dry_run: bool = True, 
         cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
         for g in slips:
             dup = g["slip"] and c.execute(
-                "SELECT 1 FROM quotes WHERE doc_type = 'statement' AND ecount_sale_slip = ?", (g["slip"],)).fetchone()
+                f"SELECT 1 FROM quotes WHERE doc_type = ? AND {slip_col} = ?", (doc_type, g["slip"])).fetchone()
             g["duplicate"] = bool(dup)
             if dup:
                 skipped += 1
@@ -1295,12 +1309,12 @@ async def import_statements(file: UploadFile = File(...), dry_run: bool = True, 
             ts = now()
             supply_total = sum(i["supply"] for i in g["items"])
             vat_total = sum(i["vat"] for i in g["items"])
-            quote_no = next_quote_no(c, g["date"], "statement")
+            quote_no = next_quote_no(c, g["date"], doc_type)
             cur = c.execute(
                 "INSERT INTO quotes (quote_no, doc_type, customer_name, cust_cd, quote_date, vat_mode, status, note,"
-                " supply_total, vat_total, grand_total, ecount_sale_slip, created_by, created_at, updated_at)"
-                " VALUES (?, 'statement', ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (quote_no, g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
+                f" supply_total, vat_total, grand_total, {slip_col}, created_by, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, 'separate', 'sent', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (quote_no, doc_type, g["customer"], g["cust_cd"] or cust_codes.get(g["customer"], ""), g["date"],
                  "이카운트에서 가져옴", supply_total, vat_total, supply_total + vat_total, g["slip"],
                  user["id"], ts, ts),
             )
