@@ -26,7 +26,7 @@ timedatectl set-timezone Asia/Seoul
 
 echo "==> 패키지 설치"
 apt-get update -y
-apt-get install -y python3 python3-venv sqlite3 caddy ufw
+apt-get install -y python3 python3-venv sqlite3 caddy ufw pst-utils
 
 echo "==> 프로그램 복사 (/opt/teamhub)"
 id teamhub >/dev/null 2>&1 || useradd --system --home /opt/teamhub --shell /usr/sbin/nologin teamhub

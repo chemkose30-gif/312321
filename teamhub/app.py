@@ -2880,7 +2880,7 @@ def _thread_key(c, oid, it) -> str:
     return f"{oid or 0}:{mailin.thread_subject(it['subject'])}"
 
 
-def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None) -> dict:
+def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = False) -> dict:
     """원본 메일을 읽어 저장. 전달한 사람(직원 메일 주소)으로 주인을 정한다. 같은 메일은 한 번만."""
     items = mailin.parse_raw(raw)
     emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
@@ -2901,10 +2901,13 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None) -> dict:
         if cur.rowcount:
             added += 1
             touched[key] = oid
-    found, ai_queue = 0, []
+    found, ai_queue, heads = 0, [], []
     for key in touched:
         head_id, cands, foreign = refresh_thread(c, key)
         found += bool(cands)
+        if bulk:                         # 한꺼번에 가져오기: 알림·AI 는 다 끝난 뒤 한 번에
+            heads.append(head_id)
+            continue
         if ai_mail.enabled() and (cands or foreign):
             c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (head_id,))
             ai_queue.append(head_id)
@@ -2916,7 +2919,151 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None) -> dict:
               " AND thread_key NOT IN (SELECT thread_key FROM mail_items WHERE created_at >= ?)", (cutoff,))
     if ai_queue:
         threading.Thread(target=run_ai_queue, args=(ai_queue,), daemon=True).start()
-    return {"messages": len(items), "added": added, "duplicates": dup, "with_schedule": found}
+    out = {"messages": len(items), "added": added, "duplicates": dup, "with_schedule": found}
+    if bulk:
+        out["heads"] = heads
+    return out
+
+
+# ---- 메일함 통째로 가져오기 (Outlook 내보내기 .pst / Gmail Takeout .mbox / .zip / .eml)
+MAIL_IMPORT_DIR = Path(os.getenv("TEAMHUB_IMPORT_DIR", "/tmp/teamhub-mail-import"))
+
+
+def _iter_mailbox(path: Path, workdir: Path):
+    """파일 → 메일 원본(bytes) 하나씩."""
+    import mailbox
+    import shutil
+    import subprocess
+    import zipfile
+    name = path.name.lower()
+    if name.endswith((".pst", ".ost")):
+        if not shutil.which("readpst"):
+            raise RuntimeError("서버에 PST 변환 프로그램(readpst)이 없습니다. 서버 업데이트(update.sh)를 다시 실행하세요.")
+        out = workdir / "pst"
+        out.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(["readpst", "-e", "-q", "-b", "-o", str(out), str(path)], capture_output=True, timeout=3600)
+        if r.returncode != 0:
+            msg = ((r.stderr or b"") + (r.stdout or b"")).decode(errors="replace").strip()[-300:]
+            raise RuntimeError("PST 파일을 읽지 못했습니다. Outlook 에서 내보낸 .pst 파일이 맞는지, 비밀번호가 걸려 있지 않은지"
+                               " 확인하세요." + (f" ({msg})" if msg else ""))
+        for f in sorted(out.rglob("*")):
+            if f.is_file() and not f.name.startswith("."):
+                yield f.read_bytes()
+    elif name.endswith(".mbox") or name.endswith(".mbx"):
+        for msg in mailbox.mbox(str(path), create=False):
+            yield msg.as_bytes()
+    elif name.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                low = info.filename.lower()
+                if info.is_dir() or not low.endswith((".eml", ".mbox", ".pst", ".ost")):
+                    continue
+                target = workdir / "zip" / Path(info.filename).name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if low.endswith(".eml"):
+                    yield target.read_bytes()
+                else:
+                    yield from _iter_mailbox(target, workdir / f"z{info.header_offset}")
+                target.unlink(missing_ok=True)
+    else:
+        yield path.read_bytes()
+
+
+def _set_import(uid: int, **kw):
+    with db() as c:
+        st = json.loads(get_setting(c, f"mail_import:{uid}", "{}") or "{}")
+        st.update(kw)
+        set_setting(c, f"mail_import:{uid}", json.dumps(st, ensure_ascii=False))
+
+
+def run_mail_import(path: Path, uid: int, months: int):
+    """백그라운드: 메일함 파일을 읽어 최근 N개월 메일만 저장 → 앞으로의 일정이 있는 쓰레드만 AI 분석 → 알림 한 번."""
+    import shutil
+    from email.parser import BytesHeaderParser
+    from email.utils import parsedate_to_datetime
+    workdir = path.parent
+    since = datetime.now() - timedelta(days=31 * months)
+    total = added = dup = old = 0
+    heads, batch = set(), []
+
+    def flush():
+        nonlocal added, dup
+        with db() as c:
+            for raw in batch:
+                try:
+                    r = save_mail_items(c, raw, owner_id=uid, bulk=True)
+                except Exception:
+                    continue
+                added += r["added"]
+                dup += r["duplicates"]
+                heads.update(r["heads"])
+        batch.clear()
+        _set_import(uid, read=total, added=added, duplicates=dup, skipped_old=old)
+
+    try:
+        for raw in _iter_mailbox(path, workdir):
+            total += 1
+            try:
+                d = parsedate_to_datetime(BytesHeaderParser().parsebytes(raw[:20000])["date"])
+                if d.tzinfo:
+                    d = d.astimezone().replace(tzinfo=None)
+                if d < since:
+                    old += 1
+                    continue
+            except Exception:
+                pass
+            batch.append(raw)
+            if len(batch) >= 100:
+                flush()
+        flush()
+        with db() as c:
+            live = [r["id"] for r in c.execute(
+                f"SELECT id FROM mail_items WHERE id IN ({','.join('?' * len(heads)) or 'NULL'}) AND status = 'new'"
+                " ORDER BY sent_at DESC", list(heads))]
+            ai_ids = live[:150] if ai_mail.enabled() else []
+            for i in ai_ids:
+                c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (i,))
+            notify(c, uid, f"📥 메일함 가져오기 완료: {added}통 저장 · 확인할 일정 {len(live)}건"
+                           + (f" (중복 {dup}통 제외)" if dup else ""))
+        _set_import(uid, status="done", read=total, added=added, duplicates=dup, skipped_old=old, threads=len(live),
+                    finished_at=now())
+        if ai_ids:
+            run_ai_queue(ai_ids, quiet=True)      # 알림은 위에서 한 번만
+    except Exception as e:
+        _set_import(uid, status="error", error=str(e)[:300], finished_at=now())
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/api/mailin/import")
+async def mailin_import(file: UploadFile = File(...), months: int = 3, user: dict = Depends(current_user)):
+    """내 메일함 파일(.pst/.mbox/.zip/.eml)을 올리면 백그라운드에서 가져온다."""
+    import shutil
+    name = Path(file.filename or "mail").name
+    if not name.lower().endswith((".pst", ".ost", ".mbox", ".mbx", ".zip", ".eml")):
+        raise HTTPException(400, "pst, mbox, zip, eml 파일만 올릴 수 있습니다.")
+    with db() as c:
+        st = json.loads(get_setting(c, f"mail_import:{user['id']}", "{}") or "{}")
+    if st.get("status") == "running":
+        raise HTTPException(400, "이미 가져오는 중입니다. 끝난 뒤 다시 올려 주세요.")
+    workdir = MAIL_IMPORT_DIR / f"{user['id']}-{secrets.token_hex(4)}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    path = workdir / name
+    with open(path, "wb") as out:
+        shutil.copyfileobj(file.file, out, 1024 * 1024)
+    months = max(1, min(int(months or 3), 24))
+    _set_import(user["id"], status="running", file=name, size=path.stat().st_size, months=months, read=0, added=0,
+                duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="")
+    threading.Thread(target=run_mail_import, args=(path, user["id"], months), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/mailin/import/status")
+def mailin_import_status(user: dict = Depends(current_user)):
+    with db() as c:
+        return json.loads(get_setting(c, f"mail_import:{user['id']}", "{}") or "{}")
 
 
 def thread_rows(c, key: str) -> list:
@@ -2967,13 +3114,17 @@ def refresh_thread(c, key: str):
     """쓰레드의 대표(가장 최근 메일)를 정하고 규칙 방식 후보를 다시 계산. → (대표 id, 후보, 해외메일 여부)"""
     rows = thread_rows(c, key)
     head = rows[-1]
-    prev = next((r for r in reversed(rows[:-1]) if r["status"] != "merged"), None)
+    prev = next((r for r in rows if r["status"] != "merged"), None)     # 지금까지의 대표
     cands = match_shipments(c, merge_rule_candidates(rows), head["subject"])
-    # 상태: 예전 대표가 '무시'면 계속 무시, 아니면 새 일정이 있으면 '확인할 것'
+    # 상태: 예전 대표가 '무시'면 계속 무시 / 대표가 그대로이고 이미 처리했으면 유지 /
+    #       아니면 앞으로(일주일 전 이후) 날짜가 있을 때만 '확인할 것' (예전 메일을 한꺼번에 가져와도 지난 일정은 쌓이지 않게)
+    soon = (date.today() - timedelta(days=7)).isoformat()
     if prev is not None and prev["status"] == "ignored":
         status = "ignored"
+    elif prev is not None and prev["id"] == head["id"] and prev["status"] == "done":
+        status = "done"
     else:
-        status = "new" if cands else "none"
+        status = "new" if any(cd["date"] >= soon for cd in cands) else "none"
     c.execute("UPDATE mail_items SET status = 'merged' WHERE thread_key = ? AND id != ?", (key, head["id"]))
     c.execute("UPDATE mail_items SET status = ?, t_candidates = ?, t_count = ?, summary = CASE WHEN ? != '' THEN ? ELSE summary END"
               " WHERE id = ?", (status, json.dumps(cands, ensure_ascii=False), len(rows),
@@ -2993,7 +3144,7 @@ def notify_thread(c, head_id: int):
 AI_LOCK = threading.Lock()
 
 
-def ai_analyze_item(mid: int):
+def ai_analyze_item(mid: int, quiet: bool = False):
     """쓰레드 전체를 Claude 로 읽기: 최신 메일 번역 + 쓰레드 기준 최신 일정. 결과로 후보를 바꾸고 주인에게 알림."""
     with db() as c:
         m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
@@ -3015,20 +3166,22 @@ def ai_analyze_item(mid: int):
             cands = match_shipments(c, cands, m["subject"])
             st = cur["status"]
             if st in ("new", "none"):
-                st = "new" if cands else "none"
+                soon = (date.today() - timedelta(days=7)).isoformat()
+                st = "new" if any(cd["date"] >= soon for cd in cands) else "none"
             c.execute("UPDATE mail_items SET translation = ?, summary = ?, t_candidates = ?, status = ?, ai_status = 'done'"
                       " WHERE id = ?", (res.get("translation", ""), res.get("summary", ""),
                                         json.dumps(cands, ensure_ascii=False), st, mid))
         else:
             c.execute("UPDATE mail_items SET ai_status = ? WHERE id = ?", ("error: " + err, mid))
-        notify_thread(c, mid)
+        if not quiet:
+            notify_thread(c, mid)
 
 
-def run_ai_queue(ids: list):
+def run_ai_queue(ids: list, quiet: bool = False):
     time.sleep(1)      # 메일 저장(트랜잭션)이 끝난 뒤 시작
     with AI_LOCK:      # 한 번에 하나씩 (요금·속도 제한)
         for mid in ids:
-            ai_analyze_item(mid)
+            ai_analyze_item(mid, quiet)
 
 
 @app.post("/api/mailin/{mid}/analyze")
@@ -3054,18 +3207,6 @@ async def mailin_receive(request: Request, x_upload_key: str = Header(default=""
         raise HTTPException(400, "메일 내용이 없거나 너무 큽니다.")
     with db() as c:
         return save_mail_items(c, raw)
-
-
-@app.post("/api/mailin/upload")
-async def mailin_upload(files: List[UploadFile] = File(...), user: dict = Depends(current_user)):
-    """내 PC에 저장한 메일(.eml)을 직접 올리기."""
-    total = {"messages": 0, "added": 0, "duplicates": 0, "with_schedule": 0}
-    with db() as c:
-        for f in files[:200]:
-            r = save_mail_items(c, await f.read(), owner_id=user["id"])
-            for k in total:
-                total[k] += r[k]
-    return total
 
 
 def mail_visible(user: dict):

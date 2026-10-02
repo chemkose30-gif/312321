@@ -15,6 +15,11 @@ cp "$SRC/deploy/teamhub.service" /etc/systemd/system/teamhub.service
 systemctl daemon-reload
 
 echo "==> [3/4] 필요한 패키지 확인 (처음엔 1~2분 걸릴 수 있어요)"
+if ! command -v readpst >/dev/null 2>&1; then   # Outlook 메일함(.pst) 가져오기용
+  timeout 300 apt-get install -y -qq pst-utils >/dev/null 2>&1 || \
+    { timeout 120 apt-get update -qq >/dev/null 2>&1; timeout 300 apt-get install -y -qq pst-utils >/dev/null 2>&1; } || \
+    echo "    ⚠ pst-utils 설치 실패 (Outlook .pst 가져오기만 안 됩니다)"
+fi
 timeout 300 /opt/teamhub/venv/bin/pip install -q --disable-pip-version-check -r /opt/teamhub/requirements.txt
 chown -R teamhub:teamhub /opt/teamhub
 
