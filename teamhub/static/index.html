@@ -795,7 +795,7 @@ async function renderDashboard() {
     </div>
     <div class="card" style="margin-top:16px">
       <div class="row"><h3>🚢 입고 예정</h3><span class="spacer"></span><button class="btn sm" id="dNewShip">+ 입고 예정</button><button class="btn sm" id="dAllShip">전체 보기</button></div>
-      ${shipBlock('⚠️ 입고일 지남', d.ships_late)}${shipBlock('오늘 입고', d.ships_today, '오늘 입고 예정이 없습니다.')}${shipBlock('이번 주 (7일 이내)', d.ships_week)}
+      ${shipBlock('📦 반입·입항 (통관 대기)', d.ships_port || [])}${shipBlock('⚠️ 입고일 지남', d.ships_late)}${shipBlock('오늘 입고', d.ships_today, '오늘 입고 예정이 없습니다.')}${shipBlock('이번 주 (7일 이내)', d.ships_week)}
     </div>`;
   $$('[data-ship]').forEach(el => el.onclick = () => openShipment(+el.dataset.ship));
   $$('[data-stmt]').forEach(el => el.onclick = e => {
@@ -1772,7 +1772,7 @@ function dday(eta, status) {
 function shipBlock(title, list, emptyMsg) {
   if (!list.length) return emptyMsg ? `<div class="muted" style="padding:8px 0">${title}: ${emptyMsg}</div>` : '';
   return `<div class="dept-head" style="padding:10px 0 2px">${title} (${list.length})</div>` + list.map(sh => `<div class="list-item" data-ship="${sh.id}">
-      ${shTag(sh.status)}<div style="flex:1"><b>${esc(sh.item)}</b> <small class="muted">${esc(sh.spec)}</small><br>
+      ${shTag(sh.status)}<div style="flex:1"><b>${esc(sh.item)}</b> <small class="muted">${esc(sh.spec)}</small> ${csTag(sh)}<br>
       <small class="muted">${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''} · ${fmtQty(sh.qty)} ${esc(sh.unit)}${sh.bl_no ? ' · B/L ' + esc(sh.bl_no) : ''}</small></div>
       <div style="text-align:right"><small>${esc(sh.eta)}</small><br>${dday(sh.eta, sh.status)}</div></div>`).join('');
 }
@@ -2456,6 +2456,7 @@ function barChart(box, labels, values, name) {
 async function renderAnalytics() {
   const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: '', months: 12, compare: 'last_year'};
   if (an.mode === 'decline') return renderDecline(an);
+  if (an.mode === 'prod') return renderProducts(an);
   const [d, exNote] = await Promise.all([api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`), excludeNote()]);
   if (!d.years.length) {
     $('#main').innerHTML = '<div class="card"><h3>📊 매출분석</h3><div class="empty">거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져오면 분석할 수 있습니다.</div></div>';
@@ -2481,7 +2482,7 @@ async function renderAnalytics() {
       <select id="anYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
       <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
-    <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
+    <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
     <div class="stats stats4">
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
@@ -2587,6 +2588,60 @@ function bindExcludeEdit() {
   };
 }
 
+
+// ---- 📦 제품·거래처 판매기록 (거래명세서 품목 줄 기준)
+async function renderProducts(an) {
+  an.pv ||= 'prod';
+  const [d, exNote] = await Promise.all([api(`/api/analytics/products?basis=${an.basis}`), excludeNote()]);
+  const years = d.years.slice(-6), Y = years[years.length - 1], P = Y - 1;
+  const now = new Date(), upto = Y === now.getFullYear() ? now.toISOString().slice(5, 10) : '12-31';
+  const list = an.pv === 'prod' ? d.products : d.customers;
+  const ql = (an.q || '').toLowerCase();
+  const sortKey = an.psort || 'amount';
+  const yv = (e, y, k) => ((e.years[y] || {})[k] || 0);
+  const rows = list.filter(e => !ql || e.name.toLowerCase().includes(ql) || e.by.some(b => b.name.toLowerCase().includes(ql)))
+    .sort((a, b) => sortKey === 'name' ? a.name.localeCompare(b.name) : yv(b, Y, sortKey) - yv(a, Y, sortKey) || yv(b, P, sortKey) - yv(a, P, sortKey));
+  const isProd = an.pv === 'prod';
+  $('#main').innerHTML = `<div class="card viz">
+    <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 매출분석</h3><span class="spacer"></span>
+      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
+      <input id="anQ" placeholder="${isProd ? '제품' : '거래처'} 또는 ${isProd ? '거래처' : '제품'} 검색" value="${esc(an.q || '')}" style="max-width:200px"></div>
+    <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
+    ${exNote}
+    <div class="row" style="margin-bottom:8px;gap:6px">
+      <button class="btn sm ${isProd ? 'primary' : ''}" data-pv="prod">제품별 (어느 거래처가 샀나)</button>
+      <button class="btn sm ${!isProd ? 'primary' : ''}" data-pv="cust">거래처별 (무엇을 샀나)</button>
+      <span class="spacer"></span><span class="muted" style="font-size:12px">정렬</span>
+      <select id="pSort" style="width:auto"><option value="amount">${Y}년 금액</option><option value="qty">${Y}년 수량</option><option value="name">이름</option></select></div>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">거래명세서(발행·출고완료) 품목 기준 · ${rows.length}${isProd ? '개 제품' : '곳'} · 줄을 누르면 ${isProd ? '거래처별' : '제품별'} 기록이 펼쳐집니다 · 금액 단위 만원${upto !== '12-31' ? ` · 전년 대비는 ${P}년 같은 기간(~${upto})과 비교` : ''}</div>
+    <div class="qscroll" style="max-height:640px;overflow:auto"><table class="an-table"><thead><tr><th>${isProd ? '제품' : '거래처'}</th>
+      ${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">전년 대비</th><th class="num">${isProd ? '거래처' : '제품'} 수</th><th>마지막</th></tr></thead><tbody>
+      ${rows.slice(0, 400).map((e, i) => {
+        return `<tr data-row="${i}" style="cursor:pointer"><td title="${esc(e.name)}"><b>${esc(e.name)}</b></td>
+          ${years.map(y => `<td class="num">${yv(e, y, 'qty') ? kg(yv(e, y, 'qty')) : '-'}</td>`).join('')}
+          <td class="num"><b>${man(yv(e, Y, 'amount'))}</b></td><td class="num">${man(yv(e, P, 'amount'))}</td>
+          <td class="num">${deltaHtml(yv(e, Y, 'qty'), yv(e, P, 'qty'))}</td>
+          <td class="num">${e.by.filter(b => (b.years[Y] || {}).qty || (b.years[P] || {}).qty).length}</td><td><small>${esc(e.last)}</small></td></tr>
+          <tr class="hidden" data-sub="${i}"><td colspan="${years.length + 6}" style="background:var(--bg);padding:6px 10px">
+            <table class="an-table" style="background:transparent"><thead><tr><th>${isProd ? '거래처' : '제품'}</th>${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">${Y} 평균단가</th></tr></thead><tbody>
+            ${e.by.slice().sort((a, b) => ((b.years[Y] || {}).amount || 0) - ((a.years[Y] || {}).amount || 0) || ((b.years[P] || {}).amount || 0) - ((a.years[P] || {}).amount || 0)).map(b => {
+              const cy = b.years[Y] || {}, py = b.years[P] || {};
+              return `<tr><td>${esc(b.name)}</td>${years.map(y => `<td class="num">${(b.years[y] || {}).qty ? kg(b.years[y].qty) : '-'}</td>`).join('')}
+                <td class="num">${man(cy.amount || 0)}</td><td class="num">${man(py.amount || 0)}</td><td class="num">${cy.qty ? won((cy.amount || 0) / cy.qty) : '-'}</td></tr>`; }).join('')}
+            </tbody></table></td></tr>`; }).join('') || `<tr><td colspan="${years.length + 6}" class="empty">거래명세서가 없습니다.</td></tr>`}
+    </tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:6px">· 품명의 포장 표시(예: "(25kg *4)_식")와 제품코드 숫자를 빼고 같은 제품끼리 묶습니다. 거래처는 매출분석의 제외·이름 합치기 설정을 따릅니다.</div>
+  </div>`;
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
+  $$('[data-pv]').forEach(b => b.onclick = () => { an.pv = b.dataset.pv; renderAnalytics(); });
+  $('#pSort').value = sortKey; $('#pSort').onchange = e => { an.psort = e.target.value; renderAnalytics(); };
+  $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  let timer;
+  $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $$('tr[data-row]').forEach(tr => tr.onclick = () => $(`tr[data-sub="${tr.dataset.row}"]`).classList.toggle('hidden'));
+  bindExcludeEdit();
+}
+
 async function renderDecline(an) {
   const [d, exNote] = await Promise.all([api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`), excludeNote()]);
   const ql = an.q.toLowerCase(), f = r => !ql || r.name.toLowerCase().includes(ql);
@@ -2603,7 +2658,7 @@ async function renderDecline(an) {
       <select id="dCmp" style="width:auto"><option value="last_year" ${an.compare === 'last_year' ? 'selected' : ''}>작년 같은 기간과 비교</option><option value="previous" ${an.compare === 'previous' ? 'selected' : ''}>직전 기간과 비교</option></select>
       <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:160px"></div>
-    <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
+    <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
     ${!d.ref ? '<div class="empty">거래명세서가 없습니다.</div>' : `
     <div class="muted" style="font-size:12px;margin-bottom:10px">기준일 ${esc(d.ref)} · 이번 기간 ${esc(d.cur[0])} ~ ${esc(d.cur[1])} vs ${cmpLabel} ${esc(d.cmp[0])} ~ ${esc(d.cmp[1])}</div>

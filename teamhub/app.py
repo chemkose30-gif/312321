@@ -2019,6 +2019,62 @@ def _shift_months(d, months: int):
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
 
 
+@app.get("/api/analytics/products")
+def product_analytics(basis: str = "supply", user: dict = Depends(current_user)):
+    """거래명세서(발행·출고완료) 품목 줄 → 제품 × 연도 · 거래처 × 연도 수량·금액.
+    제품은 포장 표시('(25kg *4)')·용도 표시('_식')를 빼고 같은 이름끼리 묶는다."""
+    with db() as c:
+        is_ex, canon = exclude_matcher(c), canon_fn(c)
+        rows = c.execute(
+            "SELECT q.quote_date, q.customer_name, i.name, i.qty, i.unit, i.supply, i.vat FROM quote_items i"
+            " JOIN quotes q ON q.id = i.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft' AND i.name != ''"
+        ).fetchall()
+    prods, custs, names, units, years = {}, {}, {}, {}, set()
+    for r in rows:
+        cust = canon(r["customer_name"])
+        if is_ex(cust):
+            continue
+        y = r["quote_date"][:4]
+        if not y.isdigit():
+            continue
+        years.add(int(y))
+        base = item_base(r["name"])
+        key = _item_norm(_CODE_RE.sub("", base)) or _item_norm(base)
+        if not key:
+            continue
+        names.setdefault(key, {}).setdefault(base, 0)
+        names[key][base] += 1
+        u = (r["unit"] or "").strip().lower() or "kg"
+        units.setdefault(key, {}).setdefault(u, 0)
+        units[key][u] += 1
+        amt = (r["supply"] or 0) + ((r["vat"] or 0) if basis == "total" else 0)
+        qty = r["qty"] or 0
+        for bucket, k1, k2 in ((prods, key, cust), (custs, cust, key)):
+            e = bucket.setdefault(k1, {"years": {}, "by": {}, "last": ""})
+            yy = e["years"].setdefault(y, {"qty": 0, "amount": 0, "count": 0})
+            yy["qty"] += qty
+            yy["amount"] += amt
+            yy["count"] += 1
+            b = e["by"].setdefault(k2, {})
+            by = b.setdefault(y, {"qty": 0, "amount": 0, "count": 0})
+            by["qty"] += qty
+            by["amount"] += amt
+            by["count"] += 1
+            e["last"] = max(e["last"], r["quote_date"])
+    pname = {k: max(v, key=v.get) for k, v in names.items()}
+    punit = {k: max(v, key=v.get) for k, v in units.items()}
+
+    def pack(bucket, label, sub_label):
+        out = []
+        for k, e in bucket.items():
+            out.append({"key": k, "name": label(k), "years": e["years"], "last": e["last"],
+                        "by": [{"key": k2, "name": sub_label(k2), "years": ys} for k2, ys in e["by"].items()],
+                        "unit": punit.get(k, "") if bucket is prods else ""})
+        return out
+    return {"years": sorted(years), "products": pack(prods, lambda k: pname[k], lambda k: k),
+            "customers": pack(custs, lambda k: k, lambda k: pname[k])}
+
+
 @app.get("/api/analytics/decline")
 def decline_analytics(months: int = 12, compare: str = "last_year", basis: str = "supply",
                       _: dict = Depends(current_user)):
@@ -3461,13 +3517,21 @@ def dashboard(user: dict = Depends(current_user)):
         ).fetchall()
     week_end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
-        ships_today = c.execute("SELECT * FROM shipments WHERE eta = ? ORDER BY status = 'arrived', id", (today,)).fetchall()
-        ships_week = c.execute("SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND status != 'arrived'"
-                               " AND cs_cleared_at = '' ORDER BY eta",
-                               (today, week_end)).fetchall()
-        ships_late = c.execute("SELECT * FROM shipments WHERE eta < ? AND status != 'arrived' AND cs_cleared_at = ''"
-                               " ORDER BY eta",
-                               (today,)).fetchall()
+        # 진행중 화면과 같은 순서: 반입 → 입항·통관 → 선적 → 발주
+        rank = ("CASE WHEN cs_in_at != '' THEN 0 WHEN cs_arrived != '' OR status = 'customs' THEN 1"
+                " WHEN status = 'shipped' THEN 2 ELSE 3 END")
+        open_ = "status != 'arrived' AND cs_cleared_at = ''"
+        ships_port = c.execute(f"SELECT * FROM shipments WHERE {open_} AND (cs_in_at != '' OR cs_arrived != ''"
+                               " OR status = 'customs') ORDER BY " + rank + ", CASE WHEN cs_in_at != '' THEN cs_in_at"
+                               " ELSE eta END, id").fetchall()
+        port_ids = {r["id"] for r in ships_port}
+        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? ORDER BY status = 'arrived', {rank}, id",
+                                            (today,)).fetchall() if r["id"] not in port_ids]
+        ships_week = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND {open_}"
+                                           f" ORDER BY {rank}, eta", (today, week_end)).fetchall()
+                      if r["id"] not in port_ids]
+        ships_late = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta < ? AND {open_} ORDER BY {rank}, eta",
+                                           (today,)).fetchall() if r["id"] not in port_ids]
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
         stmts = c.execute(
@@ -3486,6 +3550,7 @@ def dashboard(user: dict = Depends(current_user)):
         "ships_today": [dict(r) for r in ships_today],
         "ships_week": [dict(r) for r in ships_week],
         "ships_late": [dict(r) for r in ships_late],
+        "ships_port": [dict(r) for r in ships_port],
         "today": today,
         "counts": {s: counts.get(s, 0) for s in STATUSES},
         "overdue": overdue,
