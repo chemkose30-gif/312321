@@ -1118,14 +1118,92 @@ def parse_sheet(filename: str, data: bytes) -> list:
                 continue
         raise HTTPException(400, "CSV 파일 인코딩을 읽을 수 없습니다.")
     try:
+        return read_xlsx_values(data)
+    except Exception:
+        pass
+    try:  # 표준 라이브러리 리더가 실패하면 openpyxl 로 한 번 더
         import io
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         return [["" if v is None else str(v).strip() for v in row] for row in wb.active.iter_rows(values_only=True)]
-    except HTTPException:
-        raise
     except Exception:
-        raise HTTPException(400, "엑셀 파일을 읽을 수 없습니다. .xlsx 또는 .csv 로 저장해서 올려주세요.")
+        raise HTTPException(400, "엑셀 파일을 읽을 수 없습니다. 엑셀에서 열어 '다른 이름으로 저장 → Excel 통합 문서(.xlsx)'"
+                                 " 또는 CSV 로 저장해서 올려주세요.")
+
+
+def read_xlsx_values(data: bytes) -> list:
+    """xlsx 의 첫 시트 셀 값만 읽는다. 서식(스타일)은 무시 — 이카운트 엑셀은 서식 정보가 표준과 달라
+    openpyxl 이 읽지 못하는 경우가 있다."""
+    import io
+    import posixpath
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+          "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+          "pr": "http://schemas.openxmlformats.org/package/2006/relationships"}
+    z = zipfile.ZipFile(io.BytesIO(data))
+    names = set(z.namelist())
+    # 첫 번째 시트 파일 찾기
+    sheet_path = "xl/worksheets/sheet1.xml"
+    try:
+        wb = ET.fromstring(z.read("xl/workbook.xml"))
+        first = wb.find("m:sheets/m:sheet", ns)
+        rid = first.get(f"{{{ns['r']}}}id")
+        rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        for rel in rels.findall("pr:Relationship", ns):
+            if rel.get("Id") == rid:
+                target = rel.get("Target")
+                sheet_path = target.lstrip("/") if target.startswith("/") else posixpath.normpath("xl/" + target)
+    except Exception:
+        pass
+    if sheet_path not in names:
+        sheet_path = sorted(n for n in names if n.startswith("xl/worksheets/sheet"))[0]
+    shared = []
+    if "xl/sharedStrings.xml" in names:
+        for _, el in ET.iterparse(z.open("xl/sharedStrings.xml")):
+            if el.tag == f"{{{ns['m']}}}si":
+                shared.append("".join(t.text or "" for t in el.iter(f"{{{ns['m']}}}t")))
+                el.clear()
+
+    def col_index(ref: str) -> int:
+        n = 0
+        for ch in ref:
+            if not ch.isalpha():
+                break
+            n = n * 26 + (ord(ch.upper()) - 64)
+        return n - 1
+
+    rows = []
+    c_tag, v_tag, row_tag = f"{{{ns['m']}}}c", f"{{{ns['m']}}}v", f"{{{ns['m']}}}row"
+    for _, el in ET.iterparse(z.open(sheet_path)):
+        if el.tag != row_tag:
+            continue
+        rnum = int(el.get("r") or len(rows) + 1)
+        while len(rows) < rnum - 1:
+            rows.append([])
+        vals = []
+        for c in el.findall(c_tag):
+            idx = col_index(c.get("r") or "") if c.get("r") else len(vals)
+            t = c.get("t")
+            if t == "inlineStr":
+                v = "".join(x.text or "" for x in c.iter(f"{{{ns['m']}}}t"))
+            else:
+                ve = c.find(v_tag)
+                v = ve.text if ve is not None and ve.text is not None else ""
+                if t == "s" and v != "":
+                    v = shared[int(v)]
+                elif t in (None, "n") and v != "":
+                    try:
+                        f = float(v)
+                        v = str(int(f)) if f == int(f) else str(f)
+                    except ValueError:
+                        pass
+            while len(vals) < idx:
+                vals.append("")
+            vals.append(str(v).strip())
+        rows.append(vals)
+        el.clear()
+    return rows
 
 
 def rows_to_master(kind: str, rows: list) -> list:
@@ -1282,6 +1360,9 @@ def _norm_header(h) -> str:
     return re.sub(r"[\s.\-–—‐−_·]", "", str(h or "")).lower()
 
 
+CUST_WORDS = ("거래처", "판매처", "매출처", "고객")
+
+
 def _map_sale_cols(cells: list) -> dict:
     """열 이름 일부만 맞아도 인식 (예: 일자-No. / 견적일자 / 수량(kg) / 금액합계)."""
     rules = [
@@ -1291,8 +1372,8 @@ def _map_sale_cols(cells: list) -> dict:
         ("transport", lambda h: "운송조건" in h or "transportation" in h),
         ("cas_no", lambda h: h.startswith("cas")),
         ("origin", lambda h: "원산지" in h or h.startswith("origin")),
-        ("cust_cd", lambda h: "거래처" in h and "코드" in h),
-        ("customer", lambda h: "거래처" in h and "코드" not in h),
+        ("cust_cd", lambda h: any(k in h for k in CUST_WORDS) and "코드" in h),
+        ("customer", lambda h: any(k in h for k in CUST_WORDS) and "코드" not in h),
         ("date", lambda h: "일자" in h or h in ("일", "날짜") or any(k in h for k in ("판매일", "거래일", "견적일", "작성일"))),
         ("prod_cd", lambda h: "품목" in h and "코드" in h),
         ("name", lambda h: ("품목" in h or "품명" in h) and "코드" not in h and "그룹" not in h),
@@ -1324,7 +1405,7 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             merged = [_norm_header(a) + _norm_header(nxt[i] if i < len(nxt) else "") for i, a in enumerate(rows[hi])]
             candidates.append((hi + 2, merged))
     for start, cells in candidates:
-        if not any("거래처" in h for h in cells):
+        if not any(any(k in h for k in CUST_WORDS) for h in cells):
             continue
         col = _map_sale_cols(cells)
         if "customer" not in col or ("slip" not in col and "date" not in col) or not (
@@ -1346,7 +1427,7 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             get = lambda k: (re.sub(r"\s+", " ", str(r[col[k]])).strip()
                              if k in col and col[k] < len(r) and r[col[k]] is not None else "")
             cust = get("customer")
-            if not cust or any(w in cust for w in ("합계", "소계", "총계")):
+            if not cust or any(w in cust for w in ("합계", "소계", "총계")) or cust.endswith(" 계"):
                 continue
             raw = get("slip") or get("date")
             m = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[^\d-]*-\s*(\d+))?", raw)
