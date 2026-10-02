@@ -309,7 +309,8 @@ def init_db():
                                 ("quote_items", "cas_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_wh", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "ecount_old_slips", "TEXT NOT NULL DEFAULT ''"),
-                                ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''")):
+                                ("quote_items", "origin", "TEXT NOT NULL DEFAULT ''"),
+                                ("users", "ical_token", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -2842,6 +2843,119 @@ def run_daily_reminders(today: str):
 
 
 # ---------------------------------------------------------------- Frontend
+# ---------------------------------------------------------------- 내 캘린더(Outlook·Google·아이폰)에 구독
+def _ics_text(v) -> str:
+    return str(v or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r", "").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> str:
+    """한 줄 75바이트 제한 (한글이 깨지지 않게 글자 단위로 자름)."""
+    out, cur = [], ""
+    for ch in line:
+        if len((cur + ch).encode()) > (75 if not out else 74):
+            out.append(cur)
+            cur = ""
+        cur += ch
+    out.append(cur)
+    return "\r\n ".join(out)
+
+
+def _ics_dt(v: str):
+    """'2026-10-02' → 종일, '2026-10-02T14:30' → 한국시간을 UTC 로."""
+    v = (v or "").replace(" ", "T")
+    if len(v) <= 10:
+        return None, datetime.strptime(v[:10], "%Y-%m-%d")
+    return datetime.strptime(v[:16], "%Y-%m-%dT%H:%M") - timedelta(hours=9), None
+
+
+def build_ics(c, user: dict) -> str:
+    today = datetime.now().date()
+    start, end = (today - timedelta(days=90)).isoformat(), (today + timedelta(days=400)).isoformat()
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    host = urllib.parse.urlparse(mailer.BASE_URL).hostname or "teamhub"
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//TeamHub//KO", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+             f"X-WR-CALNAME:TeamHub ({_ics_text(user['name'])})", "X-WR-TIMEZONE:Asia/Seoul",
+             "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"]
+
+    def add(uid, title, s_val, e_val, all_day, desc="", url=""):
+        try:
+            if all_day:
+                d0 = datetime.strptime(s_val[:10], "%Y-%m-%d")
+                d1 = datetime.strptime((e_val or s_val)[:10], "%Y-%m-%d") + timedelta(days=1)
+                when = [f"DTSTART;VALUE=DATE:{d0:%Y%m%d}", f"DTEND;VALUE=DATE:{d1:%Y%m%d}"]
+            else:
+                t0, _ = _ics_dt(s_val)
+                t1, _ = _ics_dt(e_val or s_val)
+                if t0 is None or t1 is None:
+                    return add(uid, title, s_val, e_val, True, desc, url)
+                when = [f"DTSTART:{t0:%Y%m%dT%H%M%SZ}", f"DTEND:{max(t1, t0):%Y%m%dT%H%M%SZ}"]
+        except ValueError:
+            return
+        lines.extend(["BEGIN:VEVENT", f"UID:{uid}@{host}", f"DTSTAMP:{stamp}", *when, f"SUMMARY:{_ics_text(title)}"])
+        if desc:
+            lines.append(f"DESCRIPTION:{_ics_text(desc)}")
+        if url:
+            lines.append(f"URL:{url}")
+        lines.append("END:VEVENT")
+
+    clause, params = visible_event_clause(user)
+    for e in c.execute(f"SELECT e.*, u.name AS creator_name FROM events e JOIN users u ON u.id = e.created_by"
+                       f" WHERE {clause} AND e.start <= ? AND e.end >= ?", (*params, end + "T23:59", start)):
+        add(f"event-{e['id']}", e["title"], e["start"], e["end"], bool(e["all_day"]) or len(e["start"]) <= 10,
+            f"{e['description']}\n등록: {e['creator_name']}".strip(), mailer.BASE_URL)
+    for t in c.execute("SELECT t.*, a.name AS assignee_name, g.name AS assigner_name FROM tasks t"
+                       " JOIN users a ON a.id = t.assignee_id JOIN users g ON g.id = t.assigner_id"
+                       " WHERE (t.assignee_id = ? OR t.assigner_id = ?) AND t.due_date BETWEEN ? AND ?",
+                       (user["id"], user["id"], start, end)):
+        mark = "✅" if t["status"] == "done" else "📋"
+        who = f"→ {t['assignee_name']}" if t["assignee_id"] != user["id"] else f"({t['assigner_name']} 지시)"
+        add(f"task-{t['id']}", f"{mark} 마감: {t['title']} {who}", t["due_date"], t["due_date"], True,
+            f"상태: {STATUS_LABEL.get(t['status'], t['status'])}\n{t['description']}".strip(), f"{mailer.BASE_URL}/#task={t['id']}")
+    for sh in c.execute("SELECT * FROM shipments WHERE eta BETWEEN ? AND ?", (start, end)):
+        done = "✅" if sh["status"] == "arrived" else "🚢"
+        qty = f" {sh['qty']:g}{sh['unit']}" if sh["qty"] else ""
+        add(f"ship-{sh['id']}", f"{done} 입고: {sh['item']}{qty}", sh["eta"], sh["eta"], True,
+            "\n".join(x for x in (sh["supplier"] and f"구매처: {sh['supplier']}", sh["customer"] and f"판매처: {sh['customer']}",
+                                  sh["bl_no"] and f"B/L: {sh['bl_no']}", sh["note"]) if x), mailer.BASE_URL)
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(_ics_fold(l) for l in lines) + "\r\n"
+
+
+def ical_url(c, user: dict, reset: bool = False) -> str:
+    token = "" if reset else (c.execute("SELECT ical_token FROM users WHERE id = ?", (user["id"],)).fetchone()[0] or "")
+    if not token:
+        token = secrets.token_urlsafe(24)
+        c.execute("UPDATE users SET ical_token = ? WHERE id = ?", (token, user["id"]))
+    return f"{mailer.BASE_URL}/ical/{token}.ics"
+
+
+@app.get("/api/me/ical")
+def my_ical(user: dict = Depends(current_user)):
+    with db() as c:
+        return {"url": ical_url(c, user)}
+
+
+@app.post("/api/me/ical/reset")
+def my_ical_reset(user: dict = Depends(current_user)):
+    with db() as c:
+        return {"url": ical_url(c, user, reset=True)}
+
+
+@app.get("/ical/{token}.ics")
+def ical_feed(token: str):
+    """비밀 주소로 받는 읽기 전용 일정 (Outlook·Google 캘린더가 주기적으로 가져감)."""
+    if len(token) < 20:
+        raise HTTPException(404)
+    with db() as c:
+        u = c.execute("SELECT * FROM users WHERE ical_token = ? AND active = 1", (token,)).fetchone()
+        if not u:
+            raise HTTPException(404)
+        body = build_ics(c, dict(u))
+    from fastapi.responses import Response
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Cache-Control": "no-cache", "Content-Disposition": 'inline; filename="teamhub.ics"'})
+
+
 @app.get("/api/push/key")
 def push_key(user: dict = Depends(current_user)):
     with db() as c:

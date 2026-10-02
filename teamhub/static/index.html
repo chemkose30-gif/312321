@@ -267,6 +267,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <div class="dropdown notif-panel hidden" id="notifPanel"></div>
       <div class="dropdown hidden" id="userMenu">
         <button id="pushBtn">🔔 알림 · 앱 설치</button>
+        <button id="icalBtn">📆 내 캘린더에 연결</button>
         <button id="pwBtn" class="admin-only">🔑 비밀번호 변경</button>
         <button id="logoutBtn">🚪 로그아웃</button>
       </div>
@@ -552,6 +553,35 @@ function bindPushBanner() {
   $('#pbOn').onclick = () => openPushSettings();
   $('#pbLater').onclick = () => { try { localStorage.setItem('th_push_banner', 'off'); } catch {} b.remove(); };
 }
+
+
+// ===================================================== 내 캘린더(Outlook·Google·아이폰)에 TeamHub 일정 구독
+async function openIcal() {
+  const {url} = await api('/api/me/ical');
+  const webcal = url.replace(/^https?:/, 'webcal:');
+  openModal(`<h2>📆 내 캘린더에 연결</h2>
+    <div class="muted" style="font-size:13px">아래 주소를 메일 프로그램의 캘린더에 <b>구독</b>으로 추가하면, TeamHub의 <b>일정 · 내 업무 마감일 · 입고 예정</b>이 Outlook/Gmail 캘린더에 함께 보입니다. TeamHub에서 바꾸면 캘린더에도 자동으로 반영됩니다 (몇 시간 간격, 보기 전용).</div>
+    <label>내 캘린더 주소 <small class="muted">— 나만의 비밀 주소입니다. 다른 사람에게 알려주지 마세요.</small></label>
+    <div class="row" style="flex-wrap:nowrap"><input id="icUrl" readonly value="${esc(url)}"><button class="btn primary" id="icCopy">복사</button></div>
+    <div class="ec-box"><b>Outlook.com / Hotmail (웹)</b>
+      <div style="font-size:13px;line-height:1.7;margin-top:4px">outlook.live.com → 왼쪽 <b>📅 캘린더</b> → <b>캘린더 추가</b> → <b>웹에서 구독</b> → 주소 붙여넣기 → 이름 "TeamHub" → <b>가져오기</b></div></div>
+    <div class="ec-box"><b>Outlook PC 프로그램</b>
+      <div style="font-size:13px;line-height:1.7;margin-top:4px"><a href="${esc(webcal)}">여기를 눌러 바로 추가</a> — 안 되면: 캘린더 → <b>캘린더 추가</b> → <b>인터넷에서</b> → 주소 붙여넣기</div></div>
+    <div class="ec-box"><b>Gmail / Google 캘린더</b>
+      <div style="font-size:13px;line-height:1.7;margin-top:4px">PC에서 calendar.google.com → 왼쪽 <b>다른 캘린더 +</b> → <b>URL로 추가</b> → 주소 붙여넣기 → <b>캘린더 추가</b><br><small class="muted">구글은 반영이 느립니다 (보통 몇 시간~하루).</small></div></div>
+    <div class="ec-box"><b>아이폰 캘린더</b>
+      <div style="font-size:13px;line-height:1.7;margin-top:4px">아이폰에서 이 화면을 열고 <a href="${esc(webcal)}">여기를 눌러 구독</a> → <b>구독</b><br>또는 설정 → 캘린더 → 계정 → 계정 추가 → 기타 → <b>구독 캘린더 추가</b> → 주소 붙여넣기</div></div>
+    <div class="muted" style="font-size:12px;margin-top:10px">주소가 다른 사람에게 알려졌다면 <a href="#" id="icReset">새 주소 만들기</a> (예전 주소는 바로 막히고, 캘린더에 새 주소로 다시 추가해야 합니다)</div>
+    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    $('#icCopy', bg).onclick = () => navigator.clipboard.writeText($('#icUrl', bg).value).then(() => toast('복사했습니다.'), () => { $('#icUrl', bg).select(); document.execCommand('copy'); toast('복사했습니다.'); });
+    $('#icReset', bg).onclick = async e => {
+      e.preventDefault();
+      if (!confirm('새 주소를 만들까요? 지금 연결해 둔 캘린더는 더 이상 갱신되지 않습니다.')) return;
+      await api('/api/me/ical/reset', {method: 'POST'}); close(); openIcal(); toast('새 주소를 만들었습니다.');
+    };
+  });
+}
+$('#icalBtn').onclick = () => { $('#userMenu').classList.add('hidden'); openIcal(); };
 
 // ===================================================== dashboard
 async function renderDashboard() {
