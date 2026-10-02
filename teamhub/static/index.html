@@ -164,6 +164,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
 .an-table td,.an-table th{padding:6px 6px;font-size:12px;white-space:nowrap}
 .an-table td.num,.an-table th.num{text-align:right;font-variant-numeric:tabular-nums}
 .an-table tr.sel{background:var(--primary-weak)}
+.an-table tr[data-p] td{vertical-align:top}
 .an-table td:first-child,.an-table th:first-child{position:sticky;left:0;background:#fff;z-index:1;max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .an-table tr.sel td:first-child{background:var(--primary-weak)}
 .up{color:#15803d;font-weight:700}.down{color:#b91c1c;font-weight:700}
@@ -1465,7 +1466,7 @@ function niceMax(v) {
 // 꺾은선 (최대 3계열) + 십자선 툴팁
 function lineChart(box, labels, series) {
   const W = Math.max(box.clientWidth, 320), H = 280, L = 56, R = 64, T = 14, B = 28, iw = W - L - R, ih = H - T - B;
-  const max = niceMax(Math.max(1, ...series.flatMap(s => s.values)));
+  const max = niceMax(Math.max(1, ...series.flatMap(s => s.values.filter(v => v != null))));
   const x = i => L + (labels.length === 1 ? iw / 2 : i * iw / (labels.length - 1)), y = v => T + ih - v / max * ih;
   let g = '';
   for (let k = 0; k <= 4; k++) {
@@ -1474,10 +1475,13 @@ function lineChart(box, labels, series) {
   }
   labels.forEach((l, i) => g += `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--axis)">${l}</text>`);
   series.forEach(s => {
-    g += `<path d="${s.values.map((v, i) => (i ? 'L' : 'M') + x(i) + ' ' + y(v)).join('')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-    s.values.forEach((v, i) => g += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/>`);
-    const li = s.values.length - 1;  // 끝 직접 라벨 (글자색은 본문색)
-    g += `<text x="${x(li) + 8}" y="${y(s.values[li]) + 4}" font-size="11" fill="var(--ink-2)">${esc(s.name)}</text>`;
+    const pts = s.values.map((v, i) => [i, v]).filter(([, v]) => v != null);   // 아직 오지 않은 달(null)은 그리지 않음
+    g += `<path d="${pts.map(([i, v], k) => (k ? 'L' : 'M') + x(i) + ' ' + y(v)).join('')}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach(([i, v]) => g += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/>`);
+    if (pts.length) {  // 끝 직접 라벨 (글자색은 본문색)
+      const [li, lv] = pts[pts.length - 1];
+      g += `<text x="${x(li) + 8}" y="${y(lv) + 4}" font-size="11" fill="var(--ink-2)">${esc(s.name)}</text>`;
+    }
   });
   box.innerHTML = `<div class="viz-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>
     <div class="viz-wrap"><svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="월별 납품금액">${g}
@@ -1489,8 +1493,8 @@ function lineChart(box, labels, series) {
     const i = Math.max(0, Math.min(labels.length - 1, Math.round((px - L) / (iw / Math.max(1, labels.length - 1)))));
     xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.setAttribute('visibility', 'visible');
     const [a, b] = series;
-    tip.innerHTML = `<b>${labels[i]}</b><br>` + series.map(s => `<span class="sw" style="background:${s.color}"></span>${esc(s.name)} ${won(s.values[i])}원`).join('<br>')
-      + (b ? `<br>${deltaHtml(a.values[i], b.values[i]).replace(/class="(up|down)"/, 'style="font-weight:700"')}` : '');
+    tip.innerHTML = `<b>${labels[i]}${box.dataset.cum ? ' 누계' : ''}</b><br>` + series.map(s => `<span class="sw" style="background:${s.color}"></span>${esc(s.name)} ${s.values[i] == null ? '-' : won(s.values[i]) + '원'}${s.monthly && s.values[i] != null ? ` <span style="opacity:.7">(그 달 ${krw(s.monthly[i])})</span>` : ''}`).join('<br>')
+      + (b && a.values[i] != null && b.values[i] != null ? `<br>${deltaHtml(a.values[i], b.values[i]).replace(/class="(up|down)"/, 'style="font-weight:700"')}` : '');
     tip.hidden = false;
     const tx = x(i) * r.width / W;
     tip.style.left = Math.min(tx + 12, r.width - tip.offsetWidth - 4) + 'px';
@@ -1532,7 +1536,8 @@ function barChart(box, labels, values, name) {
 }
 
 async function renderAnalytics() {
-  const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: ''};
+  const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: '', months: 12, compare: 'last_year'};
+  if (an.mode === 'decline') return renderDecline(an);
   const d = await api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`);
   if (!d.years.length) {
     $('#main').innerHTML = '<div class="card"><h3>📊 매출분석</h3><div class="empty">거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져오면 분석할 수 있습니다.</div></div>';
@@ -1555,14 +1560,14 @@ async function renderAnalytics() {
       <select id="anYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
       <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
-    <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button></div>
+    <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
     <div class="stats" style="grid-template-columns:repeat(4,1fr)">
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간</span><b>${krw(pytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">전년 대비</span><b style="font-size:20px">${deltaHtml(ytd, pytd)}</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 거래처 수</span><b>${d.customers.filter(c => sum(c.cur)).length}곳</b></div>
     </div>
-    <div class="row" style="margin-bottom:4px"><b>${an.cust ? esc(an.cust) : '전체 거래처'}</b>
+    <div class="row" style="margin-bottom:4px"><b>${an.cust ? esc(an.cust) : '전체 거래처'}${an.mode === 'month' ? ' · 1월부터 누계' : ''}</b>
       ${an.cust ? '<button class="btn sm" id="anAll">전체로 보기</button>' : '<span class="muted" style="font-size:12px">아래 표에서 거래처를 누르면 그 거래처만 그래프로 봅니다</span>'}</div>
     <div id="anChart"></div>
     <div class="row" style="margin:14px 0 6px"><b>${an.mode === 'month' ? `${Y}년 월별` : '연도별'} 거래처 납품금액</b><span class="muted" style="font-size:12px">(단위: 만원 · ${an.mode === 'month' ? `${rows.length}곳` : `${yRows.length}곳`})</span></div>
@@ -1578,7 +1583,13 @@ async function renderAnalytics() {
     </div>
     ${Y === now.getFullYear() ? `<div class="muted" style="font-size:12px;margin-top:6px">전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
   </div>`;
-  if (an.mode === 'month') lineChart($('#anChart'), months, [{name: `${Y}년`, color: 'var(--series-1)', values: curM}, {name: `${P}년`, color: 'var(--series-2)', values: prevM}]);
+  if (an.mode === 'month') {
+    const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
+    $('#anChart').dataset.cum = '1';
+    lineChart($('#anChart'), months, [
+      {name: `${Y}년`, color: 'var(--series-1)', values: cum(curM, upto), monthly: curM},
+      {name: `${P}년`, color: 'var(--series-2)', values: cum(prevM, 12), monthly: prevM}]);
+  }
   else barChart($('#anChart'), years.map(y => `${y}`), yearVals, '연도별 납품금액');
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
   $('#anYear').onchange = e => { an.year = +e.target.value; renderAnalytics(); };
@@ -1587,6 +1598,70 @@ async function renderAnalytics() {
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   if ($('#anAll')) $('#anAll').onclick = () => { an.cust = ''; renderAnalytics(); };
   $$('tr[data-c]').forEach(tr => tr.onclick = () => { an.cust = an.cust === tr.dataset.c ? '' : tr.dataset.c; renderAnalytics().then(() => window.scrollTo({top: 0, behavior: 'smooth'})); });
+}
+
+async function renderDecline(an) {
+  const d = await api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`);
+  const ql = an.q.toLowerCase(), f = r => !ql || r.name.toLowerCase().includes(ql);
+  const rows = d.rows.filter(f), dormant = d.dormant.filter(f), patterns = (d.patterns || []).filter(f);
+  const cycleTxt = i => i.cycle >= 300 ? `약 1년마다${i.month ? ` (보통 ${i.month}월쯤)` : ''}` : i.cycle >= 55 ? `약 ${Math.round(i.cycle / 30)}개월마다` : `약 ${i.cycle}일마다`;
+  const patItem = i => `<div style="padding:3px 0"><b>${esc(i.item)}</b> <small class="muted">${cycleTxt(i)} · 보통 ${fmtQty(i.usual_qty)}${i.unit ? ' ' + esc(i.unit) : ''}씩</small><br>
+      <small>마지막 구매 ${esc(i.last)} · <span class="down">예상 시기보다 ${i.late}일 늦음</span></small></div>`;
+  const qty = (v, u) => `${fmtQty(v)}${u ? ' ' + esc(u) : ''}`;
+  const itemLine = i => `${esc(i.name)} <span class="muted">${qty(i.before_qty, i.unit)} → </span><b>${qty(i.now_qty, i.unit)}</b>`;
+  const cmpLabel = an.compare === 'previous' ? '직전 기간' : '작년 같은 기간';
+  $('#main').innerHTML = `<div class="card viz">
+    <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 거래처별 납품금액</h3><span class="spacer"></span>
+      <select id="dMonths" style="width:auto">${[12, 6].map(m => `<option value="${m}" ${an.months === m ? 'selected' : ''}>${m === 12 ? '최근 1년' : '최근 6개월'}</option>`).join('')}</select>
+      <select id="dCmp" style="width:auto"><option value="last_year" ${an.compare === 'last_year' ? 'selected' : ''}>작년 같은 기간과 비교</option><option value="previous" ${an.compare === 'previous' ? 'selected' : ''}>직전 기간과 비교</option></select>
+      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
+      <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:160px"></div>
+    <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button></div>
+    ${!d.ref ? '<div class="empty">거래명세서가 없습니다.</div>' : `
+    <div class="muted" style="font-size:12px;margin-bottom:10px">기준일 ${esc(d.ref)} · 이번 기간 ${esc(d.cur[0])} ~ ${esc(d.cur[1])} vs ${cmpLabel} ${esc(d.cmp[0])} ~ ${esc(d.cmp[1])}</div>
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat" style="cursor:default"><span class="muted">이번 기간 납품</span><b>${krw(d.cur_total)}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${cmpLabel}</span><b>${krw(d.cmp_total)}원</b></div>
+      <div class="stat red" style="cursor:default"><span class="muted">구매 주기가 지난 거래처</span><b>${(d.patterns || []).length}곳</b></div>
+      <div class="stat red" style="cursor:default"><span class="muted">주문이 끊긴 거래처</span><b>${d.dormant.length}곳</b></div>
+    </div>
+    <h3 style="margin:18px 0 4px">🔔 구매 주기가 지난 품목</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">거래처마다 품목별로 <b>평소 사가는 주기</b>(최근 5년 기록, 3번 이상 구매)를 계산해서, 그 주기가 지났는데 아직 주문이 없는 품목입니다.
+      오래전에 끊긴 품목은 빼고 <b>최근에 늦어진 것</b>만 보여줍니다. 연간 거래 규모가 큰 거래처부터 나옵니다.</div>
+    ${patterns.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래처</th><th class="num">늦어진 품목</th><th>품목 (주기 · 마지막 구매)</th><th class="num">이 품목들 연평균</th></tr></thead><tbody>
+      ${patterns.map((r, k) => `<tr data-p="${k}" style="cursor:pointer;vertical-align:top"><td title="${esc(r.name)}"><b>${esc(r.name)}</b>${r.stopped ? '<br><span class="tag p-urgent">주문 끊김</span>' : ''}</td>
+        <td class="num">${r.items.length}개</td>
+        <td style="white-space:normal;min-width:340px">${r.items.slice(0, 2).map(patItem).join('')}
+          ${r.items.length > 2 ? `<div class="pmore hidden">${r.items.slice(2).map(patItem).join('')}</div><span class="muted pm-btn" style="font-size:12px">외 ${r.items.length - 2}개 품목 ▾</span>` : ''}</td>
+        <td class="num">${man(r.value)}만</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">구매 주기가 지난 품목이 없습니다. 👍</div>'}
+    <h3 style="margin:18px 0 4px">⏸ 주문이 끊긴 거래처</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">최근 3년 주문 기록으로 계산한 <b>평소 주문 간격</b>보다 훨씬 오래(2.5배 이상, 최소 45일) 주문이 없는 거래처입니다.</div>
+    ${dormant.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래처</th><th class="num">평소 주문 간격</th><th class="num">마지막 주문</th><th class="num">주문 없음</th><th class="num">최근 1년 납품</th><th class="num">그 전 1년</th><th class="num">변화</th></tr></thead><tbody>
+      ${dormant.map(r => `<tr><td title="${esc(r.name)}">${esc(r.name)}</td><td class="num">약 ${r.typical_gap}일마다</td><td class="num">${esc(r.last)}</td>
+        <td class="num"><span class="down">${r.days}일째</span> <small class="muted">(평소의 ${r.ratio.toFixed(1)}배)</small></td>
+        <td class="num">${man(r.year_amt)}만</td><td class="num">${man(r.prev_year_amt)}만</td><td class="num">${deltaHtml(r.year_amt, r.prev_year_amt)}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">주문이 끊긴 거래처가 없습니다.</div>'}
+    <h3 style="margin:22px 0 4px">📉 납품이 줄어든 거래처 (${an.months === 12 ? '1년' : '6개월'} 단위 비교)</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">${cmpLabel}보다 납품금액이 줄어든 거래처를 감소액이 큰 순서로 보여줍니다. 줄을 누르면 품목별 변화를 모두 볼 수 있습니다. (단위: 만원)</div>
+    ${rows.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래처</th><th class="num">${cmpLabel}</th><th class="num">이번 기간</th><th class="num">감소액</th><th class="num">증감률</th><th>많이 줄어든 품목</th></tr></thead><tbody>
+      ${rows.map((r, k) => `<tr data-k="${k}" style="cursor:pointer"><td title="${esc(r.name)}">${esc(r.name)}</td><td class="num">${man(r.before)}</td><td class="num">${man(r.now)}</td>
+        <td class="num"><b>${man(r.drop)}</b></td><td class="num">${deltaHtml(r.now, r.before)}</td>
+        <td style="white-space:normal;min-width:260px;font-size:12px">${r.items.slice(0, 2).map(itemLine).join('<br>')}${r.items.length > 2 ? `<br><span class="muted">외 ${r.items.length - 2}개 품목 ▾</span>` : ''}</td></tr>
+        <tr class="hidden" data-detail="${k}"><td colspan="6" style="background:#fafafa;white-space:normal">
+          <table style="width:auto;min-width:60%"><thead><tr><th>품목</th><th class="num">${cmpLabel} 수량</th><th class="num">이번 수량</th><th class="num">${cmpLabel} 금액</th><th class="num">이번 금액</th></tr></thead><tbody>
+          ${r.items.map(i => `<tr style="cursor:default"><td>${esc(i.name)}</td><td class="num">${qty(i.before_qty, i.unit)}</td><td class="num">${qty(i.now_qty, i.unit)}</td><td class="num">${man(i.before_amt)}</td><td class="num">${man(i.now_amt)}</td></tr>`).join('')}
+          </tbody></table></td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">납품이 줄어든 거래처가 없습니다. 👍</div>'}`}
+  </div>`;
+  $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
+  $('#dMonths').onchange = e => { an.months = +e.target.value; renderAnalytics(); };
+  $('#dCmp').onchange = e => { an.compare = e.target.value; renderAnalytics(); };
+  $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  let timer;
+  $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $$('tr[data-k]').forEach(tr => tr.onclick = () => $(`tr[data-detail="${tr.dataset.k}"]`).classList.toggle('hidden'));
+  $$('tr[data-p]').forEach(tr => tr.onclick = () => { const m = $('.pmore', tr); if (m) { m.classList.toggle('hidden'); $('.pm-btn', tr).textContent = m.classList.contains('hidden') ? $('.pm-btn', tr).textContent.replace('▴', '▾') : $('.pm-btn', tr).textContent.replace('▾', '▴'); } });
 }
 
 async function openCompany() {

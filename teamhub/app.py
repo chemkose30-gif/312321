@@ -1681,6 +1681,135 @@ def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(curr
             "yearly": yearly, "year_totals": year_totals}
 
 
+def _shift_months(d, months: int):
+    """date 를 months 개월 이동 (말일 보정)."""
+    import calendar
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
+
+
+@app.get("/api/analytics/decline")
+def decline_analytics(months: int = 12, compare: str = "last_year", basis: str = "supply",
+                      _: dict = Depends(current_user)):
+    """납품이 줄어든 거래처(품목별 감소 포함)와 주문이 끊긴 거래처."""
+    col = "grand_total" if basis == "total" else "supply_total"
+    item_col = "supply + vat" if basis == "total" else "supply"
+    months = max(1, min(months, 24))
+    with db() as c:
+        last = c.execute("SELECT MAX(quote_date) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'").fetchone()[0]
+        if not last:
+            return {"ref": None, "rows": [], "dormant": []}
+        # 기준일: 오늘 (데이터가 오늘보다 옛날에 끝나면 마지막 거래일)
+        ref = min(datetime.now().date(), datetime.strptime(last, "%Y-%m-%d").date())
+        cur_from = _shift_months(ref, -months) + timedelta(days=1)
+        if compare == "previous":
+            cmp_to, cmp_from = cur_from - timedelta(days=1), _shift_months(cur_from, -months)
+        else:
+            cmp_from, cmp_to = _shift_months(cur_from, -12), _shift_months(ref, -12)
+        rng = lambda a, b: (a.strftime("%Y-%m-%d"), b.strftime("%Y-%m-%d"))
+        cur_r, cmp_r = rng(cur_from, ref), rng(cmp_from, cmp_to)
+
+        def per_customer(r):
+            return {n: v or 0 for n, v in c.execute(
+                f"SELECT customer_name, SUM({col}) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
+                " AND quote_date BETWEEN ? AND ? GROUP BY 1", r)}
+
+        def per_item(r):
+            out = {}
+            for n, item, unit, qty, amt in c.execute(
+                    f"SELECT q.customer_name, qi.name, MAX(qi.unit), SUM(qi.qty), SUM(qi.{item_col})"
+                    " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
+                    " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
+                    " GROUP BY 1, 2", r):
+                out.setdefault(n, {})[item] = (qty or 0, amt or 0, unit or "")
+            return out
+
+        cur_c, cmp_c = per_customer(cur_r), per_customer(cmp_r)
+        cur_i, cmp_i = per_item(cur_r), per_item(cmp_r)
+        rows = []
+        for name, before in cmp_c.items():
+            now_amt = cur_c.get(name, 0)
+            if before <= 0 or now_amt >= before:
+                continue
+            items = []
+            for item, (bq, ba, unit) in cmp_i.get(name, {}).items():
+                nq, na, _u = cur_i.get(name, {}).get(item, (0, 0, unit))
+                if na < ba:
+                    items.append({"name": item, "unit": unit, "before_qty": bq, "now_qty": nq,
+                                  "before_amt": ba, "now_amt": na, "drop": ba - na})
+            items.sort(key=lambda x: -x["drop"])
+            rows.append({"name": name, "before": before, "now": now_amt, "drop": before - now_amt,
+                         "rate": (now_amt - before) / before * 100, "items": items})
+        rows.sort(key=lambda r: -r["drop"])
+
+        # 주문 간격 분석: 거래처별 주문 날짜(최근 3년)
+        since = _shift_months(ref, -36).strftime("%Y-%m-%d")
+        dates = {}
+        for n, d in c.execute("SELECT customer_name, quote_date FROM quotes WHERE doc_type = 'statement'"
+                              " AND status != 'draft' AND quote_date BETWEEN ? AND ? GROUP BY 1, 2 ORDER BY 2",
+                              (since, ref.strftime("%Y-%m-%d"))):
+            dates.setdefault(n, []).append(datetime.strptime(d, "%Y-%m-%d").date())
+        year_amt = per_customer(rng(_shift_months(ref, -12) + timedelta(days=1), ref))
+        prev_year_amt = per_customer(rng(_shift_months(ref, -24) + timedelta(days=1), _shift_months(ref, -12)))
+        dormant = []
+        for n, ds in dates.items():
+            if len(ds) < 4:
+                continue
+            gaps = sorted((b - a).days for a, b in zip(ds, ds[1:]))
+            typical = gaps[len(gaps) // 2]  # 중앙값: 가끔 있는 긴 공백에 덜 흔들림
+            since_last = (ref - ds[-1]).days
+            limit = max(typical * 2.5, typical + 30, 45)
+            if since_last >= limit:
+                dormant.append({"name": n, "orders": len(ds), "typical_gap": typical, "last": ds[-1].isoformat(),
+                                "days": since_last, "ratio": since_last / max(typical, 1),
+                                "year_amt": year_amt.get(n, 0), "prev_year_amt": prev_year_amt.get(n, 0)})
+        dormant.sort(key=lambda r: (-(r["prev_year_amt"] + r["year_amt"])))
+        dormant_names = {r["name"] for r in dormant}
+
+        # 품목별 구매 패턴: 거래처 × 품목의 평소 구매 주기(최근 5년)보다 늦어진 것
+        since5 = _shift_months(ref, -60).strftime("%Y-%m-%d")
+        hist = {}
+        for n, item, d, q, a in c.execute(
+                f"SELECT q.customer_name, qi.name, q.quote_date, SUM(qi.qty), SUM(qi.{item_col})"
+                " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
+                " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
+                " GROUP BY 1, 2, 3 ORDER BY 3", (since5, ref.strftime("%Y-%m-%d"))):
+            hist.setdefault((n, item), []).append((datetime.strptime(d, "%Y-%m-%d").date(), q or 0, a or 0))
+        units = {(n, i): u for n, i, u in c.execute(
+            "SELECT q.customer_name, qi.name, MAX(qi.unit) FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
+            " WHERE q.doc_type = 'statement' AND q.quote_date >= ? GROUP BY 1, 2", (since5,))}
+        overdue = {}
+        for (n, item), buys in hist.items():
+            if len(buys) < 3:
+                continue
+            gaps = sorted((b[0] - a[0]).days for a, b in zip(buys, buys[1:]) if (b[0] - a[0]).days > 3)
+            if len(gaps) < 2:
+                continue
+            g = gaps[len(gaps) // 2]                     # 평소 주기 (중앙값)
+            last_d = buys[-1][0]
+            since_last = (ref - last_d).days
+            grace = min(max(g * 0.5, 30), 60)            # 여유: 주기의 절반 (30~60일)
+            if since_last <= g + grace:
+                continue
+            if since_last > max(g * 3, g + 180):        # 너무 오래 전에 끊긴 품목은 제외 (최근에 늦어진 것만)
+                continue
+            span_years = max((buys[-1][0] - buys[0][0]).days / 365, 1)
+            yearly = sum(b[2] for b in buys) / span_years   # 이 품목 연평균 금액
+            qtys = sorted(b[1] for b in buys)
+            overdue.setdefault(n, []).append({
+                "item": item, "unit": units.get((n, item), ""), "cycle": g, "times": len(buys),
+                "last": last_d.isoformat(), "days": since_last, "late": since_last - g,
+                "usual_qty": qtys[len(qtys) // 2], "yearly_amt": yearly,
+                "month": last_d.month if g >= 300 else None})
+        patterns = [{"name": n, "items": sorted(v, key=lambda x: -x["yearly_amt"]),
+                     "value": sum(x["yearly_amt"] for x in v), "stopped": n in dormant_names}
+                    for n, v in overdue.items()]
+        patterns.sort(key=lambda r: -r["value"])
+    return {"ref": ref.isoformat(), "cur": cur_r, "cmp": cmp_r, "rows": rows, "dormant": dormant, "patterns": patterns,
+            "cur_total": sum(cur_c.values()), "cmp_total": sum(cmp_c.values())}
+
+
 # ---------------------------------------------------------------- 입고 예정
 SHIP_STATUSES = ("ordered", "shipped", "customs", "arrived")
 
