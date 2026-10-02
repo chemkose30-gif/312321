@@ -824,15 +824,27 @@ async function renderDashboard() {
 
 // ===================================================== calendar
 // 캘린더 입고예정 표시: 수출사 - 제품명 - 수량
-// 제품명 정리: 첫 줄만, 포장 표시((in 25kg)·[in 5kg]·(20kg *4))·괄호 속 코드·숫자 코드(100074301, 339544)·메모(' / ' 뒤) 빼기
+// 제품명 정리: 첫 줄만, 포장·수량 표시, 코드, 등급(FG·FCC·USP…), 메모를 빼고, 전부 대문자면 보통 표기로
+//   ISOBUTYL PROPIONATE FG 25 (100184100) → Isobutyl propionate / 1,4-CINEOL 90% (in 5kg) → 1,4-Cineol 90%
+//   cis-6-nonenal 0.5kg sample → cis-6-nonenal
 function cleanItem(name) {
   let n = String(name || '').split(/\r?\n/)[0];
-  n = n.replace(/\s+\/\s+.*$/, '')                                   // ' / ' 뒤 메모
-       .replace(/[\(\[]\s*(in\s+)?[\d.,]+\s*(kg|g|l|ml|ea|drums?)\b[^\)\]]*[\)\]]/gi, '')   // 포장
-       .replace(/[\(\[]\s*[A-Z]{0,4}\d{4,}[A-Z]?\s*[\)\]]/gi, '')       // (100184100) 같은 괄호 속 코드
-       .replace(/(^|\s)\d{5,}[A-Z]?(?=\s|$)/g, ' ')                       // 앞뒤의 숫자 코드
-       .replace(/(^|\s)[A-Z]{2,5}\d{3,}(?=\s|$)/g, ' ')                   // TMUP019 같은 공급사 코드
+  n = n.replace(/\s+\/\s+.*$/, '')                                                     // ' / ' 뒤 메모
+       .replace(/[\(\[]\s*(in\s+)?[\d.,]+\s*(kg|g|l|ml|ea|drums?)\b[^\)\]]*[\)\]]/gi, '')  // (in 25kg)·(20kg *4)
+       .replace(/[\(\[]\s*[A-Z]{0,4}\d{4,}[A-Z]?\s*[\)\]]/gi, '')                        // (100184100)
+       .replace(/\s+[\d.,]+\s*(kg|kgs|g|l|ml|ea|drums?)\b.*$/i, '')                      // 뒤에 붙은 수량·이후 메모
+       .replace(/\s+(FG|FCC|USP|EP|BP|JP|NF|kosher|halal)(\s*\d+)?\b.*$/i, '')           // 등급 표시와 그 뒤
+       .replace(/\s+-\s+(tin|drum|can|pail|bottle|ibc|jerrycan)s?$/i, '')                // '- Tin' 같은 용기
+       .replace(/(^|\s)\d{5,}[A-Z]?(?=\s|$)/g, ' ')                                      // 숫자 제품코드
+       .replace(/(^|\s)[A-Z]{2,5}\d{3,}(?=\s|$)/g, ' ')                                  // TMUP019 같은 공급사 코드
        .replace(/\s{2,}/g, ' ').replace(/[\s\-_,/]+$/, '').trim();
+  if (n && !/[a-z]/.test(n)) {                                                         // 전부 대문자 → 첫 글자만 대문자
+    n = n.toLowerCase();
+    if (!/^(cis|trans|alpha|beta|gamma|delta|epsilon|omega|ortho|meta|para|sec|tert|dl|[dlnomp])-/.test(n))
+      n = n.replace(/[a-z]/, ch => ch.toUpperCase());
+    n = n.replace(/\b[a-z]{1,3}\d{2,}[a-z]?\b/g, w => w.toUpperCase())      // F13512 같은 제품코드는 대문자 그대로
+         .replace(/\(([a-z]{1,4})\)/g, (_, w) => `(${w.toUpperCase()})`);   // (PG) 같은 약어
+  }
   return n || String(name || '').trim();
 }
 const shipLabel = sh => [sh.supplier, cleanItem(sh.item), sh.qty ? `${fmtQty(sh.qty)}${sh.unit || ''}` : ''].filter(Boolean).join(' - ');
