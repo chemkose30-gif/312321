@@ -1910,7 +1910,7 @@ function openEcSend(q, kind, ec) {
       <label>${isSale ? '판매일자' : '견적일자'}</label><input type="date" name="io_date" value="${isSale ? todayStr() : esc(q.quote_date)}" required>
       <label>${isSale ? '출고 창고 *' : '창고 (선택)'}</label>
       <select name="wh_cd" ${isSale ? 'required' : ''}><option value="">${ec.warehouses.length ? '선택하세요' : '등록된 창고가 없습니다 (관리자: 🔗 이카운트 설정)'}</option>
-        ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${(q.ecount_wh || state.lastWh) === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('')}</select>
+        ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${(q.ecount_wh || ec.default_wh) === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})${w.code === ec.default_wh ? ' ★기본' : ''}</option>`).join('')}</select>
       <div class="err" id="ecErr"></div>
       <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">${already ? '새 전표로 다시 등록' : '전송'}</button></div>
     </form>`, (bg, close) => {
@@ -1940,6 +1940,8 @@ async function openEcountSettings() {
         <div><label>API 인증키 ${s.has_key ? '<span class="tag s-done">등록됨</span>' : ''}</label><input name="api_key" type="password" autocomplete="new-password" placeholder="${s.has_key ? '변경할 때만 입력' : '발급받은 인증키'}"></div>
         <div><label>서버</label><select name="is_test"><option value="1" ${s.is_test === '1' ? 'selected' : ''}>테스트 서버 (테스트 인증키)</option><option value="0" ${s.is_test === '0' ? 'selected' : ''}>실서비스 (정식 인증키)</option></select></div>
         <div><label>담당자 코드 (선택)</label><input name="emp_cd" value="${esc(s.emp_cd)}" placeholder="전표에 넣을 이카운트 담당자 코드"></div>
+        <div><label>기본 출고 창고</label><select name="default_wh"><option value="">자동 (2번 창고 / 이알씨 창고)</option>
+          ${ec.warehouses.map(w => `<option value="${esc(w.code)}" ${s.default_wh === w.code ? 'selected' : ''}>${esc(w.name)} (${esc(w.code)})</option>`).join('')}</select></div>
       </div>
       <details style="margin-top:10px"><summary class="muted" style="cursor:pointer">고급: API 경로 (이카운트 API 매뉴얼과 다를 때만 수정)</summary>
         <div class="grid2">

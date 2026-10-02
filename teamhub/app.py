@@ -1064,7 +1064,7 @@ def put_company(body: dict, _: dict = Depends(admin_user)):
 
 
 # ---------------------------------------------------------------- 이카운트 ERP 연동
-ECOUNT_KEYS = ("com_code", "user_id", "api_key", "is_test", "emp_cd", "path_products", "path_quotation",
+ECOUNT_KEYS = ("com_code", "user_id", "api_key", "is_test", "emp_cd", "default_wh", "path_products", "path_quotation",
                "path_quotation_list_key", "path_sale", "path_sale_list_key")
 
 
@@ -1302,6 +1302,22 @@ def ecount_put_warehouses(body: List[WarehouseIn], _: dict = Depends(admin_user)
     return {"ok": True, "count": len(rows)}
 
 
+def default_wh(c) -> str:
+    """기본 출고 창고: 설정값 > 코드 2 > 이름에 '이알씨' > 첫 창고."""
+    whs = [dict(r) for r in c.execute("SELECT code, name FROM ecount_warehouses ORDER BY code")]
+    codes = {w["code"] for w in whs}
+    v = get_setting(c, "ecount_default_wh")
+    if v in codes:
+        return v
+    for w in whs:
+        if w["code"].lstrip("0") == "2":
+            return w["code"]
+    for w in whs:
+        if "이알씨" in w["name"].replace(" ", ""):
+            return w["code"]
+    return whs[0]["code"] if whs else ""
+
+
 @app.get("/api/ecount/master")
 def ecount_master(user: dict = Depends(current_user)):
     with db() as c:
@@ -1312,6 +1328,7 @@ def ecount_master(user: dict = Depends(current_user)):
             "products": [dict(r) for r in c.execute("SELECT code, name, spec, unit, price FROM ecount_products ORDER BY name")],
             "customers": [dict(r) for r in c.execute("SELECT code, name, memo FROM ecount_customers ORDER BY name")],
             "warehouses": [dict(r) for r in c.execute("SELECT code, name FROM ecount_warehouses ORDER BY code")],
+            "default_wh": default_wh(c),
         }
 
 
