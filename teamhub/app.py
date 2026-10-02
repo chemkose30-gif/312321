@@ -7,7 +7,9 @@ import secrets
 import sqlite3
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -3887,6 +3889,8 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
             heads.append(head_id)
             continue
         notify_watchers(c, head_id)
+        if foreign and gtranslate_key(c):     # 구글 번역이 켜져 있으면 해외 메일은 바로 번역 (AI 요약·일정은 따로)
+            gtranslate_soon(head_id)
         if ai_mail.enabled() and (cands or foreign):
             c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (head_id,))
             ai_queue.append(head_id)
@@ -4256,10 +4260,11 @@ def ai_analyze_item(mid: int, quiet: bool = False):
                 soon = (date.today() - timedelta(days=7)).isoformat()
                 st = "new" if any(cd["date"] >= soon for cd in cands) else "none"
             topic = res.get("topic", "") if res.get("topic") in MAIL_TOPICS else ""
-            c.execute("UPDATE mail_items SET translation = ?, summary = ?, t_candidates = ?, status = ?, ai_status = 'done',"
+            c.execute("UPDATE mail_items SET translation = CASE WHEN ? != '' THEN ? ELSE translation END, summary = ?,"
+                      " t_candidates = ?, status = ?, ai_status = 'done',"
                       " topic = CASE WHEN topic_set = 0 AND ? != '' THEN ? ELSE topic END WHERE id = ?",
-                      (res.get("translation", ""), res.get("summary", ""), json.dumps(cands, ensure_ascii=False), st,
-                       topic, topic, mid))
+                      (res.get("translation", ""), res.get("translation", ""), res.get("summary", ""),
+                       json.dumps(cands, ensure_ascii=False), st, topic, topic, mid))
         else:
             c.execute("UPDATE mail_items SET ai_status = ? WHERE id = ?", ("error: " + err, mid))
         if not quiet:
@@ -4271,6 +4276,102 @@ def run_ai_queue(ids: list, quiet: bool = False):
     with AI_LOCK:      # 한 번에 하나씩 (요금·속도 제한)
         for mid in ids:
             ai_analyze_item(mid, quiet)
+
+
+# ---- 구글 번역 (Cloud Translation API 키가 있으면 해외 메일을 바로 한국어로)
+def gtranslate_key(c) -> str:
+    return os.getenv("TEAMHUB_GOOGLE_TRANSLATE_KEY") or get_setting(c, "gtranslate_key", "")
+
+
+def _known_products(c) -> list:
+    names = set()
+    for sql in ("SELECT DISTINCT item FROM inv_lots", "SELECT DISTINCT item FROM shipments",
+                "SELECT DISTINCT name FROM quote_items"):
+        for (n,) in c.execute(sql):
+            n = item_base(str(n or "")).strip()
+            if 4 <= len(n) <= 60 and re.search(r"[A-Za-z]", n):
+                names.add(n)
+    return sorted(names, key=len, reverse=True)[:3000]
+
+
+def google_translate(c, text: str) -> str:
+    """영문 등 → 한국어. 제품명(재고·입고예정·명세서에 있는 이름)과 제품 코드·B/L 번호 등은 번역하지 않게 묶어서 보낸다."""
+    key = gtranslate_key(c)
+    if not key:
+        raise HTTPException(400, "구글 번역 API 키가 없습니다.")
+    text = text[:30000]
+    keep = []
+    low = text.lower()
+    for n in _known_products(c):              # 이미 아는 제품명 위치
+        i = low.find(n.lower())
+        while i >= 0:
+            if not any(a < i + len(n) and i < b for a, b in keep):
+                keep.append((i, i + len(n)))
+            i = low.find(n.lower(), i + len(n))
+    for m in re.finditer(r"\b(?=[A-Z0-9\-]*\d)[A-Z0-9][A-Z0-9\-]{4,}\b", text):
+        if not any(a < m.end() and m.start() < b for a, b in keep):
+            keep.append((m.start(), m.end()))       # 제품 코드·B/L·인보이스 번호 (F13865, 937450, HDMU1234567)
+    keep.sort()
+    parts, pos = [], 0
+    for a, b in keep:
+        parts.append(html.escape(text[pos:a]))
+        parts.append(f'<span translate="no">{html.escape(text[a:b])}</span>')
+        pos = b
+    parts.append(html.escape(text[pos:]))
+    body = "".join(parts).replace("\n", "<br>")
+    req = urllib.request.Request(
+        "https://translation.googleapis.com/language/translate/v2?key=" + urllib.parse.quote(key),
+        data=json.dumps({"q": body, "target": "ko", "format": "html"}).encode(), method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            out = json.loads(r.read())["data"]["translations"][0]["translatedText"]
+    except urllib.error.HTTPError as e:
+        raise HTTPException(400, f"구글 번역 실패: {e.read().decode(errors='ignore')[:200]}")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"구글 번역 실패: {e}")
+    out = re.sub(r"<br\s*/?>", "\n", out)
+    out = re.sub(r'</?span[^>]*>', "", out)
+    return html.unescape(out)
+
+
+def gtranslate_mail(mid: int) -> str:
+    with db() as c:
+        m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
+        text = mailin.own_text(m["body"]) or m["body"]
+        tr = google_translate(c, text)
+        c.execute("UPDATE mail_items SET translation = ? WHERE id = ?", (tr, mid))
+    return tr
+
+
+def gtranslate_soon(mid: int):
+    def run():
+        time.sleep(1)
+        try:
+            gtranslate_mail(mid)
+        except Exception as e:  # noqa: BLE001
+            print("[TeamHub] google translate error:", getattr(e, "detail", e))
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.post("/api/mailin/{mid}/gtranslate")
+def mailin_gtranslate(mid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        mail_item(c, mid, user)
+    return {"translation": gtranslate_mail(mid)}
+
+
+@app.get("/api/mailin/gtranslate")
+def get_gtranslate(_: dict = Depends(current_user)):
+    with db() as c:
+        return {"enabled": bool(gtranslate_key(c))}
+
+
+@app.put("/api/mailin/gtranslate")
+def put_gtranslate(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        set_setting(c, "gtranslate_key", str(body.get("key", "")).strip())
+        return {"enabled": bool(gtranslate_key(c))}
 
 
 @app.post("/api/mailin/{mid}/analyze")

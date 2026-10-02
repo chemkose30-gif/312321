@@ -591,7 +591,7 @@ async function renderMailin() {
       <button class="btn sm ${mi.topic === '' ? 'primary' : ''}" data-tp="">전체</button>${d.my_topics.length || d.my_watch.length ? `<button class="btn sm ${mi.topic === 'assigned' ? 'primary' : ''}" data-tp="assigned">⭐ 내 담당</button>` : ''}
       ${Object.entries(d.topics).map(([k, v]) => `<button class="btn sm ${mi.topic === k ? 'primary' : ''}" data-tp="${k}" title="${(d.topic_people[k] || []).length ? '담당: ' + esc(d.topic_people[k].join(', ')) : '담당자 없음'}">${v}${d.topic_counts[k] ? ` <b>${d.topic_counts[k]}</b>` : ''}</button>`).join('')}
       <span class="muted" style="font-size:12px">${d.share_all ? `👀 모든 직원이 모든 메일을 같이 봅니다 · 알림은 업무 담당자에게${d.my_topics.length || d.my_watch.length ? ` · 내 담당: ${[...d.my_topics.map(t => d.topics[t]), ...d.my_watch.map(w => '👔 ' + w + '에게 온 메일')].map(esc).join(', ')}` : ''}` : d.my_topics.length ? `같이 보는 업무: ${d.my_topics.map(t => d.topics[t]).join(', ')} <small>(👥 직원관리에서 관리자가 정함)</small>` : '같이 보는 업무가 없어 내 메일만 보입니다 <small>(👥 직원관리에서 관리자가 정함)</small>'}</span>
-      ${state.me.role === 'admin' ? `<span class="spacer"></span><button class="btn sm" id="miWatch" title="특정 사람에게 온 메일을 누가 확인할지">📮 받는 사람별 확인 담당</button><label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miShare" style="width:auto" ${d.share_all ? 'checked' : ''}>모든 직원이 전체 메일 보기</label>` : ''}</div>
+      ${state.me.role === 'admin' ? `<span class="spacer"></span><button class="btn sm" id="miGtSet">🌐 구글 번역 설정</button><button class="btn sm" id="miWatch" title="특정 사람에게 온 메일을 누가 확인할지">📮 받는 사람별 확인 담당</button><label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miShare" style="width:auto" ${d.share_all ? 'checked' : ''}>모든 직원이 전체 메일 보기</label>` : ''}</div>
     <div class="row" style="margin-bottom:10px"><input id="miQ" placeholder="제목 / 보낸 사람 / 내용 검색" value="${esc(mi.q)}" style="max-width:300px"><span class="muted">${d.items.length}건</span></div>
     ${d.items.length ? d.items.map(m => `<div class="list-item" style="display:block;padding:10px 0;border-bottom:1px solid var(--line)">
         <div class="row" style="gap:6px"><b style="flex:1;min-width:0;cursor:pointer" data-open="${m.id}">${esc(m.subject || '(제목 없음)')}</b>
@@ -605,6 +605,13 @@ async function renderMailin() {
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.s === mi.status); b.onclick = () => { mi.status = b.dataset.s; renderMailin(); }; });
   $$('[data-tp]').forEach(b => b.onclick = () => { mi.topic = b.dataset.tp; renderMailin(); });
   if ($('#miWatch')) $('#miWatch').onclick = openMailWatch;
+  if ($('#miGtSet')) $('#miGtSet').onclick = async () => {
+    const cur = await api('/api/mailin/gtranslate');
+    const v = prompt(`Google Cloud Translation API 키를 넣으세요. (지금: ${cur.enabled ? '설정됨' : '없음'})\n넣으면 해외 메일이 들어오는 즉시 한국어로 번역됩니다. 비우고 확인하면 끕니다.\n키가 없어도 메일의 '🌐 한국어로 번역' 버튼은 구글 번역 사이트로 열립니다.`, '');
+    if (v === null) return;
+    const r = await api('/api/mailin/gtranslate', {method: 'PUT', body: {key: v}});
+    toast(r.enabled ? '구글 번역을 켰습니다.' : '구글 번역 키를 지웠습니다.');
+  };
   if ($('#miShare')) $('#miShare').onchange = async e => { await api('/api/mailin/share', {method: 'PUT', body: {all: e.target.checked}}); toast(e.target.checked ? '모든 직원이 전체 메일을 봅니다.' : '본인 메일 + 담당 업무 메일만 봅니다.'); renderMailin(); };
   $('#miHow').onclick = openMailinHelp;
   $('#miUp').onclick = openMailinUpload;
@@ -681,6 +688,7 @@ async function openMailItem(id) {
         <pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;max-height:30vh;overflow:auto">${esc(t.body)}</pre></details>`).join('')}
       <div style="font-size:13px;margin:8px 0 4px"><b>가장 최근 메일</b> · ${esc(m.sent_at)} · ${esc(m.from_name || m.from_addr)}</div>` : ''}
     ${m.translation ? '<div class="tabs" style="margin-bottom:6px"><button data-v="tr" class="active">🌐 한국어 번역</button><button data-v="org">원문</button></div>' : ''}
+    ${m.translation ? '' : `<div class="row" style="gap:6px;margin-bottom:6px"><button class="btn sm" id="miGt">🌐 한국어로 번역</button><span class="muted" style="font-size:12px" id="miGtNote"></span></div>`}
     <pre id="miBody" style="white-space:pre-wrap;font-family:inherit;font-size:13px;background:var(--bg);padding:10px;border-radius:8px;max-height:50vh;overflow:auto">${esc(m.translation || m.body)}</pre>
     ${String(m.ai_status).startsWith('error') ? `<div class="err">${esc(m.ai_status)}</div>` : ''}
     <div class="actions">${m.owner_id === state.me.id || (!m.owner_id && state.me.role === 'admin') ? '<button class="btn danger" id="miDel">삭제</button>' : ''}<span class="spacer"></span>${state.miAi ? '<button class="btn" id="miAi">🤖 AI로 쓰레드 다시 읽기</button>' : ''}<button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
@@ -690,6 +698,19 @@ async function openMailItem(id) {
     const done = () => api(`/api/mailin/${id}`, {method: 'PATCH', body: {status: 'done'}});
     $$('[data-ci]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, m.candidates[+b.dataset.ci], done); });
     $$('[data-mk]', bg).forEach(b => b.onclick = () => { close(); useCandidate(m, {kind: b.dataset.mk, date: todayStr(), time: null, label: '', context: m.body.slice(0, 120), bl_no: ''}, done); });
+    if ($('#miGt', bg)) $('#miGt', bg).onclick = async () => {
+      const gt = await api('/api/mailin/gtranslate').catch(() => ({}));
+      if (!gt.enabled) {    // API 키가 없으면 구글 번역 사이트에서 바로 (무료)
+        window.open('https://translate.google.com/?sl=auto&tl=ko&op=translate&text=' + encodeURIComponent(m.body.slice(0, 4800)), '_blank');
+        return;
+      }
+      $('#miGt', bg).disabled = true; $('#miGtNote', bg).textContent = '번역 중…';
+      try {
+        const r = await api(`/api/mailin/${id}/gtranslate`, {method: 'POST'});
+        m.translation = r.translation;
+        $('#miBody', bg).textContent = r.translation; $('#miGtNote', bg).textContent = '구글 번역 (제품명·코드는 원문 그대로)';
+      } catch (err) { $('#miGtNote', bg).textContent = err.message; $('#miGt', bg).disabled = false; }
+    };
     $('#miTopic', bg).onchange = async e => { await api(`/api/mailin/${id}`, {method: 'PATCH', body: {topic: e.target.value}}); toast('업무 분류를 바꿨습니다.'); renderMailin(); };
     if ($('#miPriv', bg)) $('#miPriv', bg).onchange = async e => { await api(`/api/mailin/${id}`, {method: 'PATCH', body: {private: e.target.checked}}); toast(e.target.checked ? '🔒 나만 봅니다.' : '같은 업무 담당자와 같이 봅니다.'); renderMailin(); };
     if ($('#miDel', bg)) $('#miDel', bg).onclick = async () => { if (!confirm('이 쓰레드(메일 묶음)를 TeamHub에서 지울까요? (원래 메일함의 메일은 그대로입니다)')) return; await api(`/api/mailin/${id}`, {method: 'DELETE'}); close(); renderMailin(); };
