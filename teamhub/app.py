@@ -1369,7 +1369,8 @@ def run_daily_reminders(today: str):
 # ---------------------------------------------------------------- Frontend
 @app.get("/")
 def index():
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    # 업데이트 후 브라우저가 예전 화면을 쓰지 않도록 항상 새로 받게 한다
+    return FileResponse(BASE_DIR / "static" / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 init_db()
