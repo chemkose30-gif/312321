@@ -2,18 +2,28 @@
 import hashlib
 import hmac
 import html
+import json
 import os
 import smtplib
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from email.message import EmailMessage
 
+# Microsoft 365 Graph API (권장) - Exchange Online 은 SMTP 기본 인증을 단계적으로 폐지
+MS_TENANT_ID = os.getenv("TEAMHUB_MS_TENANT_ID", "")
+MS_CLIENT_ID = os.getenv("TEAMHUB_MS_CLIENT_ID", "")
+MS_CLIENT_SECRET = os.getenv("TEAMHUB_MS_CLIENT_SECRET", "")
+
+# SMTP (Graph 설정이 없을 때 사용)
 SMTP_HOST = os.getenv("TEAMHUB_SMTP_HOST", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("TEAMHUB_SMTP_PORT", "587"))
 SMTP_USER = os.getenv("TEAMHUB_SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("TEAMHUB_SMTP_PASSWORD", "")
-MAIL_FROM = os.getenv("TEAMHUB_MAIL_FROM", SMTP_USER)
+MAIL_FROM = os.getenv("TEAMHUB_MAIL_FROM", SMTP_USER)  # Graph 사용 시 발송 메일함 주소 (필수)
 BASE_URL = os.getenv("TEAMHUB_BASE_URL", "http://localhost:8100").rstrip("/")
 REMINDER_HOUR = int(os.getenv("TEAMHUB_REMINDER_HOUR", "9"))
 
@@ -21,12 +31,22 @@ PRIORITY_LABEL = {"urgent": "긴급", "high": "높음", "normal": "보통", "low
 STATUS_LABEL = {"todo": "대기", "doing": "진행중", "done": "완료", "hold": "보류"}
 
 
+def method() -> str:
+    if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and MAIL_FROM:
+        return "graph"
+    if SMTP_USER and SMTP_PASSWORD:
+        return "smtp"
+    return ""
+
+
 def enabled() -> bool:
-    return bool(SMTP_USER and SMTP_PASSWORD)
+    return bool(method())
 
 
 def status_info() -> dict:
-    return {"enabled": enabled(), "host": SMTP_HOST, "port": SMTP_PORT, "from": MAIL_FROM,
+    m = method()
+    via = {"graph": "Microsoft 365 Graph API", "smtp": f"SMTP {SMTP_HOST}:{SMTP_PORT}"}.get(m, "")
+    return {"enabled": bool(m), "method": m, "via": via, "from": MAIL_FROM,
             "base_url": BASE_URL, "reminder_hour": REMINDER_HOUR}
 
 
@@ -45,7 +65,53 @@ def action_url(secret: str, task_id: int, user_id: int, status: str) -> str:
 
 
 # ---------------------------------------------------------------- 발송
+_token = {"value": "", "expires": 0.0}
+_token_lock = threading.Lock()
+
+
+def _graph_token() -> str:
+    with _token_lock:
+        if _token["value"] and time.time() < _token["expires"] - 60:
+            return _token["value"]
+        data = urllib.parse.urlencode({
+            "client_id": MS_CLIENT_ID, "client_secret": MS_CLIENT_SECRET,
+            "scope": "https://graph.microsoft.com/.default", "grant_type": "client_credentials",
+        }).encode()
+        url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
+        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=20) as r:
+            res = json.load(r)
+        _token["value"] = res["access_token"]
+        _token["expires"] = time.time() + int(res.get("expires_in", 3600))
+        return _token["value"]
+
+
+def _send_graph(to: str, subject: str, body_html: str):
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": body_html},
+            "toRecipients": [{"emailAddress": {"address": to}}],
+        },
+        "saveToSentItems": True,
+    }
+    url = f"https://graph.microsoft.com/v1.0/users/{urllib.parse.quote(MAIL_FROM)}/sendMail"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={
+        "Authorization": "Bearer " + _graph_token(), "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=20).close()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:300]
+        raise RuntimeError(f"Graph {e.code}: {detail}") from None
+
+
 def _send(to: str, subject: str, body_html: str):
+    if method() == "graph":
+        _send_graph(to, subject, body_html)
+    else:
+        _send_smtp(to, subject, body_html)
+
+
+def _send_smtp(to: str, subject: str, body_html: str):
     msg = EmailMessage()
     msg["From"] = MAIL_FROM
     msg["To"] = to
@@ -65,7 +131,7 @@ def send_async(db_factory, to: str, subject: str, body_html: str, task_id=None, 
 
     def run():
         if not enabled():
-            result, error = "skipped", "메일 설정(TEAMHUB_SMTP_USER/PASSWORD)이 없습니다."
+            result, error = "skipped", "메일 발송 설정이 없습니다. README 의 Outlook 메일 연동을 확인하세요."
         else:
             try:
                 _send(to, subject, body_html)

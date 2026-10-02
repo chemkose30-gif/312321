@@ -678,7 +678,7 @@ async function renderMailCard() {
   const noMail = state.users.filter(u => u.active && !u.email).length;
   $('#mailCard').innerHTML = `<h3>📧 Outlook 메일 연동</h3>
     <div class="row" style="margin-bottom:8px">${m.enabled ? '<span class="tag s-done">연동됨</span>' : '<span class="tag p-urgent">미설정</span>'}
-      <span class="muted">${m.enabled ? `발신: ${esc(m.from)} (${esc(m.host)})` : 'README의 "Outlook 메일 연동" 설정 후 서버를 다시 시작하세요.'}</span></div>
+      <span class="muted">${m.enabled ? `발신: ${esc(m.from)} · ${esc(m.via)}` : 'README의 "Outlook 메일 연동" 설정 후 서버를 다시 시작하세요.'}</span></div>
     <div class="muted" style="margin-bottom:10px">업무 지시 시 담당자에게 메일 발송(메일에서 진행/완료 처리 가능) · 상태 변경 시 상대방에게 메일 · 매일 ${m.reminder_hour}시 마감/지연 리마인더${m.last_reminder ? ` (최근 ${esc(m.last_reminder)})` : ''}
       ${noMail ? `<br><b style="color:var(--warn)">메일 주소가 없는 직원 ${noMail}명은 메일을 받지 못합니다.</b>` : ''}</div>
     <form class="row" id="mailTest" style="flex-wrap:nowrap"><input name="to" type="email" placeholder="테스트 받을 메일 주소" value="${esc(state.me.email || '')}" required style="max-width:300px"><button class="btn">테스트 메일 보내기</button></form>

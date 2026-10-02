@@ -54,31 +54,47 @@ python app.py
 
 > 메일의 버튼 링크는 업무·담당자별로 서명되어 위조할 수 없고, 링크를 열면 확인 화면이 먼저 나오므로 Outlook 보안 링크 검사(Safe Links)가 링크를 미리 열어도 상태가 바뀌지 않습니다.
 
-### 설정
-발송용 Microsoft 365(Outlook) 계정을 하나 준비하고(예: `teamhub@회사도메인`), 환경변수를 설정한 뒤 서버를 시작합니다.
+### 설정 (Microsoft 365 — 권장: Graph API)
+Microsoft는 Exchange Online에서 아이디/비밀번호 방식의 SMTP 발송(기본 인증)을 단계적으로 폐지하고 있으므로,
+**Microsoft 365를 쓰는 회사는 아래 Graph API 방식**으로 설정하세요. (비밀번호 대신 회사 테넌트에 등록한 앱으로 발송)
 
+**1) 발송용 메일함 준비**
+- 예: `teamhub@회사도메인` (Microsoft 365 관리 센터에서 사용자 추가 또는 **공유 사서함**으로 만들면 라이선스 비용 없음)
+
+**2) 앱 등록** — [Microsoft Entra 관리 센터](https://entra.microsoft.com) (전역 관리자 계정)
+1. ID → 애플리케이션 → **앱 등록** → **새 등록** → 이름 `TeamHub`, "이 조직 디렉터리의 계정만" → 등록
+2. 개요 화면의 **애플리케이션(클라이언트) ID**, **디렉터리(테넌트) ID** 를 메모
+3. **API 사용 권한** → 권한 추가 → Microsoft Graph → **애플리케이션 권한** → `Mail.Send` 추가 → **"(회사명)에 대한 관리자 동의 허용"** 클릭
+4. **인증서 및 비밀** → 새 클라이언트 암호 → 생성된 **값**을 메모 (화면을 벗어나면 다시 볼 수 없음, 만료일 전에 갱신 필요)
+
+> 보안 권장: `Mail.Send` 애플리케이션 권한은 기본적으로 모든 메일함으로 발송할 수 있습니다.
+> Exchange 관리자가 **애플리케이션 액세스 정책(RBAC for Applications)** 으로 발송 메일함 하나로 제한해 두세요.
+
+**3) 서버 실행**
 ```bash
-export TEAMHUB_SMTP_USER="teamhub@company.com"
-export TEAMHUB_SMTP_PASSWORD="계정 비밀번호 또는 앱 비밀번호"
-export TEAMHUB_BASE_URL="http://192.168.0.10:8100"   # 직원들이 접속하는 주소 (메일 버튼 링크에 사용)
+export TEAMHUB_MS_TENANT_ID="디렉터리(테넌트) ID"
+export TEAMHUB_MS_CLIENT_ID="애플리케이션(클라이언트) ID"
+export TEAMHUB_MS_CLIENT_SECRET="클라이언트 암호 값"
+export TEAMHUB_MAIL_FROM="teamhub@company.com"          # 1)에서 만든 발송 메일함
+export TEAMHUB_BASE_URL="http://192.168.0.10:8100"      # 직원들이 접속하는 주소 (메일 버튼 링크)
 python app.py
 ```
 
+**4) 확인** — 👥 직원관리 하단에 `연동됨 · Microsoft 365 Graph API` 가 보이면 **테스트 메일 보내기**로 확인합니다.
+
+### 전체 환경변수
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `TEAMHUB_SMTP_USER` / `TEAMHUB_SMTP_PASSWORD` | (없음) | 발송 계정. 없으면 메일은 보내지 않고 기록만 '미설정'으로 남음 |
-| `TEAMHUB_SMTP_HOST` / `TEAMHUB_SMTP_PORT` | `smtp.office365.com` / `587` | Outlook.com 개인 계정은 `smtp-mail.outlook.com` |
-| `TEAMHUB_MAIL_FROM` | SMTP 계정 | 보낸 사람 주소 |
+| `TEAMHUB_MS_TENANT_ID` / `TEAMHUB_MS_CLIENT_ID` / `TEAMHUB_MS_CLIENT_SECRET` | (없음) | Microsoft 365 Graph 발송 설정 (세 값 + `TEAMHUB_MAIL_FROM` 이 있으면 Graph 사용) |
+| `TEAMHUB_MAIL_FROM` | SMTP 계정 | 보낸 사람(발송 메일함) 주소 |
 | `TEAMHUB_BASE_URL` | `http://localhost:8100` | 메일 속 링크 주소 — **반드시 직원 PC에서 접속 가능한 주소로 설정** |
 | `TEAMHUB_REMINDER_HOUR` | `9` | 리마인더 발송 시각(0~23시) |
-
-Microsoft 365 관리자 센터에서 발송 계정의 **SMTP 인증(Authenticated SMTP)** 이 켜져 있어야 합니다.
-(사용자 → 해당 계정 → 메일 → 이메일 앱 관리 → "인증된 SMTP" 체크). MFA를 쓰는 계정이면 앱 비밀번호를 사용하세요.
-설정 후 👥 직원관리 하단의 **테스트 메일 보내기**로 확인할 수 있습니다.
+| `TEAMHUB_SMTP_USER` / `TEAMHUB_SMTP_PASSWORD` | (없음) | (대안) Graph 대신 SMTP로 발송할 때. Google Workspace·네이버웍스 등 |
+| `TEAMHUB_SMTP_HOST` / `TEAMHUB_SMTP_PORT` | `smtp.office365.com` / `587` | SMTP 서버 (STARTTLS) |
 
 ## 구성
 - `app.py` — FastAPI 백엔드 + SQLite DB (별도 DB 서버 설치 불필요)
-- `mailer.py` — Outlook(SMTP) 메일 발송, 메일 버튼 서명, 일일 리마인더
+- `mailer.py` — Outlook 메일 발송(Microsoft 365 Graph API / SMTP), 메일 버튼 서명, 일일 리마인더
 - `static/index.html` — 프론트엔드 (단일 파일, 외부 라이브러리 없음)
 
 > 회사 외부(인터넷)에서 접속하게 하려면 HTTPS(예: Nginx + 인증서) 뒤에 두고 운영하는 것을 권장합니다.
