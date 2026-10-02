@@ -36,6 +36,11 @@ DB_PATH = os.getenv("TEAMHUB_DB", str(BASE_DIR / "teamhub.db"))
 async def lifespan(_app):
     mailer.start_scheduler(run_daily_reminders)
     threading.Thread(target=unipass_loop, daemon=True).start()
+    try:
+        with db() as c:
+            merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
+    except Exception as e:  # noqa: BLE001
+        print("[TeamHub] merge error:", e)
     yield
 
 
@@ -3059,6 +3064,7 @@ async def inbound_upload(file: UploadFile = File(...), dry_run: bool = False, us
     with db() as c:
         by = user.get("id") or _first_admin(c)
         stat = sync_inbound(c, rows, by)
+        stat["merged"] = merge_auto_bl_shipments(c)
         meta = {"filename": filename, "uploaded_at": now(), "by": user["name"], **stat}
         set_setting(c, "inbound_meta", json.dumps(meta, ensure_ascii=False))
         if stat["created"]:
@@ -3171,6 +3177,53 @@ def _first_admin(c):
     return r[0] if r else 1
 
 
+def clean_prnm(name: str) -> str:
+    """UNI-PASS 품명에서 품목분류(HS) 설명 빼기: 'CIS 6 NONENAL HS ALDEHYDES WHETHER OR NOT…' → 'CIS 6 NONENAL'"""
+    n = str(name or "").strip()
+    m = re.search(r"\b(H\.?S\.?(\s*CODE)?|WHETHER\s+OR\s+NOT|OF\s+HEADING|N\.?E\.?S\.?|OTHER\s+THAN)\b", n, re.I)
+    if m and m.start() > 2:
+        n = n[:m.start()]
+    return re.sub(r"[\s,;:\-]+$", "", n).strip()
+
+
+def find_open_shipment(c, item: str, eta: str):
+    """B/L 이 아직 없는 진행 중 입고예정 중 같은 제품(이름이 같거나 한쪽이 다른 쪽을 포함)이고 예정일이 가까운 것."""
+    rows = [dict(r) for r in c.execute("SELECT * FROM shipments WHERE status != 'arrived' AND bl_no = '' AND hbl_no = ''")]
+    if not rows or not item:
+        return None
+    match = ItemMatcher([r["item"] for r in rows], {})
+    hit = match(clean_prnm(item))
+    if not hit:
+        return None
+    try:
+        d0 = date.fromisoformat(eta[:10])
+    except ValueError:
+        d0 = date.today()
+    cands = [r for r in rows if r["item"] == hit and -60 <= (date.fromisoformat(r["eta"]) - d0).days <= 90]
+    return min(cands, key=lambda r: abs((date.fromisoformat(r["eta"]) - d0).days)) if cands else None
+
+
+def merge_auto_bl_shipments(c) -> int:
+    """예전에 B/L 로 따로 만들어진 입고예정이 인바운딩 등 기존 건과 같은 제품이면 합친다 (B/L·통관 정보를 옮기고 지움)."""
+    merged = 0
+    autos = [dict(r) for r in c.execute("SELECT * FROM shipments WHERE note LIKE '[자동 등록] UNI-PASS%' AND src_key = ''"
+                                        " AND status != 'arrived'")]
+    for a in autos:
+        same = find_open_shipment(c, a["item"], a["eta"])
+        if not same or same["id"] == a["id"]:
+            continue
+        cols = ("bl_no", "hbl_no", "cs_cargo_no", "cs_status", "cs_arrived", "cs_in_at", "cs_shed", "cs_cleared_at",
+                "cs_out_at", "cs_events", "cs_checked_at", "cs_error")
+        c.execute(f"UPDATE shipments SET {', '.join(k + ' = ?' for k in cols)}, status = ?,"
+                  " eta = CASE WHEN ? != '' THEN ? ELSE eta END, updated_at = ? WHERE id = ?",
+                  (*[a[k] for k in cols], a["status"] if a["status"] == "customs" else same["status"],
+                   a["cs_arrived"], a["cs_arrived"], now(), same["id"]))
+        c.execute("UPDATE bl_watch SET shipment_id = ? WHERE shipment_id = ?", (same["id"], a["id"]))
+        c.execute("DELETE FROM shipments WHERE id = ?", (a["id"],))
+        merged += 1
+    return merged
+
+
 def register_from_bl(num: str, kind: str = "", owner_id=None, subject: str = "", sender: str = "",
                      eta_hint: str = "", quiet: bool = False) -> dict:
     """번호 하나를 UNI-PASS 로 조회해서 찾으면 입고예정을 만든다. → {state, shipment_id, message}"""
@@ -3194,19 +3247,37 @@ def register_from_bl(num: str, kind: str = "", owner_id=None, subject: str = "",
     if r["out_at"] and r["out_at"][:10] < (date.today() - timedelta(days=3)).isoformat():
         return {"state": "old", "message": f"이미 {r['out_at'][:10]} 에 반출된 화물이라 등록하지 않았습니다."}
     w = re.match(r"([\d.]+)\s*(\w*)", r["weight"] or "")
-    item = (r["item"] or mailin.clean_subject(subject) or num)[:120]
+    item = (clean_prnm(r["item"]) or mailin.clean_subject(subject) or num)[:120]
     eta = r["arrived"] or eta_hint or date.today().isoformat()
     status = "customs" if (r["arrived"] or r["in_at"]) else "shipped"
+    mbl = r["mbl_no"] or (num if kind != "H" else "")
+    hbl = r["hbl_no"] or (num if kind == "H" else "")
     with db() as c:
         if shipment_by_number(c, r["mbl_no"] or num) or shipment_by_number(c, r["hbl_no"] or num):
             return {"state": "exists", "message": "이미 입고예정에 있는 번호입니다."}
         oid = owner_id or _first_admin(c)
+        # 인바운딩 등으로 이미 있는 입고예정(B/L 없음)과 같은 제품이면 새로 만들지 않고 B/L 만 붙인다
+        same = find_open_shipment(c, item, eta)
+        if same:
+            c.execute("UPDATE shipments SET bl_no = ?, hbl_no = ?, eta = CASE WHEN ? != '' THEN ? ELSE eta END,"
+                      " updated_at = ? WHERE id = ?", (mbl, hbl, r["arrived"], r["arrived"], now(), same["id"]))
+            sid = same["id"]
+    if same:
+        refresh_unipass(sid, quiet=True)
+        with db() as c:
+            c.execute("UPDATE bl_watch SET state = 'done', shipment_id = ?, message = '기존 입고예정에 B/L 을 연결했습니다.'"
+                      " WHERE number = ?", (sid, mailin.norm_bl(num)))
+            if not quiet:
+                notify(c, oid, f"🚢 B/L 연결: {same['item']} ← {num}" + (f" · 입항 {r['arrived']}" if r["arrived"] else ""))
+        return {"state": "done", "shipment_id": sid, "message": f"기존 입고예정({same['item']})에 B/L 을 연결했습니다."}
+    supplier = "" if "@" in (sender or "") else (sender or "")[:100]     # 메일 주소(택배·포워더 담당자)는 수출사가 아님
+    with db() as c:
         ts = now()
         cur = c.execute(
             f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
             f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, NULL, ?, ?, ?)",
-            (item, "", sender[:100], "", float(w[1]) if w else 0, (w[2] or "kg").lower() if w else "kg", eta, status,
-             r["mbl_no"] or (num if kind != "H" else ""), r["hbl_no"] or (num if kind == "H" else ""), "",
+            (item, "", supplier, "", float(w[1]) if w else 0, (w[2] or "kg").lower() if w else "kg", eta, status,
+             mbl, hbl, "",
              f"[자동 등록] UNI-PASS {num}" + (f" · 메일: {subject}" if subject else ""), oid, ts, ts))
         sid = cur.lastrowid
     refresh_unipass(sid, quiet=True)

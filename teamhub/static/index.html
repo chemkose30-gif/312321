@@ -829,7 +829,9 @@ async function renderDashboard() {
 //   cis-6-nonenal 0.5kg sample → cis-6-nonenal
 function cleanItem(name) {
   let n = String(name || '').split(/\r?\n/)[0];
-  n = n.replace(/\s+\/\s+.*$/, '')                                                     // ' / ' 뒤 메모
+  n = n.replace(/\s+(H\.?S\.?(\s*CODE)?|WHETHER\s+OR\s+NOT|OF\s+HEADING)\b.*$/i, '')            // 관세청 품명의 HS 설명
+       .replace(/^(cis|trans)[\s\-]+(\d+)[\s\-]+/i, (_, a, b) => `${a.toLowerCase()}-${b}-`)        // CIS 6 NONENAL → cis-6-NONENAL
+       .replace(/\s+\/\s+.*$/, '')                                                     // ' / ' 뒤 메모
        .replace(/[\(\[]\s*(in\s+)?[\d.,]+\s*(kg|g|l|ml|ea|drums?)\b[^\)\]]*[\)\]]/gi, '')  // (in 25kg)·(20kg *4)
        .replace(/[\(\[]\s*[A-Z]{0,4}\d{4,}[A-Z]?\s*[\)\]]/gi, '')                        // (100184100)
        .replace(/\s+[\d.,]+\s*(kg|kgs|g|l|ml|ea|drums?)\b.*$/i, '')                      // 뒤에 붙은 수량·이후 메모
@@ -838,7 +840,7 @@ function cleanItem(name) {
        .replace(/(^|\s)\d{5,}[A-Z]?(?=\s|$)/g, ' ')                                      // 숫자 제품코드
        .replace(/(^|\s)[A-Z]{2,5}\d{3,}(?=\s|$)/g, ' ')                                  // TMUP019 같은 공급사 코드
        .replace(/\s{2,}/g, ' ').replace(/[\s\-_,/]+$/, '').trim();
-  if (n && !/[a-z]/.test(n)) {                                                         // 전부 대문자 → 첫 글자만 대문자
+  if (n && !/[a-z]/.test(n.replace(/^(cis|trans)-\d+-/, ''))) {                         // 전부 대문자 → 첫 글자만 대문자
     n = n.toLowerCase();
     if (!/^(cis|trans|alpha|beta|gamma|delta|epsilon|omega|ortho|meta|para|sec|tert|dl|[dlnomp])-/.test(n))
       n = n.replace(/[a-z]/, ch => ch.toUpperCase());
@@ -847,7 +849,7 @@ function cleanItem(name) {
   }
   return n || String(name || '').trim();
 }
-const shipLabel = sh => [sh.supplier, cleanItem(sh.item), sh.qty ? `${fmtQty(sh.qty)}${sh.unit || ''}` : ''].filter(Boolean).join(' - ');
+const shipLabel = sh => [/@/.test(sh.supplier || '') ? '' : sh.supplier, cleanItem(sh.item), sh.qty ? `${fmtQty(sh.qty)}${sh.unit || ''}` : ''].filter(Boolean).join(' - ');
 
 async function renderCalendar() {
   const cur = state.calDate;
