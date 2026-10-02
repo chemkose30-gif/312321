@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>">
+<title>TeamHub · 사내 캘린더 & 업무지시</title>
+<style>
+:root{
+  --bg:#f4f6fb;--panel:#fff;--text:#1f2937;--muted:#6b7280;--line:#e5e7eb;
+  --primary:#2563eb;--primary-weak:#dbeafe;--danger:#dc2626;--ok:#16a34a;--warn:#d97706;
+  --radius:10px;--shadow:0 1px 3px rgba(0,0,0,.08),0 4px 16px rgba(0,0,0,.04);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer}
+.hidden{display:none!important}
+/* ---------- layout */
+header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 20px;height:56px}
+.logo{font-weight:800;font-size:18px;color:var(--primary);white-space:nowrap}
+nav{display:flex;gap:4px;flex:1}
+nav button{background:none;border:0;padding:8px 14px;border-radius:8px;color:var(--muted);font-weight:600}
+nav button.active{background:var(--primary-weak);color:var(--primary)}
+.hdr-right{display:flex;align-items:center;gap:10px;position:relative}
+.bell{position:relative;background:none;border:0;font-size:20px;padding:6px}
+.badge{position:absolute;top:0;right:0;background:var(--danger);color:#fff;font-size:10px;border-radius:10px;padding:1px 5px;font-weight:700}
+.user-chip{background:none;border:1px solid var(--line);border-radius:20px;padding:5px 12px;font-weight:600}
+.dropdown{position:absolute;right:0;top:46px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);min-width:200px;z-index:30}
+.dropdown button{display:block;width:100%;text-align:left;background:none;border:0;padding:10px 14px}
+.dropdown button:hover{background:var(--bg)}
+.notif-panel{width:340px;max-height:420px;overflow:auto}
+.notif-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.notif-item.unread{background:#eff6ff}
+.notif-item small{color:var(--muted)}
+main{max-width:1200px;margin:0 auto;padding:20px}
+.card{background:var(--panel);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
+.card h3{margin:0 0 12px;font-size:15px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.btn{white-space:nowrap;border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:8px 14px;font-weight:600}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.danger{color:var(--danger);border-color:#fecaca}
+.btn.sm{padding:4px 10px;font-size:12px}
+.muted{color:var(--muted)}
+/* ---------- login */
+#login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+#login .card{width:100%;max-width:360px;padding:32px}
+#login h1{margin:0 0 4px;color:var(--primary)}
+/* ---------- forms */
+label{display:block;font-weight:600;font-size:13px;margin:12px 0 4px}
+input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 10px;background:#fff}
+textarea{min-height:90px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--primary-weak);border-color:var(--primary)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.err{color:var(--danger);font-size:13px;min-height:18px;margin-top:8px}
+/* ---------- dashboard */
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px}
+.stat{background:var(--panel);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;cursor:pointer}
+.stat b{display:block;font-size:26px;margin-top:4px}
+.stat.red b{color:var(--danger)}
+.dash-grid{display:grid;grid-template-columns:1fr 1.3fr;gap:16px}
+.list-item{padding:10px 0;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;cursor:pointer}
+.list-item:last-child{border-bottom:0}
+.dot{width:10px;height:10px;border-radius:50%;flex:none}
+.empty{color:var(--muted);text-align:center;padding:24px 0}
+/* ---------- tags */
+.tag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;white-space:nowrap}
+.p-urgent{background:#fee2e2;color:#b91c1c}.p-high{background:#ffedd5;color:#c2410c}
+.p-normal{background:#e0e7ff;color:#4338ca}.p-low{background:#f3f4f6;color:#4b5563}
+.s-todo{background:#f3f4f6;color:#374151}.s-doing{background:#dbeafe;color:#1d4ed8}
+.s-done{background:#dcfce7;color:#15803d}.s-hold{background:#fef3c7;color:#b45309}
+.overdue{color:var(--danger);font-weight:700}
+/* ---------- calendar */
+.cal-head{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.cal-head h2{margin:0 8px;font-size:20px;min-width:140px}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.cal .dow{padding:8px;text-align:center;font-weight:700;font-size:12px;color:var(--muted);border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fafafa}
+.cal .dow:first-child{color:var(--danger)}.cal .dow:last-child{color:var(--primary)}
+.day{min-height:110px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px;cursor:pointer;overflow:hidden;background:#fff}
+.day:hover{background:#f9fafb}
+.day.other{background:#fafafa}.day.other .dnum{color:#c0c4cc}
+.dnum{font-size:12px;font-weight:700;margin-bottom:2px;display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;border-radius:50%}
+.day.today .dnum{background:var(--primary);color:#fff}
+.day.sun .dnum{color:var(--danger)}.day.sat .dnum{color:var(--primary)}
+.day.today.sun .dnum,.day.today.sat .dnum{color:#fff}
+.ev{font-size:11px;padding:2px 5px;border-radius:4px;margin-bottom:2px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev.task{background:#fff!important;color:var(--text);border:1px dashed #9ca3af}
+.ev.task.done{text-decoration:line-through;color:var(--muted)}
+.more{font-size:11px;color:var(--muted);padding-left:4px}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:10px;flex-wrap:wrap}
+/* ---------- tasks */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs button{background:none;border:0;padding:10px 14px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent}
+.tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:12px;color:var(--muted);font-weight:700;background:#fafafa}
+tbody tr{cursor:pointer}tbody tr:hover{background:#f9fafb}
+td.title{font-weight:600}
+/* ---------- modal */
+.modal-bg{position:fixed;inset:0;background:rgba(17,24,39,.45);display:flex;align-items:flex-start;justify-content:center;z-index:50;padding:40px 16px;overflow:auto}
+.modal{background:var(--panel);border-radius:14px;width:100%;max-width:560px;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+.modal h2{margin:0 0 6px;font-size:18px}
+.modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.assignee-box{border:1px solid var(--line);border-radius:8px;max-height:180px;overflow:auto;padding:6px}
+.assignee-box label{display:flex;align-items:center;gap:8px;font-weight:400;margin:0;padding:5px 6px;border-radius:6px}
+.assignee-box label:hover{background:var(--bg)}
+.assignee-box input{width:auto}
+.dept-head{font-size:11px;font-weight:700;color:var(--muted);padding:6px 6px 2px}
+.detail-meta{display:grid;grid-template-columns:90px 1fr;gap:6px 10px;margin:14px 0;font-size:13px}
+.detail-meta dt{color:var(--muted)}.detail-meta dd{margin:0}
+.desc{white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:12px;margin:10px 0}
+.status-btns{display:flex;gap:6px;flex-wrap:wrap}
+.status-btns button{border:1px solid var(--line);background:#fff;border-radius:20px;padding:5px 12px;font-size:12px;font-weight:600}
+.status-btns button.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.comment{padding:8px 0;border-bottom:1px solid var(--line)}
+.comment .who{font-weight:700;font-size:12px}.comment .when{color:var(--muted);font-size:11px;margin-left:6px}
+.comment .body{white-space:pre-wrap;margin-top:3px}
+.colors{display:flex;gap:8px}
+.colors input{display:none}
+.colors span{display:inline-block;width:26px;height:26px;border-radius:50%;cursor:pointer;border:3px solid transparent}
+.colors input:checked+span{border-color:#111827}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 18px;border-radius:8px;z-index:100;font-weight:600}
+/* ---------- responsive */
+@media (max-width:860px){
+  header{padding:0 12px;gap:8px}
+  .logo{font-size:16px}
+  nav{position:fixed;bottom:0;left:0;right:0;background:var(--panel);border-top:1px solid var(--line);justify-content:space-around;padding:6px;z-index:20}
+  nav button{flex:1;font-size:12px;padding:8px 4px}
+  main{padding:12px 12px 80px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .dash-grid{grid-template-columns:1fr}
+  .day{min-height:64px;padding:2px}
+  .cal-head h2{min-width:0;font-size:17px;margin:0 4px}
+  .toast{bottom:80px}
+  .ev{font-size:10px;padding:1px 3px}
+  .hide-m{display:none}
+  .notif-panel{width:290px}
+  .grid2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<section id="login" class="hidden">
+  <form class="card" id="loginForm">
+    <h1>TeamHub</h1>
+    <div class="muted">사내 캘린더 & 업무지시 시스템</div>
+    <label>아이디</label>
+    <input id="lgUser" autocomplete="username" required>
+    <label>비밀번호</label>
+    <input id="lgPass" type="password" autocomplete="current-password" required>
+    <div class="err" id="lgErr"></div>
+    <button class="btn primary" style="width:100%;margin-top:8px">로그인</button>
+  </form>
+</section>
+
+<!-- ============ APP ============ -->
+<section id="app" class="hidden">
+  <header>
+    <div class="logo">TeamHub</div>
+    <nav id="nav">
+      <button data-view="dashboard">🏠 홈</button>
+      <button data-view="calendar">📅 캘린더</button>
+      <button data-view="tasks">📋 업무</button>
+      <button data-view="users" class="admin-only">👥 직원관리</button>
+    </nav>
+    <div class="hdr-right">
+      <button class="bell" id="bellBtn" title="알림">🔔<span class="badge hidden" id="bellBadge">0</span></button>
+      <button class="user-chip" id="userBtn"></button>
+      <div class="dropdown notif-panel hidden" id="notifPanel"></div>
+      <div class="dropdown hidden" id="userMenu">
+        <button id="pwBtn">🔑 비밀번호 변경</button>
+        <button id="logoutBtn">🚪 로그아웃</button>
+      </div>
+    </div>
+  </header>
+  <main id="main"></main>
+</section>
+
+<div id="modalRoot"></div>
+
+<script>
+// ===================================================== helpers
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const todayStr = () => ymd(new Date());
+
+const PRIORITY = {urgent: '긴급', high: '높음', normal: '보통', low: '낮음'};
+const STATUS = {todo: '대기', doing: '진행중', done: '완료', hold: '보류'};
+const SCOPE = {company: '전사 공개', dept: '부서 공개', private: '나만 보기'};
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6b7280'];
+
+const state = {token: localStorage.getItem('th_token'), me: null, users: [], view: 'dashboard',
+               calDate: new Date(), taskBox: 'received', taskStatus: ''};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + (state.token || '')},
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  if (res.status === 401 && path !== '/api/login') { logoutLocal(); throw new Error('로그인이 필요합니다.'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const d = data.detail;
+    throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? '입력값을 확인하세요.' : '요청에 실패했습니다.');
+  }
+  return data;
+}
+
+function toast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+}
+
+function openModal(html, onMount) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal">${html}</div>`;
+  bg.addEventListener('mousedown', e => { if (e.target === bg) bg.remove(); });
+  $('#modalRoot').appendChild(bg);
+  const close = () => bg.remove();
+  $$('[data-close]', bg).forEach(b => b.onclick = close);
+  onMount && onMount(bg, close);
+  return close;
+}
+
+function fmtDT(s) {
+  if (!s) return '';
+  return s.replace('T', ' ').slice(0, 16);
+}
+function dueHtml(t) {
+  if (!t.due_date) return '<span class="muted">-</span>';
+  const late = t.status !== 'done' && t.due_date < todayStr();
+  return `<span class="${late ? 'overdue' : ''}">${esc(t.due_date)}${late ? ' (지연)' : ''}</span>`;
+}
+const pTag = p => `<span class="tag p-${p}">${PRIORITY[p]}</span>`;
+const sTag = s => `<span class="tag s-${s}">${STATUS[s]}</span>`;
+
+// ===================================================== auth
+$('#loginForm').onsubmit = async e => {
+  e.preventDefault();
+  $('#lgErr').textContent = '';
+  try {
+    const r = await api('/api/login', {method: 'POST', body: {username: $('#lgUser').value, password: $('#lgPass').value}});
+    state.token = r.token; localStorage.setItem('th_token', r.token);
+    await boot();
+  } catch (err) { $('#lgErr').textContent = err.message; }
+};
+
+function logoutLocal() {
+  state.token = null; state.me = null;
+  localStorage.removeItem('th_token');
+  $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
+  $('#modalRoot').innerHTML = '';
+}
+
+$('#logoutBtn').onclick = async () => { try { await api('/api/logout', {method: 'POST'}); } catch {} logoutLocal(); };
+
+$('#pwBtn').onclick = () => {
+  $('#userMenu').classList.add('hidden');
+  openModal(`<h2>비밀번호 변경</h2>
+    <form id="pwForm">
+      <label>현재 비밀번호</label><input type="password" name="cur" required>
+      <label>새 비밀번호 (6자 이상)</label><input type="password" name="nw" minlength="6" required>
+      <label>새 비밀번호 확인</label><input type="password" name="nw2" required>
+      <div class="err"></div>
+      <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">변경</button></div>
+    </form>`, (bg, close) => {
+    $('form', bg).onsubmit = async e => {
+      e.preventDefault();
+      const f = e.target;
+      if (f.nw.value !== f.nw2.value) { $('.err', bg).textContent = '새 비밀번호가 일치하지 않습니다.'; return; }
+      try {
+        await api('/api/me/password', {method: 'PUT', body: {current_password: f.cur.value, new_password: f.nw.value}});
+        close(); toast('비밀번호가 변경되었습니다.');
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+};
+
+async function boot() {
+  if (!state.token) { logoutLocal(); return; }
+  try { state.me = await api('/api/me'); } catch { return; }
+  state.users = await api('/api/users');
+  $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#userBtn').textContent = `${state.me.name} ▾`;
+  $$('.admin-only').forEach(el => el.classList.toggle('hidden', state.me.role !== 'admin'));
+  go(state.view);
+  refreshNotifs();
+}
+
+// ===================================================== nav / dropdowns
+$$('#nav button').forEach(b => b.onclick = () => go(b.dataset.view));
+function go(view) {
+  if (view === 'users' && state.me.role !== 'admin') view = 'dashboard';
+  state.view = view;
+  $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, users: renderUsers})[view]();
+}
+
+$('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
+$('#bellBtn').onclick = async e => {
+  e.stopPropagation(); $('#userMenu').classList.add('hidden');
+  const p = $('#notifPanel');
+  if (!p.classList.contains('hidden')) { p.classList.add('hidden'); return; }
+  await refreshNotifs(true);
+  p.classList.remove('hidden');
+};
+document.addEventListener('click', e => {
+  if (!e.target.closest('.dropdown')) $$('.dropdown').forEach(d => d.classList.add('hidden'));
+});
+
+async function refreshNotifs(renderPanel = false) {
+  if (!state.token) return;
+  const n = await api('/api/notifications').catch(() => null);
+  if (!n) return;
+  const b = $('#bellBadge');
+  b.textContent = n.unread > 99 ? '99+' : n.unread;
+  b.classList.toggle('hidden', !n.unread);
+  if (!renderPanel) return;
+  const p = $('#notifPanel');
+  p.innerHTML = `<div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line)">
+      <b>알림</b><span class="spacer"></span><button class="btn sm" id="readAll">모두 읽음</button></div>` +
+    (n.items.length ? n.items.map(i => `<div class="notif-item ${i.is_read ? '' : 'unread'}" data-task="${i.task_id ?? ''}">
+        ${esc(i.message)}<br><small>${esc(i.created_at.slice(0, 16))}</small></div>`).join('')
+      : '<div class="empty">알림이 없습니다.</div>');
+  $('#readAll', p).onclick = async () => { await api('/api/notifications/read-all', {method: 'POST'}); refreshNotifs(true); };
+  $$('.notif-item', p).forEach(el => el.onclick = () => {
+    p.classList.add('hidden');
+    if (el.dataset.task) openTask(+el.dataset.task);
+  });
+}
+setInterval(() => refreshNotifs(), 30000);
+
+// ===================================================== dashboard
+async function renderDashboard() {
+  const d = await api('/api/dashboard');
+  const c = d.counts;
+  $('#main').innerHTML = `
+    <h2 style="margin:0 0 4px">안녕하세요, ${esc(state.me.name)}님 👋</h2>
+    <div class="muted" style="margin-bottom:16px">${esc(d.today)} · ${esc(state.me.dept)} ${esc(state.me.position)}</div>
+    <div class="stats">
+      <div class="stat" data-st="todo"><span class="muted">대기 중</span><b>${c.todo}</b></div>
+      <div class="stat" data-st="doing"><span class="muted">진행 중</span><b>${c.doing}</b></div>
+      <div class="stat red" data-st=""><span class="muted">기한 지연</span><b>${d.overdue}</b></div>
+      <div class="stat" data-st="done"><span class="muted">완료</span><b>${c.done}</b></div>
+      <div class="stat" data-box="sent"><span class="muted">내가 지시한 미완료</span><b>${d.sent_open}</b></div>
+    </div>
+    <div class="dash-grid">
+      <div class="card">
+        <div class="row"><h3>📅 오늘 일정</h3><span class="spacer"></span><button class="btn sm" id="dNewEv">+ 일정</button></div>
+        ${d.today_events.length ? d.today_events.map(e => `<div class="list-item" data-ev="${e.id}">
+            <span class="dot" style="background:${esc(e.color)}"></span>
+            <div style="flex:1"><b>${esc(e.title)}</b><br><small class="muted">${e.all_day ? '종일' : esc(fmtDT(e.start).slice(11)) + ' ~ ' + esc(fmtDT(e.end).slice(11))} · ${esc(e.creator_name)}</small></div>
+            <small class="muted">${SCOPE[e.scope]}</small></div>`).join('')
+          : '<div class="empty">오늘 예정된 일정이 없습니다.</div>'}
+      </div>
+      <div class="card">
+        <div class="row"><h3>📋 내 할 일</h3><span class="spacer"></span><button class="btn sm primary" id="dNewTask">+ 업무 지시</button></div>
+        ${d.my_tasks.length ? d.my_tasks.map(t => `<div class="list-item" data-task="${t.id}">
+            ${pTag(t.priority)}<div style="flex:1"><b>${esc(t.title)}</b><br><small class="muted">지시: ${esc(t.assigner_name)} · 기한 ${dueHtml(t)}</small></div>${sTag(t.status)}</div>`).join('')
+          : '<div class="empty">처리할 업무가 없습니다. 🎉</div>'}
+      </div>
+    </div>`;
+  $$('.stat').forEach(s => s.onclick = () => {
+    state.taskBox = s.dataset.box || 'received';
+    state.taskStatus = s.dataset.st || '';
+    go('tasks');
+  });
+  $$('[data-ev]').forEach(el => el.onclick = () => openEvent(d.today_events.find(e => e.id == el.dataset.ev)));
+  $$('[data-task]').forEach(el => el.onclick = () => openTask(+el.dataset.task));
+  $('#dNewEv').onclick = () => openEvent(null, d.today);
+  $('#dNewTask').onclick = () => openTaskForm();
+}
+
+// ===================================================== calendar
+async function renderCalendar() {
+  const cur = state.calDate;
+  const y = cur.getFullYear(), m = cur.getMonth();
+  const first = new Date(y, m, 1);
+  const start = new Date(y, m, 1 - first.getDay());
+  const weeks = Math.ceil((first.getDay() + new Date(y, m + 1, 0).getDate()) / 7);
+  const end = new Date(start); end.setDate(start.getDate() + weeks * 7 - 1);
+  const data = await api(`/api/events?start=${ymd(start)}&end=${ymd(end)}`);
+
+  const byDay = {};
+  const push = (k, item) => (byDay[k] ||= []).push(item);
+  for (const e of data.events) {
+    const s = new Date(e.start.slice(0, 10) + 'T00:00'), en = new Date(e.end.slice(0, 10) + 'T00:00');
+    for (let d = new Date(Math.max(s, start)); d <= en && d <= end; d.setDate(d.getDate() + 1)) push(ymd(d), {type: 'ev', e});
+  }
+  for (const t of data.tasks) push(t.due_date, {type: 'task', t});
+
+  const today = todayStr();
+  let cells = ['일', '월', '화', '수', '목', '금', '토'].map(d => `<div class="dow">${d}</div>`).join('');
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const k = ymd(d), items = byDay[k] || [];
+    const max = window.innerWidth < 860 ? 2 : 4;
+    const cls = ['day', d.getMonth() !== m && 'other', k === today && 'today', d.getDay() === 0 && 'sun', d.getDay() === 6 && 'sat'].filter(Boolean).join(' ');
+    cells += `<div class="${cls}" data-day="${k}"><span class="dnum">${d.getDate()}</span>
+      ${items.slice(0, max).map(it => it.type === 'ev'
+        ? `<div class="ev" data-ev="${it.e.id}" style="background:${esc(it.e.color)}" title="${esc(it.e.title)}">${it.e.all_day ? '' : esc(it.e.start.slice(11, 16)) + ' '}${esc(it.e.title)}</div>`
+        : `<div class="ev task ${it.t.status === 'done' ? 'done' : ''}" data-task="${it.t.id}" title="${esc(it.t.title)} (${esc(it.t.assignee_name)})">☑ ${esc(it.t.title)}</div>`).join('')}
+      ${items.length > max ? `<div class="more">+${items.length - max}개 더보기</div>` : ''}</div>`;
+  }
+
+  $('#main').innerHTML = `<div class="card">
+    <div class="cal-head">
+      <button class="btn sm" id="cPrev">◀</button><h2>${y}년 ${m + 1}월</h2><button class="btn sm" id="cNext">▶</button>
+      <button class="btn sm" id="cToday">오늘</button><span class="spacer"></span>
+      <button class="btn primary" id="cNew">+ 일정 등록</button>
+    </div>
+    <div class="cal">${cells}</div>
+    <div class="legend"><span>■ 색상 블록: 일정</span><span>☑ 점선: 업무 마감일 (내가 받은/지시한 업무)</span><span>날짜를 누르면 해당 날짜의 일정을 보고 등록할 수 있습니다.</span></div>
+  </div>`;
+  $('#cPrev').onclick = () => { state.calDate = new Date(y, m - 1, 1); renderCalendar(); };
+  $('#cNext').onclick = () => { state.calDate = new Date(y, m + 1, 1); renderCalendar(); };
+  $('#cToday').onclick = () => { state.calDate = new Date(); renderCalendar(); };
+  $('#cNew').onclick = () => openEvent(null, today);
+  $$('.day').forEach(el => el.onclick = e => {
+    const evEl = e.target.closest('[data-ev]'), tEl = e.target.closest('[data-task]');
+    if (evEl) return openEvent(data.events.find(x => x.id == evEl.dataset.ev));
+    if (tEl) return openTask(+tEl.dataset.task);
+    openDay(el.dataset.day, byDay[el.dataset.day] || []);
+  });
+}
+
+function openDay(day, items) {
+  openModal(`<h2>${esc(day)}</h2>
+    ${items.length ? items.map(it => it.type === 'ev'
+      ? `<div class="list-item" data-ev="${it.e.id}"><span class="dot" style="background:${esc(it.e.color)}"></span>
+           <div style="flex:1"><b>${esc(it.e.title)}</b><br><small class="muted">${it.e.all_day ? '종일' : esc(fmtDT(it.e.start)) + ' ~ ' + esc(fmtDT(it.e.end))} · ${esc(it.e.creator_name)}</small></div></div>`
+      : `<div class="list-item" data-task="${it.t.id}">☑ <div style="flex:1"><b>${esc(it.t.title)}</b><br><small class="muted">업무 마감 · 담당 ${esc(it.t.assignee_name)}</small></div>${sTag(it.t.status)}</div>`).join('')
+      : '<div class="empty">등록된 일정이 없습니다.</div>'}
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="dayNew">+ 이 날짜에 일정 등록</button></div>`,
+    (bg, close) => {
+      $('#dayNew', bg).onclick = () => { close(); openEvent(null, day); };
+      $$('[data-ev]', bg).forEach(el => el.onclick = () => { close(); openEvent(items.find(i => i.type === 'ev' && i.e.id == el.dataset.ev).e); });
+      $$('[data-task]', bg).forEach(el => el.onclick = () => { close(); openTask(+el.dataset.task); });
+    });
+}
+
+function openEvent(ev, day) {
+  const canEdit = !ev || ev.created_by === state.me.id || state.me.role === 'admin';
+  const isAll = ev ? !!ev.all_day : false;
+  const sd = ev ? ev.start.slice(0, 10) : day, ed = ev ? ev.end.slice(0, 10) : day;
+  const st = ev && !ev.all_day ? ev.start.slice(11, 16) : '09:00', et = ev && !ev.all_day ? ev.end.slice(11, 16) : '10:00';
+  const color = ev ? ev.color : COLORS[0];
+  const dis = canEdit ? '' : 'disabled';
+  openModal(`<h2>${ev ? (canEdit ? '일정 수정' : '일정 보기') : '새 일정'}</h2>
+    ${ev ? `<div class="muted">작성자: ${esc(ev.creator_name)} · ${SCOPE[ev.scope]}</div>` : ''}
+    <form id="evForm">
+      <label>제목</label><input name="title" value="${esc(ev?.title)}" required ${dis}>
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="all_day" style="width:auto" ${isAll ? 'checked' : ''} ${dis}> 종일</label>
+      <div class="grid2">
+        <div><label>시작일</label><input type="date" name="sd" value="${sd}" required ${dis}></div>
+        <div class="tm"><label>시작 시간</label><input type="time" name="st" value="${st}" ${dis}></div>
+        <div><label>종료일</label><input type="date" name="ed" value="${ed}" required ${dis}></div>
+        <div class="tm"><label>종료 시간</label><input type="time" name="et" value="${et}" ${dis}></div>
+      </div>
+      <label>공개 범위</label>
+      <select name="scope" ${dis}>${Object.entries(SCOPE).map(([k, v]) => `<option value="${k}" ${(ev?.scope || 'company') === k ? 'selected' : ''}>${v}${k === 'dept' ? ` (${esc(ev ? ev.dept : state.me.dept) || '부서 없음'})` : ''}</option>`).join('')}</select>
+      <label>색상</label>
+      <div class="colors">${COLORS.map(c => `<label style="margin:0"><input type="radio" name="color" value="${c}" ${c === color ? 'checked' : ''} ${dis}><span style="background:${c}"></span></label>`).join('')}</div>
+      <label>메모</label><textarea name="description" ${dis}>${esc(ev?.description)}</textarea>
+      <div class="err"></div>
+      <div class="actions">
+        ${ev && canEdit ? '<button type="button" class="btn danger" id="evDel">삭제</button><span class="spacer"></span>' : ''}
+        <button type="button" class="btn" data-close>${canEdit ? '취소' : '닫기'}</button>
+        ${canEdit ? '<button class="btn primary">저장</button>' : ''}
+      </div>
+    </form>`, (bg, close) => {
+    const f = $('form', bg);
+    const syncTm = () => $$('.tm', bg).forEach(el => el.style.visibility = f.all_day.checked ? 'hidden' : 'visible');
+    f.all_day.onchange = syncTm; syncTm();
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const allDay = f.all_day.checked;
+      const body = {
+        title: f.title.value, description: f.description.value, all_day: allDay, scope: f.scope.value,
+        color: f.color.value,
+        start: allDay ? f.sd.value : `${f.sd.value}T${f.st.value || '00:00'}`,
+        end: allDay ? f.ed.value : `${f.ed.value}T${f.et.value || '23:59'}`,
+      };
+      try {
+        await api(ev ? `/api/events/${ev.id}` : '/api/events', {method: ev ? 'PUT' : 'POST', body});
+        close(); toast('저장되었습니다.'); go(state.view);
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    const del = $('#evDel', bg);
+    if (del) del.onclick = async () => {
+      if (!confirm('이 일정을 삭제할까요?')) return;
+      await api(`/api/events/${ev.id}`, {method: 'DELETE'});
+      close(); toast('삭제되었습니다.'); go(state.view);
+    };
+  });
+}
+
+// ===================================================== tasks
+async function renderTasks() {
+  const isAdmin = state.me.role === 'admin';
+  const q = new URLSearchParams({box: state.taskBox});
+  if (state.taskStatus) q.set('status', state.taskStatus);
+  const tasks = await api('/api/tasks?' + q);
+  const showAssignee = state.taskBox !== 'received', showAssigner = state.taskBox !== 'sent';
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0">업무지시</h3><span class="spacer"></span>
+      <button class="btn primary" id="tNew">+ 새 업무 지시</button></div>
+    <div class="tabs">
+      <button data-box="received">📥 받은 업무</button><button data-box="sent">📤 지시한 업무</button>
+      ${isAdmin ? '<button data-box="all">🗂 전체 업무</button>' : ''}
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <select id="tStatus" style="width:auto"><option value="">전체 상태</option>
+        ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${state.taskStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <input id="tSearch" placeholder="제목/이름 검색" style="max-width:240px">
+      <span class="muted">${tasks.length}건</span>
+    </div>
+    ${tasks.length ? `<table><thead><tr>
+        <th>우선순위</th><th>제목</th>${showAssigner ? '<th class="hide-m">지시자</th>' : ''}${showAssignee ? '<th class="hide-m">담당자</th>' : ''}
+        <th>마감일</th><th>상태</th></tr></thead><tbody>
+      ${tasks.map(t => `<tr data-task="${t.id}" data-search="${esc((t.title + ' ' + t.assigner_name + ' ' + t.assignee_name).toLowerCase())}">
+        <td>${pTag(t.priority)}</td>
+        <td class="title">${esc(t.title)}${t.comment_count ? ` <small class="muted">💬${t.comment_count}</small>` : ''}</td>
+        ${showAssigner ? `<td class="hide-m">${esc(t.assigner_name)}</td>` : ''}
+        ${showAssignee ? `<td class="hide-m">${esc(t.assignee_name)} <small class="muted">${esc(t.assignee_dept)}</small></td>` : ''}
+        <td>${dueHtml(t)}</td><td>${sTag(t.status)}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty">해당하는 업무가 없습니다.</div>'}
+  </div>`;
+  $$('.tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.box === state.taskBox);
+    b.onclick = () => { state.taskBox = b.dataset.box; renderTasks(); };
+  });
+  $('#tStatus').onchange = e => { state.taskStatus = e.target.value; renderTasks(); };
+  $('#tSearch').oninput = e => {
+    const v = e.target.value.toLowerCase();
+    $$('tbody tr').forEach(tr => tr.classList.toggle('hidden', !tr.dataset.search.includes(v)));
+  };
+  $$('tbody tr').forEach(tr => tr.onclick = () => openTask(+tr.dataset.task));
+  $('#tNew').onclick = () => openTaskForm();
+}
+
+function assigneePicker(selected = []) {
+  const groups = {};
+  state.users.filter(u => u.active).forEach(u => (groups[u.dept || '부서 미지정'] ||= []).push(u));
+  return `<input id="aFilter" placeholder="이름/부서 검색" style="margin-bottom:6px"><div class="assignee-box">` +
+    Object.entries(groups).map(([dept, us]) => `<div class="dept-grp"><div class="dept-head">${esc(dept)}
+        <a href="#" data-alldept style="font-weight:400;margin-left:6px">전체선택</a></div>
+      ${us.map(u => `<label data-s="${esc((u.name + ' ' + u.dept).toLowerCase())}"><input type="checkbox" name="assignee" value="${u.id}" ${selected.includes(u.id) ? 'checked' : ''}>
+        ${esc(u.name)} <small class="muted">${esc(u.position)}${u.id === state.me.id ? ' (나)' : ''}</small></label>`).join('')}</div>`).join('') + '</div>';
+}
+
+function openTaskForm(task) {
+  const edit = !!task;
+  openModal(`<h2>${edit ? '업무 수정' : '새 업무 지시'}</h2>
+    <form>
+      <label>업무 제목</label><input name="title" value="${esc(task?.title)}" required>
+      <label>업무 내용</label><textarea name="description" placeholder="구체적인 지시 사항, 산출물, 참고 자료 등">${esc(task?.description)}</textarea>
+      <div class="grid2">
+        <div><label>우선순위</label><select name="priority">${Object.entries(PRIORITY).map(([k, v]) => `<option value="${k}" ${(task?.priority || 'normal') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <div><label>마감일</label><input type="date" name="due" value="${esc(task?.due_date || '')}"></div>
+      </div>
+      ${edit ? '' : `<label>담당자 (여러 명 선택 시 각자에게 개별 업무로 지시됩니다)</label>${assigneePicker()}`}
+      <div class="err"></div>
+      <div class="actions"><button type="button" class="btn" data-close>취소</button><button class="btn primary">${edit ? '저장' : '지시하기'}</button></div>
+    </form>`, (bg, close) => {
+    const f = $('form', bg);
+    const filter = $('#aFilter', bg);
+    if (filter) filter.oninput = () => {
+      const v = filter.value.toLowerCase();
+      $$('.assignee-box label', bg).forEach(l => l.classList.toggle('hidden', !l.dataset.s.includes(v)));
+    };
+    $$('[data-alldept]', bg).forEach(a => a.onclick = e => {
+      e.preventDefault();
+      const boxes = $$('input', a.closest('.dept-grp'));
+      const on = boxes.some(b => !b.checked);
+      boxes.forEach(b => b.checked = on);
+    });
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try {
+        if (edit) {
+          await api(`/api/tasks/${task.id}`, {method: 'PATCH', body: {title: f.title.value, description: f.description.value, priority: f.priority.value, due_date: f.due.value}});
+          close(); toast('수정되었습니다.'); openTask(task.id);
+        } else {
+          const ids = $$('input[name=assignee]:checked', bg).map(i => +i.value);
+          if (!ids.length) { $('.err', bg).textContent = '담당자를 선택하세요.'; return; }
+          await api('/api/tasks', {method: 'POST', body: {title: f.title.value, description: f.description.value, priority: f.priority.value, due_date: f.due.value || null, assignee_ids: ids}});
+          close(); toast(`${ids.length}명에게 업무를 지시했습니다.`);
+        }
+        go(state.view);
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
+async function openTask(id) {
+  let t;
+  try { t = await api(`/api/tasks/${id}`); } catch (err) { toast(err.message); return; }
+  refreshNotifs();
+  const owner = t.assigner_id === state.me.id || state.me.role === 'admin';
+  openModal(`<div class="row">${pTag(t.priority)} ${sTag(t.status)}</div>
+    <h2 style="margin-top:8px">${esc(t.title)}</h2>
+    <dl class="detail-meta">
+      <dt>지시자</dt><dd>${esc(t.assigner_name)} <small class="muted">${esc(t.assigner_dept)}</small></dd>
+      <dt>담당자</dt><dd>${esc(t.assignee_name)} <small class="muted">${esc(t.assignee_dept)}</small></dd>
+      <dt>마감일</dt><dd>${dueHtml(t)}</dd>
+      <dt>지시일</dt><dd>${esc(t.created_at.slice(0, 16))}</dd>
+      ${t.completed_at ? `<dt>완료일</dt><dd>${esc(t.completed_at.slice(0, 16))}</dd>` : ''}
+    </dl>
+    ${t.description ? `<div class="desc">${esc(t.description)}</div>` : ''}
+    <label>진행 상태</label>
+    <div class="status-btns">${Object.entries(STATUS).map(([k, v]) => `<button data-st="${k}" class="${t.status === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+    <label>코멘트 (${t.comments.length})</label>
+    <div>${t.comments.map(c => `<div class="comment"><span class="who">${esc(c.user_name)}</span><span class="when">${esc(c.created_at.slice(0, 16))}</span><div class="body">${esc(c.body)}</div></div>`).join('') || '<div class="muted" style="padding:6px 0">아직 코멘트가 없습니다.</div>'}</div>
+    <form id="cForm" class="row" style="margin-top:8px;flex-wrap:nowrap"><input name="body" placeholder="진행 상황, 질문 등을 남기세요" required><button class="btn primary">등록</button></form>
+    <div class="actions">
+      ${owner ? '<button class="btn danger" id="tDel">삭제</button><button class="btn" id="tEdit">수정</button><span class="spacer"></span>' : ''}
+      <button class="btn" data-close>닫기</button>
+    </div>`, (bg, close) => {
+    $$('[data-st]', bg).forEach(b => b.onclick = async () => {
+      try {
+        await api(`/api/tasks/${id}`, {method: 'PATCH', body: {status: b.dataset.st}});
+        close(); toast(`상태: ${STATUS[b.dataset.st]}`); openTask(id); go(state.view);
+      } catch (err) { toast(err.message); }
+    });
+    $('#cForm', bg).onsubmit = async e => {
+      e.preventDefault();
+      await api(`/api/tasks/${id}/comments`, {method: 'POST', body: {body: e.target.body.value}});
+      close(); openTask(id); if (state.view === 'tasks') renderTasks();
+    };
+    const del = $('#tDel', bg);
+    if (del) del.onclick = async () => {
+      if (!confirm('이 업무를 삭제할까요?')) return;
+      await api(`/api/tasks/${id}`, {method: 'DELETE'});
+      close(); toast('삭제되었습니다.'); go(state.view);
+    };
+    const ed = $('#tEdit', bg);
+    if (ed) ed.onclick = () => { close(); openTaskForm(t); };
+  });
+}
+
+// ===================================================== users (admin)
+async function renderUsers() {
+  state.users = await api('/api/users');
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:12px"><h3 style="margin:0">직원관리</h3><span class="muted">${state.users.filter(u => u.active).length}명 재직</span>
+      <span class="spacer"></span><button class="btn primary" id="uNew">+ 직원 등록</button></div>
+    <table><thead><tr><th>이름</th><th>아이디</th><th>부서</th><th class="hide-m">직급</th><th>권한</th><th>상태</th></tr></thead><tbody>
+    ${state.users.map(u => `<tr data-u="${u.id}" style="${u.active ? '' : 'opacity:.5'}">
+      <td class="title">${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.dept)}</td><td class="hide-m">${esc(u.position)}</td>
+      <td>${u.role === 'admin' ? '<span class="tag p-high">관리자</span>' : '<span class="tag p-low">직원</span>'}</td>
+      <td>${u.active ? '<span class="tag s-done">재직</span>' : '<span class="tag s-todo">비활성</span>'}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  $('#uNew').onclick = () => openUser();
+  $$('tbody tr').forEach(tr => tr.onclick = () => openUser(state.users.find(u => u.id == tr.dataset.u)));
+}
+
+function openUser(u) {
+  const depts = [...new Set(state.users.map(x => x.dept).filter(Boolean))];
+  openModal(`<h2>${u ? '직원 정보 수정' : '직원 등록'}</h2>
+    <form>
+      <div class="grid2">
+        <div><label>이름</label><input name="name" value="${esc(u?.name)}" required></div>
+        <div><label>아이디</label><input name="username" value="${esc(u?.username)}" ${u ? 'disabled' : 'required'}></div>
+        <div><label>부서</label><input name="dept" list="deptList" value="${esc(u?.dept)}"></div>
+        <div><label>직급</label><input name="position" value="${esc(u?.position)}"></div>
+        <div><label>권한</label><select name="role"><option value="member">직원</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>관리자</option></select></div>
+        <div><label>${u ? '비밀번호 초기화 (변경 시만 입력)' : '초기 비밀번호 (6자 이상)'}</label><input name="password" type="text" ${u ? '' : 'required minlength="6"'}></div>
+      </div>
+      <datalist id="deptList">${depts.map(d => `<option value="${esc(d)}">`).join('')}</datalist>
+      <div class="err"></div>
+      <div class="actions">
+        ${u ? `<button type="button" class="btn ${u.active ? 'danger' : ''}" id="uToggle">${u.active ? '비활성화(퇴사)' : '다시 활성화'}</button><span class="spacer"></span>` : ''}
+        <button type="button" class="btn" data-close>취소</button><button class="btn primary">저장</button>
+      </div>
+    </form>`, (bg, close) => {
+    const f = $('form', bg);
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const body = {name: f.name.value, dept: f.dept.value, position: f.position.value, role: f.role.value};
+      try {
+        if (u) {
+          if (f.password.value) body.password = f.password.value;
+          await api(`/api/users/${u.id}`, {method: 'PUT', body});
+        } else {
+          await api('/api/users', {method: 'POST', body: {...body, username: f.username.value, password: f.password.value}});
+        }
+        close(); toast('저장되었습니다.'); renderUsers();
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    const tg = $('#uToggle', bg);
+    if (tg) tg.onclick = async () => {
+      try {
+        await api(`/api/users/${u.id}`, {method: 'PUT', body: {active: !u.active}});
+        close(); toast('변경되었습니다.'); renderUsers();
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
+boot();
+</script>
+</body>
+</html>
