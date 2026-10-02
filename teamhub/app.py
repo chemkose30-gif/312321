@@ -2390,6 +2390,181 @@ def inventory_list(user: dict = Depends(current_user)):
     return {"lots": lots, "meta": meta, "can_cost": cost, "today": datetime.now().strftime("%Y-%m-%d")}
 
 
+# ---- 📈 판매 예상: 작년·올해 판매량으로 올해 남은 출고를 예상하고, 재고 + 입고예정과 비교해 부족한 품목 표시
+_CODE_RE = re.compile(r"\b(?:[a-z]{1,3})?\d{5,}\b", re.I)    # 끝에 붙는 제품코드: 937450, F13841, JC163890
+
+
+def _item_norm(name: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]", "", str(name or "").lower())
+
+
+def _item_tokens(name: str) -> frozenset:
+    s = _CODE_RE.sub(" ", str(name or "").lower())
+    return frozenset(t for t in re.split(r"[^0-9a-z가-힣]+", s) if t)
+
+
+class ItemMatcher:
+    """다른 곳(매입매출장·입고예정)의 품명 → 재고 엑셀 품목. 이름 그대로 → 코드 뺀 이름 → 단어 묶음 → 단어가 거의 같은 것
+    → 관리자가 직접 연결한 것 순서."""
+
+    def __init__(self, items, links: dict):
+        self.items = list(items)
+        self.links = links
+        self.by_norm, self.by_code, self.by_tok = {}, {}, {}
+        for it in self.items:
+            self.by_norm.setdefault(_item_norm(it), it)
+            self.by_code.setdefault(_item_norm(_CODE_RE.sub("", it)), it)
+            self.by_tok.setdefault(_item_tokens(it), it)
+        self.cache = {}
+
+    def __call__(self, name: str):
+        if name in self.cache:
+            return self.cache[name]
+        hit = self.links.get(name)
+        if hit is not None:
+            hit = hit if hit in self.items else None       # 연결 해제("")면 None
+        else:
+            hit = self.by_norm.get(_item_norm(name)) or self.by_code.get(_item_norm(_CODE_RE.sub("", name))) \
+                or self.by_tok.get(_item_tokens(name))
+            if not hit:
+                # 한쪽 단어가 다른 쪽에 다 들어 있으면 같은 품목으로 봄 (예: 'Heliotropine' ↔ 'Heliotropine(Piperonal)')
+                # 여러 개가 걸리면 가장 많이 겹치는 것, 그래도 애매하면 연결 안 함
+                toks = _item_tokens(name)
+                cands = []
+                for t, it in self.by_tok.items():
+                    if not t or not toks:
+                        continue
+                    small = t if len(t) <= len(toks) else toks
+                    j = len(t & toks) / len(t | toks)
+                    if (t <= toks or toks <= t) and sum(map(len, small)) >= 6:
+                        cands.append((j, it))
+                    elif j >= 0.75:
+                        cands.append((j, it))
+                cands.sort(reverse=True)
+                if cands and (len(cands) == 1 or cands[0][0] > cands[1][0]):
+                    hit = cands[0][1]
+        self.cache[name] = hit
+        return hit
+
+
+def item_links(c) -> dict:
+    try:
+        return json.loads(get_setting(c, "item_links", "{}")) or {}
+    except ValueError:
+        return {}
+
+
+@app.get("/api/inventory/forecast")
+def inventory_forecast(user: dict = Depends(current_user)):
+    today = date.today()
+    y, ly = today.year, today.year - 1
+    md = today.strftime("%m-%d")
+    frac = max((today - date(y, 1, 1)).days + 1, 1) / ((date(y, 12, 31) - date(y, 1, 1)).days + 1)
+    with db() as c:
+        lots = [dict(r) for r in c.execute("SELECT item, kind, location, stock_qty, expiry FROM inv_lots")]
+        items = sorted({l["item"] for l in lots})
+        match = ItemMatcher(items, item_links(c))
+        # 판매량 = 매입매출장(있는 연도) 과 재고 엑셀 출고 기록 중 큰 쪽 (재고 엑셀은 다 쓴 로트가 지워져 예전 연도가 적게 나옴)
+        src = {"ledger": {}, "inv": {}}
+        unmatched = {}
+        # 매입매출장은 재고에서 나간 줄(매입처에 '(재고)' 표시)만 — 나머지는 수입해서 바로 넘긴 건이라 재고와 무관
+        for r in c.execute("SELECT item, item_base, date, qty FROM ledger WHERE year IN (?, ?) AND supplier LIKE '%재고%'",
+                           (y, ly)):
+            it = match(r["item_base"])
+            if not it:
+                if match.links.get(r["item_base"]) == "":
+                    continue                     # '재고 품목 아님'으로 정한 품명
+                u = unmatched.setdefault(r["item_base"], {"name": r["item_base"], "qty": 0, "count": 0})
+                u["qty"] += r["qty"] or 0
+                u["count"] += 1
+                continue
+            _fc_add(src["ledger"], it, r["date"], r["qty"] or 0, y, md)
+        for r in c.execute("SELECT l.item, s.ship_date, s.qty FROM inv_ships s JOIN inv_lots l ON l.id = s.lot_id"
+                           " WHERE s.ship_date >= ?", (f"{ly}-01-01",)):
+            _fc_add(src["inv"], r["item"], r["ship_date"], r["qty"] or 0, y, md)
+        incoming = {}
+        for sh in c.execute("SELECT item, qty, unit, eta, status FROM shipments WHERE status != 'arrived'"):
+            it = match(sh["item"])
+            if it and (sh["unit"] or "kg").lower() in ("kg", "kgs", ""):
+                e = incoming.setdefault(it, {"qty": 0, "eta": ""})
+                e["qty"] += sh["qty"] or 0
+                e["eta"] = min(e["eta"] or sh["eta"], sh["eta"])
+        checked = json.loads(get_setting(c, f"forecast_checked:{y}", "{}") or "{}")
+    stock = {}
+    for l in lots:
+        if (l["stock_qty"] or 0) > 0.001 and not re.search(r"폐기|불용", f"{l['kind']} {l['location']}"):
+            stock[l["item"]] = stock.get(l["item"], 0) + l["stock_qty"]
+    rows = []
+    for it in items:
+        a, b = src["ledger"].get(it, {}), src["inv"].get(it, {})
+        pick = lambda k: max(a.get(k, 0), b.get(k, 0))
+        last, last_same, ytd = pick("last"), pick("last_same"), pick("ytd")
+        if not (last or ytd):
+            continue
+        if last and last_same:
+            growth = min(ytd / last_same, 2.0)        # 올해가 작년 같은 기간보다 빠르면 최대 2배까지
+            fc, basis = last * growth, f"작년 × 올해 증감 {growth:.0%}"
+        elif last:
+            fc, basis = last, "작년 판매량"
+        else:
+            fc, basis = (ytd / frac if frac >= 0.15 else ytd), "올해 추세"
+        fc = max(fc, ytd)
+        remain = max(fc - ytd, 0)
+        st, inc = stock.get(it, 0), incoming.get(it, {}).get("qty", 0)
+        short = remain - st - inc
+        level = "short" if short > 0.001 else "watch" if remain - st > 0.001 else "ok"
+        monthly = fc / 12
+        rows.append({"item": it, "last": last, "ytd": ytd, "forecast": fc, "remain": remain, "stock": st,
+                     "incoming": inc, "incoming_eta": incoming.get(it, {}).get("eta", ""), "short": max(short, 0),
+                     "cover_months": (st / monthly) if monthly else None, "level": level, "basis": basis,
+                     "checked": checked.get(it)})
+    order = {"short": 0, "watch": 1, "ok": 2}
+    rows.sort(key=lambda r: (order[r["level"]], -(r["short"] or 0), -(r["remain"] or 0)))
+    return {"year": y, "elapsed": frac, "rows": rows, "items": items,
+            "unmatched": sorted(unmatched.values(), key=lambda u: -u["qty"])[:40]}
+
+
+def _fc_add(bucket: dict, item: str, d: str, qty: float, y: int, md: str):
+    e = bucket.setdefault(item, {"last": 0, "last_same": 0, "ytd": 0})
+    if d[:4] == str(y):
+        e["ytd"] += qty
+    elif d[:4] == str(y - 1):
+        e["last"] += qty
+        if d[5:10] <= md:
+            e["last_same"] += qty
+
+
+@app.put("/api/inventory/forecast/check")
+def forecast_check(body: dict, user: dict = Depends(current_user)):
+    """품목 옆 '확인' 체크 (올해 기준으로 저장)."""
+    item = str(body.get("item", ""))
+    y = date.today().year
+    with db() as c:
+        checked = json.loads(get_setting(c, f"forecast_checked:{y}", "{}") or "{}")
+        if body.get("checked"):
+            checked[item] = {"by": user["name"], "at": now()[:16], "memo": str(body.get("memo", ""))[:100]}
+        else:
+            checked.pop(item, None)
+        set_setting(c, f"forecast_checked:{y}", json.dumps(checked, ensure_ascii=False))
+    return {"ok": True}
+
+
+@app.put("/api/inventory/item-links")
+def put_item_links(body: dict, _: dict = Depends(admin_user)):
+    """판매 품명 → 재고 품목 직접 연결 ({"name", "item"} — item 이 "" 이면 '재고 품목 아님')"""
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(400, "품명이 없습니다.")
+    with db() as c:
+        links = item_links(c)
+        if body.get("remove"):
+            links.pop(name, None)
+        else:
+            links[name] = str(body.get("item", ""))
+        set_setting(c, "item_links", json.dumps(links, ensure_ascii=False))
+    return {"ok": True}
+
+
 @app.get("/api/inventory/lot/{lid}")
 def inventory_lot(lid: int, user: dict = Depends(current_user)):
     with db() as c:

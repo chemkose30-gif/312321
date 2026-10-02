@@ -2048,8 +2048,64 @@ foreach ($job in $jobs) {
   });
 }
 
+
+// ---- 📈 판매 예상 (작년·올해 판매량 → 올해 남은 출고 예상 vs 재고 + 입고예정)
+async function renderForecast(iv) {
+  const d = await api('/api/inventory/forecast');
+  const admin = state.me.role === 'admin';
+  const f = iv.fcFilter || 'need';
+  const ql = (iv.q || '').toLowerCase();
+  const LV = {short: ['🔴 부족', 'p-urgent'], watch: ['🟡 입고 대기', 'p-high'], ok: ['🟢 충분', 's-done']};
+  const rows = d.rows.filter(r => (f === 'all' || (f === 'need' ? r.level !== 'ok' : f === 'checked' ? r.checked : true))
+    && (!ql || r.item.toLowerCase().includes(ql)));
+  const cnt = k => d.rows.filter(r => r.level === k).length;
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:4px"><h3 style="margin:0">📦 재고 · 📈 판매 예상</h3></div>
+    <div class="tabs"><button data-t="stock">재고 있음</button><button data-t="soon">소비기한 임박</button><button data-t="dead">불용·폐기</button><button data-t="all">전체 로트</button><button data-t="fc" class="active">📈 판매 예상</button></div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">올해(${d.year}) 남은 기간(약 ${Math.round((1 - d.elapsed) * 12)}개월)에 나갈 양을 작년·올해 판매량으로 예상해 <b>지금 재고 + 입고 예정</b>과 비교합니다.
+      판매량은 매입매출장(재고에서 나간 줄)과 재고 엑셀 출고 기록 중 큰 쪽을 씁니다.</div>
+    <div class="stats stats4">
+      <div class="stat" data-f="need"><span class="muted">🔴 부족 (발주 필요)</span><b style="color:#b91c1c">${cnt('short')}개</b></div>
+      <div class="stat" data-f="need"><span class="muted">🟡 입고예정으로 겨우 충당</span><b style="color:#b45309">${cnt('watch')}개</b></div>
+      <div class="stat" data-f="all"><span class="muted">🟢 충분</span><b>${cnt('ok')}개</b></div>
+      <div class="stat" data-f="checked"><span class="muted">✔ 확인 표시한 품목</span><b>${d.rows.filter(r => r.checked).length}개</b></div>
+    </div>
+    <div class="row" style="margin-bottom:8px"><select id="fcF" style="width:auto"><option value="need">부족·입고대기만</option><option value="all">전체</option><option value="checked">확인 표시한 것</option></select>
+      <input id="fcQ" placeholder="품목 검색" value="${esc(iv.q || '')}" style="max-width:220px"><span class="muted">${rows.length}개 · 단위 kg</span></div>
+    <div class="qscroll" style="max-height:600px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>상태</th><th class="num">작년 판매</th><th class="num">올해 누계</th><th class="num">올해 예상</th><th class="num">남은 예상 출고</th><th class="num">현재 재고</th><th class="num">입고 예정</th><th class="num">부족량</th><th class="num">재고 몇 달치</th><th>확인</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td title="${esc(r.basis)}">${esc(r.item)}</td><td><span class="tag ${LV[r.level][1]}">${LV[r.level][0]}</span></td>
+        <td class="num">${kg(r.last)}</td><td class="num">${kg(r.ytd)}</td><td class="num" title="${esc(r.basis)}">${kg(r.forecast)}</td><td class="num"><b>${kg(r.remain)}</b></td>
+        <td class="num">${kg(r.stock)}</td><td class="num">${r.incoming ? kg(r.incoming) + (r.incoming_eta ? `<br><small class="muted">${esc(r.incoming_eta.slice(5))}</small>` : '') : '-'}</td>
+        <td class="num ${r.short ? 'down' : ''}">${r.short ? kg(r.short) : '-'}</td><td class="num">${r.cover_months == null ? '-' : r.cover_months.toFixed(1)}</td>
+        <td><label style="display:flex;gap:4px;align-items:center;margin:0;white-space:nowrap" title="${r.checked ? esc(r.checked.by + ' ' + r.checked.at + (r.checked.memo ? ' · ' + r.checked.memo : '')) : '발주했거나 확인했으면 체크'}"><input type="checkbox" data-chk="${esc(r.item)}" ${r.checked ? 'checked' : ''} style="width:auto">${r.checked ? `<small class="muted">${esc(r.checked.by)}</small>` : ''}</label></td></tr>`).join('') || '<tr><td colspan="11" class="empty">해당하는 품목이 없습니다.</td></tr>'}
+    </tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:8px;line-height:1.7">· 올해 예상 = 작년 판매량 × (올해 누계 ÷ 작년 같은 기간), 작년 자료가 없으면 올해 추세로 연간 환산. 품목에 마우스를 올리면 계산 근거가 보입니다.
+      <br>· 입고 예정 = 🚢 입고예정(입고완료 전) 중 같은 품목. 불용·폐기 로트는 재고에서 뺍니다. 작년 매입매출장을 올리면 더 정확해집니다.</div>
+    ${admin && d.unmatched.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-size:13px"><b>🔗 재고 품목과 이름이 안 맞는 판매 품명 ${d.unmatched.length}개</b> <small class="muted">(재고에서 나갔는데 이름이 달라 계산에서 빠진 것 — 연결하면 반영됩니다)</small></summary>
+      <table class="an-table" style="margin-top:6px"><thead><tr><th>매입매출장 품명</th><th class="num">올해·작년 수량</th><th>재고 품목 연결</th></tr></thead><tbody>
+      ${d.unmatched.map(u => `<tr><td>${esc(u.name)}</td><td class="num">${kg(u.qty)}</td><td><select data-link="${esc(u.name)}" style="width:auto;max-width:320px"><option value="">— 고르기 —</option><option value="__none__">재고 품목 아님 (목록에서 숨김)</option>${d.items.map(it => `<option value="${esc(it)}">${esc(it)}</option>`).join('')}</select></td></tr>`).join('')}
+      </tbody></table></details>` : ''}
+  </div>`;
+  $$('.tabs button').forEach(b => b.onclick = () => { iv.tab = b.dataset.t; renderInventory(); });
+  $$('[data-f]').forEach(b => b.onclick = () => { iv.fcFilter = b.dataset.f; renderInventory(); });
+  $('#fcF').value = f; $('#fcF').onchange = e => { iv.fcFilter = e.target.value; renderInventory(); };
+  let timer;
+  $('#fcQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { iv.q = e.target.value; renderInventory().then(() => { const i = $('#fcQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
+  $$('[data-chk]').forEach(cb => cb.onchange = async () => {
+    const memo = cb.checked ? (prompt('메모 (선택: 예 "10/5 200kg 발주")', '') || '') : '';
+    await api('/api/inventory/forecast/check', {method: 'PUT', body: {item: cb.dataset.chk, checked: cb.checked, memo}});
+    renderInventory();
+  });
+  $$('[data-link]').forEach(sel => sel.onchange = async () => {
+    if (!sel.value) return;
+    await api('/api/inventory/item-links', {method: 'PUT', body: {name: sel.dataset.link, item: sel.value === '__none__' ? '' : sel.value}});
+    toast('연결했습니다.'); renderInventory();
+  });
+}
+
 async function renderInventory() {
   const iv = state.inv ||= {tab: 'stock', q: ''};
+  if (iv.tab === 'fc') return renderForecast(iv);
   const d = await api('/api/inventory');
   const today = d.today, soon = l => l.expiry && /^\d{4}/.test(l.expiry) && (new Date(l.expiry) - new Date(today)) / 864e5 <= 180;
   const admin = state.me.role === 'admin';
@@ -2084,7 +2140,7 @@ async function renderInventory() {
       ${d.can_cost ? `<div class="stat" style="cursor:default"><span class="muted">재고금액 (원가)</span><b>${krw(sum(live.map(l => l.stock_amt || 0)))}원</b></div>` : ''}
       <div class="stat" data-goto="soon"><span class="muted">소비기한 6개월 이내</span><b style="color:#b45309">${cnt.soon}개</b></div>
     </div>
-    <div class="tabs"><button data-t="stock">재고 있음 (${cnt.stock})</button><button data-t="soon">소비기한 임박 (${cnt.soon})</button><button data-t="dead">불용·폐기 (${cnt.dead})</button><button data-t="all">전체 로트 (${cnt.all})</button></div>
+    <div class="tabs"><button data-t="stock">재고 있음 (${cnt.stock})</button><button data-t="soon">소비기한 임박 (${cnt.soon})</button><button data-t="dead">불용·폐기 (${cnt.dead})</button><button data-t="all">전체 로트 (${cnt.all})</button><button data-t="fc">📈 판매 예상</button></div>
     <div class="row" style="margin-bottom:10px"><input id="invQ" placeholder="품목 / CAS / 재고번호 / Origin / 위치" value="${esc(iv.q)}" style="max-width:300px"><span class="muted">${rows.length}품목</span></div>
     ${rows.length ? `<div class="mlist">${rows.map(r => `<div class="mrow" data-item="${esc(r.item)}">
         <div class="l1"><b>${esc(r.item)}</b><span class="amt">${kg(r.qty)} kg</span></div>
