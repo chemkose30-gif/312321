@@ -2123,7 +2123,7 @@ async function renderForecast(iv) {
   const f = iv.fcFilter || 'need';
   const ql = (iv.q || '').toLowerCase();
   const LV = {short: ['🔴 부족', 'p-urgent'], watch: ['🟡 입고 대기', 'p-high'], ok: ['🟢 충분', 's-done']};
-  const rows = d.rows.filter(r => (f === 'all' || (f === 'need' ? r.level !== 'ok' : f === 'checked' ? r.checked : true))
+  const rows = d.rows.filter(r => (f === 'all' || (f === 'need' ? r.level !== 'ok' : f === 'checked' ? r.checked : f === 'inc' ? r.incoming_list.length : true))
     && (!ql || r.item.toLowerCase().includes(ql)));
   const cnt = k => d.rows.filter(r => r.level === k).length;
   $('#main').innerHTML = `<div class="card">
@@ -2135,19 +2135,21 @@ async function renderForecast(iv) {
       <div class="stat" data-f="need"><span class="muted">🔴 부족 (발주 필요)</span><b style="color:#b91c1c">${cnt('short')}개</b></div>
       <div class="stat" data-f="need"><span class="muted">🟡 입고예정으로 겨우 충당</span><b style="color:#b45309">${cnt('watch')}개</b></div>
       <div class="stat" data-f="all"><span class="muted">🟢 충분</span><b>${cnt('ok')}개</b></div>
-      <div class="stat" data-f="checked"><span class="muted">✔ 확인 표시한 품목</span><b>${d.rows.filter(r => r.checked).length}개</b></div>
+      <div class="stat" data-f="inc"><span class="muted">🚢 수입 중 (입고예정·인바운딩)</span><b>${d.rows.filter(r => r.incoming_list.length).length}개</b></div>
     </div>
-    <div class="row" style="margin-bottom:8px"><select id="fcF" style="width:auto"><option value="need">부족·입고대기만</option><option value="all">전체</option><option value="checked">확인 표시한 것</option></select>
+    <div class="row" style="margin-bottom:8px"><select id="fcF" style="width:auto"><option value="need">부족·입고대기만</option><option value="all">전체</option><option value="inc">수입 중인 것</option><option value="checked">확인 표시한 것</option></select>
       <input id="fcQ" placeholder="품목 검색" value="${esc(iv.q || '')}" style="max-width:220px"><span class="muted">${rows.length}개 · 단위 kg</span></div>
     <div class="qscroll" style="max-height:600px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>상태</th><th class="num">작년 판매</th><th class="num">올해 누계</th><th class="num">올해 예상</th><th class="num">남은 예상 출고</th><th class="num">현재 재고</th><th class="num">입고 예정</th><th class="num">부족량</th><th class="num">재고 몇 달치</th><th>확인</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td title="${esc(r.basis)}">${esc(r.item)}</td><td><span class="tag ${LV[r.level][1]}">${LV[r.level][0]}</span></td>
+      ${rows.map((r, i) => `<tr><td title="${esc(r.basis)}">${esc(r.item)}${r.new ? ' <span class="tag s-todo" title="재고 엑셀에 없는 품목 (수입 중)">신규</span>' : ''}</td><td><span class="tag ${LV[r.level][1]}">${LV[r.level][0]}</span></td>
         <td class="num">${kg(r.last)}</td><td class="num">${kg(r.ytd)}</td><td class="num" title="${esc(r.basis)}">${kg(r.forecast)}</td><td class="num"><b>${kg(r.remain)}</b></td>
-        <td class="num">${kg(r.stock)}</td><td class="num">${r.incoming ? kg(r.incoming) + (r.incoming_eta ? `<br><small class="muted">${esc(r.incoming_eta.slice(5))}</small>` : '') : '-'}</td>
+        <td class="num">${kg(r.stock)}</td><td class="num">${r.incoming_list.length ? `<a href="#" data-inc="${i}">${r.incoming ? kg(r.incoming) : '?'}</a><br><small class="muted">${r.incoming_eta ? esc(r.incoming_eta.slice(5)) + ' · ' : ''}${r.incoming_list.length}건</small>` : '-'}</td>
         <td class="num ${r.short ? 'down' : ''}">${r.short ? kg(r.short) : '-'}</td><td class="num">${r.cover_months == null ? '-' : r.cover_months.toFixed(1)}</td>
-        <td><label style="display:flex;gap:4px;align-items:center;margin:0;white-space:nowrap" title="${r.checked ? esc(r.checked.by + ' ' + r.checked.at + (r.checked.memo ? ' · ' + r.checked.memo : '')) : '발주했거나 확인했으면 체크'}"><input type="checkbox" data-chk="${esc(r.item)}" ${r.checked ? 'checked' : ''} style="width:auto">${r.checked ? `<small class="muted">${esc(r.checked.by)}</small>` : ''}</label></td></tr>`).join('') || '<tr><td colspan="11" class="empty">해당하는 품목이 없습니다.</td></tr>'}
+        <td><label style="display:flex;gap:4px;align-items:center;margin:0;white-space:nowrap" title="${r.checked ? esc(r.checked.by + ' ' + r.checked.at + (r.checked.memo ? ' · ' + r.checked.memo : '')) : '발주했거나 확인했으면 체크'}"><input type="checkbox" data-chk="${esc(r.item)}" ${r.checked ? 'checked' : ''} style="width:auto">${r.checked ? `<small class="muted">${esc(r.checked.by)}</small>` : ''}</label></td></tr>
+        ${r.incoming_list.length ? `<tr class="hidden" data-incl="${i}"><td colspan="11" style="background:var(--bg);padding:6px 10px"><table class="an-table" style="margin:0"><thead><tr><th>입고예정 품명</th><th>단계</th><th>예정일</th><th class="num">수량</th><th>공급사</th><th>거래처</th></tr></thead><tbody>
+          ${r.incoming_list.map(x => `<tr data-ship="${x.id}" style="cursor:pointer"><td>${esc(x.name)}</td><td>${esc(x.stage)}</td><td>${esc(x.eta)}</td><td class="num">${fmtQty(x.qty)} ${esc(x.unit)}</td><td>${esc(x.supplier)}</td><td>${esc(x.client)}</td></tr>`).join('')}</tbody></table></td></tr>` : ''}`).join('') || '<tr><td colspan="11" class="empty">해당하는 품목이 없습니다.</td></tr>'}
     </tbody></table></div>
     <div class="muted" style="font-size:12px;margin-top:8px;line-height:1.7">· 올해 예상 = 작년 판매량 × (올해 누계 ÷ 작년 같은 기간), 작년 자료가 없으면 올해 추세로 연간 환산. 품목에 마우스를 올리면 계산 근거가 보입니다.
-      <br>· 입고 예정 = 🚢 입고예정(입고완료 전) 중 같은 품목. 불용·폐기 로트는 재고에서 뺍니다. 작년 매입매출장을 올리면 더 정확해집니다.</div>
+      <br>· 입고 예정 = 🚢 입고예정(인바운딩 파일 포함, 입고완료 전) 중 같은 품목. 수량을 누르면 건별 내역이 보입니다. 재고 엑셀에 없는 품목은 '신규'로 따로 줄을 만듭니다. 통관 후 재고 엑셀에 이미 들어간 건은 빼고 셉니다. 불용·폐기 로트는 재고에서 뺍니다. 작년 매입매출장을 올리면 더 정확해집니다.</div>
     ${admin && d.unmatched.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-size:13px"><b>🔗 재고 품목과 이름이 안 맞는 판매 품명 ${d.unmatched.length}개</b> <small class="muted">(재고에서 나갔는데 이름이 달라 계산에서 빠진 것 — 연결하면 반영됩니다)</small></summary>
       <table class="an-table" style="margin-top:6px"><thead><tr><th>매입매출장 품명</th><th class="num">올해·작년 수량</th><th>재고 품목 연결</th></tr></thead><tbody>
       ${d.unmatched.map(u => `<tr><td>${esc(u.name)}</td><td class="num">${kg(u.qty)}</td><td><select data-link="${esc(u.name)}" style="width:auto;max-width:320px"><option value="">— 고르기 —</option><option value="__none__">재고 품목 아님 (목록에서 숨김)</option>${d.items.map(it => `<option value="${esc(it)}">${esc(it)}</option>`).join('')}</select></td></tr>`).join('')}
@@ -2155,6 +2157,8 @@ async function renderForecast(iv) {
   </div>`;
   $$('.tabs button').forEach(b => b.onclick = () => { iv.tab = b.dataset.t; renderInventory(); });
   $$('[data-f]').forEach(b => b.onclick = () => { iv.fcFilter = b.dataset.f; renderInventory(); });
+  $$('[data-inc]').forEach(a => a.onclick = e => { e.preventDefault(); $(`tr[data-incl="${a.dataset.inc}"]`).classList.toggle('hidden'); });
+  $$('[data-incl] [data-ship]').forEach(tr => tr.onclick = () => openShipment(+tr.dataset.ship));
   $('#fcF').value = f; $('#fcF').onchange = e => { iv.fcFilter = e.target.value; renderInventory(); };
   let timer;
   $('#fcQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { iv.q = e.target.value; renderInventory().then(() => { const i = $('#fcQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };

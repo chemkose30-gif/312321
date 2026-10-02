@@ -2524,9 +2524,23 @@ def inventory_forecast(user: dict = Depends(current_user)):
     md = today.strftime("%m-%d")
     frac = max((today - date(y, 1, 1)).days + 1, 1) / ((date(y, 12, 31) - date(y, 1, 1)).days + 1)
     with db() as c:
-        lots = [dict(r) for r in c.execute("SELECT item, kind, location, stock_qty, expiry FROM inv_lots")]
-        items = sorted({l["item"] for l in lots})
-        match = ItemMatcher(items, item_links(c))
+        lots = [dict(r) for r in c.execute("SELECT item, kind, location, stock_qty, expiry, customs_date FROM inv_lots")]
+        inv_items = sorted({l["item"] for l in lots})
+        links = item_links(c)
+        match = ItemMatcher(inv_items, links)
+        # 수입 중(입고예정·인바운딩)인 것 — 재고 엑셀에 없는 품목도 새 줄로 넣는다
+        ships = [dict(r) for r in c.execute(
+            "SELECT id, item, qty, unit, eta, status, supplier, customer, cs_in_at, cs_arrived, cs_cleared_at"
+            " FROM shipments WHERE status != 'arrived' ORDER BY eta")]
+        new_names = {}
+        for sh in ships:
+            if not match(sh["item"]):
+                base = item_base(clean_prnm(sh["item"]))
+                k = _item_norm(_CODE_RE.sub("", base)) or _item_norm(base)
+                if k:
+                    new_names.setdefault(k, base)
+        items = sorted(set(inv_items) | set(new_names.values()))
+        match = ItemMatcher(items, links)
         # 판매량 = 매입매출장(있는 연도) 과 재고 엑셀 출고 기록 중 큰 쪽 (재고 엑셀은 다 쓴 로트가 지워져 예전 연도가 적게 나옴)
         src = {"ledger": {}, "inv": {}}
         unmatched = {}
@@ -2545,24 +2559,42 @@ def inventory_forecast(user: dict = Depends(current_user)):
         for r in c.execute("SELECT l.item, s.ship_date, s.qty FROM inv_ships s JOIN inv_lots l ON l.id = s.lot_id"
                            " WHERE s.ship_date >= ?", (f"{ly}-01-01",)):
             _fc_add(src["inv"], r["item"], r["ship_date"], r["qty"] or 0, y, md)
+        # 통관이 끝나 재고 엑셀에 이미 들어간 건(같은 품목 로트의 통관일이 그 이후)은 두 번 세지 않음
+        lot_customs = {}
+        for l in lots:
+            d0 = str(l.get("customs_date") or "")[:10]
+            lot_customs[l["item"]] = max(lot_customs.get(l["item"], ""), d0)
         incoming = {}
-        for sh in c.execute("SELECT item, qty, unit, eta, status FROM shipments WHERE status != 'arrived'"):
+        for sh in ships:
             it = match(sh["item"])
-            if it and (sh["unit"] or "kg").lower() in ("kg", "kgs", ""):
-                e = incoming.setdefault(it, {"qty": 0, "eta": ""})
-                e["qty"] += sh["qty"] or 0
-                e["eta"] = min(e["eta"] or sh["eta"], sh["eta"])
+            if not it:
+                continue
+            cl = (sh["cs_cleared_at"] or "")[:10]
+            if cl and lot_customs.get(it, "") >= cl:
+                continue
+            q = _kg_qty(sh["qty"] or 0, sh["unit"])
+            e = incoming.setdefault(it, {"qty": 0, "eta": "", "list": []})
+            if q is not None:
+                e["qty"] += q
+                e["eta"] = min(e["eta"] or sh["eta"], sh["eta"]) if sh["eta"] else e["eta"]
+            stage = ("통관" if cl else "반입" if sh["cs_in_at"] else "입항" if sh["cs_arrived"] or sh["status"] == "customs"
+                     else "선적" if sh["status"] == "shipped" else "발주")
+            e["list"].append({"id": sh["id"], "name": sh["item"], "qty": sh["qty"] or 0, "unit": sh["unit"] or "kg",
+                              "eta": sh["eta"] or "", "stage": stage, "supplier": sh["supplier"] or "",
+                              "client": sh["customer"] or ""})
         checked = json.loads(get_setting(c, f"forecast_checked:{y}", "{}") or "{}")
     stock = {}
     for l in lots:
         if (l["stock_qty"] or 0) > 0.001 and not re.search(r"폐기|불용", f"{l['kind']} {l['location']}"):
             stock[l["item"]] = stock.get(l["item"], 0) + l["stock_qty"]
     rows = []
+    inv_set = set(inv_items)
     for it in items:
         a, b = src["ledger"].get(it, {}), src["inv"].get(it, {})
         pick = lambda k: max(a.get(k, 0), b.get(k, 0))
         last, last_same, ytd = pick("last"), pick("last_same"), pick("ytd")
-        if not (last or ytd):
+        inc_e = incoming.get(it, {})
+        if not (last or ytd or inc_e.get("list")):
             continue
         if last and last_same:
             growth = min(ytd / last_same, 2.0)        # 올해가 작년 같은 기간보다 빠르면 최대 2배까지
@@ -2573,18 +2605,31 @@ def inventory_forecast(user: dict = Depends(current_user)):
             fc, basis = (ytd / frac if frac >= 0.15 else ytd), "올해 추세"
         fc = max(fc, ytd)
         remain = max(fc - ytd, 0)
-        st, inc = stock.get(it, 0), incoming.get(it, {}).get("qty", 0)
+        st, inc = stock.get(it, 0), inc_e.get("qty", 0)
         short = remain - st - inc
         level = "short" if short > 0.001 else "watch" if remain - st > 0.001 else "ok"
         monthly = fc / 12
         rows.append({"item": it, "last": last, "ytd": ytd, "forecast": fc, "remain": remain, "stock": st,
-                     "incoming": inc, "incoming_eta": incoming.get(it, {}).get("eta", ""), "short": max(short, 0),
+                     "incoming": inc, "incoming_eta": inc_e.get("eta", ""), "incoming_list": inc_e.get("list", []),
+                     "new": it not in inv_set, "short": max(short, 0),
                      "cover_months": (st / monthly) if monthly else None, "level": level, "basis": basis,
                      "checked": checked.get(it)})
     order = {"short": 0, "watch": 1, "ok": 2}
     rows.sort(key=lambda r: (order[r["level"]], -(r["short"] or 0), -(r["remain"] or 0)))
-    return {"year": y, "elapsed": frac, "rows": rows, "items": items,
+    return {"year": y, "elapsed": frac, "rows": rows, "items": inv_items,
             "unmatched": sorted(unmatched.values(), key=lambda u: -u["qty"])[:40]}
+
+
+def _kg_qty(qty: float, unit: str):
+    """입고예정 수량 → kg (모르는 단위면 None)"""
+    u = re.sub(r"[^a-z]", "", str(unit or "").lower())
+    if u in ("", "kg", "kgs", "kilo", "kilos", "kilogram", "kilograms", "l", "lt", "ltr"):
+        return qty
+    if u in ("g", "gr", "gram", "grams"):
+        return qty / 1000
+    if u in ("mt", "t", "ton", "tons", "tonne"):
+        return qty * 1000
+    return None
 
 
 def _fc_add(bucket: dict, item: str, d: str, qty: float, y: int, md: str):
