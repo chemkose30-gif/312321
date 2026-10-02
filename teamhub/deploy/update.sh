@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# 새 버전 반영:  cd TeamHub소스/teamhub && git pull && sudo bash deploy/update.sh
+# 새 버전 반영:  cd /root/312321 && git pull && bash teamhub/deploy/update.sh
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-sqlite3 /var/lib/teamhub/teamhub.db ".backup /var/backups/teamhub/teamhub-before-update-$(date +%F-%H%M).db"
+
+echo "==> [1/4] DB 백업"
+if ! timeout 60 sqlite3 /var/lib/teamhub/teamhub.db ".timeout 10000" \
+     ".backup /var/backups/teamhub/teamhub-before-update-$(date +%F-%H%M).db"; then
+  echo "    ⚠ 백업 실패 (계속 진행합니다. 매일 자동 백업은 /var/backups/teamhub 에 있습니다)"
+fi
+
+echo "==> [2/4] 프로그램 복사"
 cp -r "$SRC"/*.py "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
-/opt/teamhub/venv/bin/pip install -q -r /opt/teamhub/requirements.txt
+cp "$SRC/deploy/teamhub.service" /etc/systemd/system/teamhub.service
+systemctl daemon-reload
+
+echo "==> [3/4] 필요한 패키지 확인 (처음엔 1~2분 걸릴 수 있어요)"
+timeout 300 /opt/teamhub/venv/bin/pip install -q --disable-pip-version-check -r /opt/teamhub/requirements.txt
 chown -R teamhub:teamhub /opt/teamhub
-systemctl restart teamhub
-echo "✅ 업데이트 완료 (업데이트 전 DB 는 /var/backups/teamhub 에 백업됨)"
+
+echo "==> [4/4] 서버 재시작"
+timeout 60 systemctl restart teamhub || true
+sleep 2
+if systemctl is-active --quiet teamhub; then
+  echo "✅ 업데이트 완료 (업데이트 전 DB 는 /var/backups/teamhub 에 백업됨)"
+else
+  echo "❌ 서버가 시작되지 않았습니다. 아래 로그를 캡처해서 보내주세요."
+  journalctl -u teamhub -n 30 --no-pager
+  exit 1
+fi
