@@ -3182,12 +3182,14 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
     """원본 메일을 읽어 저장. 전달한 사람(직원 메일 주소)으로 주인을 정한다. 같은 메일은 한 번만."""
     items = mailin.parse_raw(raw)
     emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
+    collect = (mailer.MAIL_FROM or "").lower()
     added, dup, skipped, touched = 0, 0, 0, {}
     for it in items:
         if it["bulk"]:
             skipped += 1
             continue                     # 광고·뉴스레터·자동 발송 메일은 저장하지 않음
-        oid = owner_id or next((emails[a] for a in it["owners"] if a in emails), None)
+        # 모으는 주소(info@ = 발송 메일함)는 주인 판단에서 뺀다 (관리자 메일로 등록돼 있어도 모든 메일이 관리자 것이 되지 않게)
+        oid = owner_id or next((emails[a] for a in it["owners"] if a in emails and a != collect), None)
         uniq = it["msg_id"] or hashlib.sha1(f"{it['from_addr']}|{it['subject']}|{it['sent_at']}".encode()).hexdigest()
         if c.execute("SELECT 1 FROM mail_items WHERE owner_id IS ? AND (fp = ? OR (msg_ref != '' AND msg_ref = ?))",
                      (oid, it["fp"], it["msg_id"])).fetchone():

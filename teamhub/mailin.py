@@ -72,9 +72,9 @@ def _sent_at(msg) -> datetime:
 # 메일 주인(전달한 직원) 찾는 순서
 #  - '전달'·'첨부로 전달'한 메일: 보낸 사람(From)이 직원
 #  - 자동 전체 전달(원래 메일이 그대로 넘어옴): 받는 사람(To/Cc)·전달 표시 머리글 쪽이 직원
-FWD_ORDER = ("from", "resent-from", "x-forwarded-for", "x-forwarded-to", "delivered-to", "x-original-to", "to", "cc")
-REDIRECT_ORDER = ("resent-from", "x-forwarded-for", "x-forwarded-to", "delivered-to", "x-original-to", "to", "cc",
-                  "from", "return-path")
+#  (Delivered-To / X-Original-To 는 모으는 주소(info@)라서 쓰지 않는다)
+FWD_ORDER = ("from", "resent-from", "x-forwarded-for", "to", "cc")
+REDIRECT_ORDER = ("resent-from", "x-forwarded-for", "to", "cc", "from", "return-path")
 
 
 def header_addrs(msg, order=FWD_ORDER) -> list:
