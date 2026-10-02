@@ -2804,6 +2804,9 @@ def watch_bl_numbers(c, mail_id: int, owner_id, it: dict, bulk: bool):
     nums = mailin.find_bl_numbers(text)
     if not nums:
         return
+    # 예전 메일을 한꺼번에 가져올 때는 최근 두 달 메일의 번호만 UNI-PASS 로 찾는다 (오래된 화물은 이미 끝났으므로)
+    if bulk and it["sent_at"][:10] < (date.today() - timedelta(days=60)).isoformat():
+        return
     eta = next((cd["date"] for cd in it["candidates"] if cd["kind"] == "ship" and not
                 re.match(r"(etd|선적|출항)", (cd.get("label") or "").lower())), "")
     for num, kind in nums:
@@ -3298,7 +3301,7 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
     from email.parser import BytesHeaderParser
     from email.utils import parsedate_to_datetime
     workdir = path.parent
-    since = datetime.now() - timedelta(days=31 * months)
+    since = datetime.now() - timedelta(days=31 * months) if months else datetime.min
     total = added = dup = old = 0
     heads, batch = set(), []
 
@@ -3369,7 +3372,7 @@ async def mailin_import(file: UploadFile = File(...), months: int = 3, password:
     path = workdir / name
     with open(path, "wb") as out:
         shutil.copyfileobj(file.file, out, 1024 * 1024)
-    months = max(1, min(int(months or 3), 24))
+    months = max(0, min(int(months), 240))      # 0 = 전체 기간
     _set_import(user["id"], status="running", file=name, size=path.stat().st_size, months=months, read=0, added=0,
                 duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="")
     # 비밀번호는 저장하지 않고 이번 가져오기에만 쓴다
