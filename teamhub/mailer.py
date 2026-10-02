@@ -23,6 +23,8 @@ SMTP_HOST = os.getenv("TEAMHUB_SMTP_HOST", "smtp.office365.com")
 SMTP_PORT = int(os.getenv("TEAMHUB_SMTP_PORT", "587"))
 SMTP_USER = os.getenv("TEAMHUB_SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("TEAMHUB_SMTP_PASSWORD", "")
+# 로그인 없는 SMTP (예: Google Workspace SMTP 릴레이 smtp-relay.gmail.com — 관리 콘솔에서 서버 IP 허용)
+SMTP_NOAUTH = os.getenv("TEAMHUB_SMTP_AUTH", "1").strip().lower() in ("0", "no", "false", "off")
 MAIL_FROM = os.getenv("TEAMHUB_MAIL_FROM", SMTP_USER)  # Graph 사용 시 발송 메일함 주소 (필수)
 BASE_URL = os.getenv("TEAMHUB_BASE_URL", "http://localhost:8100").rstrip("/")
 REMINDER_HOUR = int(os.getenv("TEAMHUB_REMINDER_HOUR", "9"))
@@ -34,7 +36,7 @@ STATUS_LABEL = {"todo": "대기", "doing": "진행중", "done": "완료", "hold"
 def method() -> str:
     if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET and MAIL_FROM:
         return "graph"
-    if SMTP_USER and SMTP_PASSWORD:
+    if (SMTP_USER and SMTP_PASSWORD) or (SMTP_NOAUTH and MAIL_FROM and os.getenv("TEAMHUB_SMTP_HOST")):
         return "smtp"
     return ""
 
@@ -45,7 +47,8 @@ def enabled() -> bool:
 
 def status_info() -> dict:
     m = method()
-    via = {"graph": "Microsoft 365 Graph API", "smtp": f"SMTP {SMTP_HOST}:{SMTP_PORT}"}.get(m, "")
+    via = {"graph": "Microsoft 365 Graph API",
+           "smtp": f"SMTP {SMTP_HOST}:{SMTP_PORT}{' (IP 허용 릴레이)' if SMTP_NOAUTH else ''}"}.get(m, "")
     return {"enabled": bool(m), "method": m, "via": via, "from": MAIL_FROM,
             "base_url": BASE_URL, "reminder_hour": REMINDER_HOUR}
 
@@ -118,9 +121,12 @@ def _send_smtp(to: str, subject: str, body_html: str):
     msg["Subject"] = subject
     msg.set_content("HTML 메일을 지원하는 메일 프로그램(Outlook 등)에서 확인하세요.\n" + BASE_URL)
     msg.add_alternative(body_html, subtype="html")
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+    # 릴레이 서버가 인사(EHLO) 이름을 확인하므로 접속 주소의 도메인을 쓴다 (예: teamhub.erc-chem.com)
+    helo = urllib.parse.urlparse(BASE_URL).hostname or None
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20, local_hostname=helo) as s:
         s.starttls()
-        s.login(SMTP_USER, SMTP_PASSWORD)
+        if not SMTP_NOAUTH:
+            s.login(SMTP_USER, SMTP_PASSWORD)
         s.send_message(msg)
 
 

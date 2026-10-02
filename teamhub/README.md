@@ -167,6 +167,7 @@ python app.py
 | `TEAMHUB_REMINDER_HOUR` | `9` | 리마인더 발송 시각(0~23시) |
 | `TEAMHUB_SMTP_USER` / `TEAMHUB_SMTP_PASSWORD` | (없음) | (대안) Graph 대신 SMTP로 발송할 때. Google Workspace·네이버웍스 등 |
 | `TEAMHUB_SMTP_HOST` / `TEAMHUB_SMTP_PORT` | `smtp.office365.com` / `587` | SMTP 서버 (STARTTLS) |
+| `TEAMHUB_SMTP_AUTH` | `1` | `0` 이면 로그인 없이 발송 — Google Workspace **SMTP 릴레이**(`smtp-relay.gmail.com`, 관리 콘솔에서 서버 IP 허용)용. `TEAMHUB_SMTP_HOST`·`TEAMHUB_MAIL_FROM` 필요 |
 
 ## 구성
 - `app.py` — FastAPI 백엔드 + SQLite DB (별도 DB 서버 설치 불필요)
