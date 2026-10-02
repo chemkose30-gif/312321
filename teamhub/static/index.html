@@ -2000,10 +2000,14 @@ foreach ($job in $jobs) {
   if (-not $job.Dir) { continue }
   if (-not (Test-Path -LiteralPath $job.Dir)) { Say "[$($job.Name)] 폴더를 찾을 수 없습니다: $($job.Dir)  (이 PC에 나스 드라이브가 연결되어 있는지 확인)"; continue }
   # 하위 폴더(예: 월별 폴더)까지 찾음
+  if (Test-Path -LiteralPath $job.Dir -PathType Leaf) {   # 폴더 대신 파일 경로를 직접 넣은 경우 그 파일만
+    $files = @(Get-Item -LiteralPath $job.Dir)
+  } else {
   $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth $job.Depth -ErrorAction SilentlyContinue |
            Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like } |
            Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
            Select-Object -First 5
+  }
   if (-not $files) { Say "[$($job.Name)] 엑셀 파일을 찾지 못했습니다: $($job.Dir)"; continue }
   $done = $false
   foreach ($f in $files) {   # 맞는 시트가 없는 파일이면 다음 파일로
@@ -2036,7 +2040,7 @@ foreach ($job in $jobs) {
       <b>② 올릴 폴더 (나스)</b>
       <label style="margin-top:6px">📦 재고리스트 폴더</label><input id="invDir" value="${esc(s.inv_dir || '')}">
       <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
-      <label>📋 인바운딩(수입 예정) 폴더 <small class="muted">— 이름에 'Inbound' 가 들어간 엑셀, 하위 폴더는 안 봄</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
+      <label>📋 인바운딩(수입 예정) 파일이 있는 곳 <small class="muted">— 공유문서 폴더(이름에 'Inbound' 가 들어간 엑셀을 찾음) 또는 파일 경로 그대로</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
     <div class="ec-box">
