@@ -133,6 +133,43 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS quotes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quote_no TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                customer_name TEXT NOT NULL,
+                customer_contact TEXT NOT NULL DEFAULT '',
+                customer_phone TEXT NOT NULL DEFAULT '',
+                customer_email TEXT NOT NULL DEFAULT '',
+                quote_date TEXT NOT NULL,
+                valid_until TEXT NOT NULL DEFAULT '',
+                delivery TEXT NOT NULL DEFAULT '',
+                payment_terms TEXT NOT NULL DEFAULT '',
+                vat_mode TEXT NOT NULL DEFAULT 'separate',
+                note TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                supply_total INTEGER NOT NULL DEFAULT 0,
+                vat_total INTEGER NOT NULL DEFAULT 0,
+                grand_total INTEGER NOT NULL DEFAULT 0,
+                task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS quote_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quote_id INTEGER NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,
+                seq INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                spec TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '',
+                qty REAL NOT NULL DEFAULT 0,
+                unit_price REAL NOT NULL DEFAULT 0,
+                supply INTEGER NOT NULL DEFAULT 0,
+                vat INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_quotes_task ON quotes(task_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_assigner ON tasks(assigner_id);
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start);
@@ -558,7 +595,12 @@ def get_task(tid: int, user: dict = Depends(current_user)):
             "SELECT kind, recipient, subject, result, error, created_at FROM mail_log"
             " WHERE task_id = ? ORDER BY id DESC LIMIT 20", (tid,),
         ).fetchall()
-    return {**dict(t), "comments": [dict(r) for r in comments], "mails": [dict(r) for r in mails]}
+        quotes = c.execute(
+            "SELECT id, quote_no, customer_name, grand_total, status FROM quotes WHERE task_id = ? ORDER BY id",
+            (tid,),
+        ).fetchall()
+    return {**dict(t), "comments": [dict(r) for r in comments], "mails": [dict(r) for r in mails],
+            "quotes": [dict(r) for r in quotes]}
 
 
 @app.patch("/api/tasks/{tid}")
@@ -632,6 +674,221 @@ def add_comment(tid: int, body: CommentIn, user: dict = Depends(current_user)):
         )
         for target in {t["assigner_id"], t["assignee_id"]} - {user["id"]}:
             notify(c, target, f"{user['name']}님이 '{t['title']}' 업무에 댓글을 남겼습니다.", tid)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 견적서
+QUOTE_STATUSES = ("draft", "sent", "won", "lost")
+VAT_MODES = ("separate", "included", "none")  # 부가세 별도 / 포함 / 면세(영세)
+COMPANY_KEYS = ("company_name", "ceo", "biz_no", "biz_type", "biz_item", "address", "phone", "fax",
+                "email", "stamp", "quote_footer")
+
+
+class QuoteItemIn(BaseModel):
+    name: str
+    spec: str = ""
+    unit: str = ""
+    qty: float = 0
+    unit_price: float = 0
+    note: str = ""
+
+
+class QuoteIn(BaseModel):
+    title: str = ""
+    customer_name: str
+    customer_contact: str = ""
+    customer_phone: str = ""
+    customer_email: str = ""
+    quote_date: str
+    valid_until: str = ""
+    delivery: str = ""
+    payment_terms: str = ""
+    vat_mode: str = "separate"
+    note: str = ""
+    status: str = "draft"
+    task_id: Optional[int] = None
+    items: List[QuoteItemIn]
+    complete_task: bool = False
+
+
+def calc_line(item: QuoteItemIn, vat_mode: str):
+    amount = round(item.qty * item.unit_price)
+    if vat_mode == "separate":
+        return amount, int(amount * 0.1)          # 세액 원 미만 절사
+    if vat_mode == "included":
+        supply = round(amount / 1.1)
+        return supply, amount - supply
+    return amount, 0
+
+
+def check_quote(body: QuoteIn):
+    if not body.customer_name.strip():
+        raise HTTPException(400, "거래처명을 입력하세요.")
+    if body.vat_mode not in VAT_MODES or body.status not in QUOTE_STATUSES:
+        raise HTTPException(400, "잘못된 입력입니다.")
+    items = [i for i in body.items if i.name.strip()]
+    if not items:
+        raise HTTPException(400, "품목을 한 개 이상 입력하세요.")
+    return items
+
+
+def next_quote_no(c, date: str) -> str:
+    prefix = "Q" + date.replace("-", "")[:8] + "-"
+    row = c.execute("SELECT quote_no FROM quotes WHERE quote_no LIKE ? ORDER BY quote_no DESC LIMIT 1",
+                    (prefix + "%",)).fetchone()
+    n = int(row["quote_no"].rsplit("-", 1)[1]) + 1 if row else 1
+    return f"{prefix}{n:03d}"
+
+
+def save_quote_items(c, qid: int, items, vat_mode: str):
+    c.execute("DELETE FROM quote_items WHERE quote_id = ?", (qid,))
+    supply_total = vat_total = 0
+    for seq, it in enumerate(items, 1):
+        supply, vat = calc_line(it, vat_mode)
+        supply_total += supply
+        vat_total += vat
+        c.execute(
+            "INSERT INTO quote_items (quote_id, seq, name, spec, unit, qty, unit_price, supply, vat, note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (qid, seq, it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
+             supply, vat, it.note.strip()),
+        )
+    c.execute("UPDATE quotes SET supply_total = ?, vat_total = ?, grand_total = ? WHERE id = ?",
+              (supply_total, vat_total, supply_total + vat_total, qid))
+
+
+def link_task(c, body: QuoteIn, user: dict, qid: int, quote_no: str):
+    """견적서를 업무에 연결하고, 요청 시 업무를 완료 처리한다. 보낼 메일을 반환."""
+    if not body.task_id:
+        return None
+    t = get_task_row(c, body.task_id, user)
+    c.execute("INSERT INTO task_comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)",
+              (t["id"], user["id"], f"🧾 견적서 {quote_no} ({body.customer_name.strip()}) 작성", now()))
+    if body.complete_task:
+        return change_status(c, t, user, "done")
+    return None
+
+
+def editable_quote(c, qid: int, user: dict):
+    q = c.execute("SELECT * FROM quotes WHERE id = ?", (qid,)).fetchone()
+    if not q:
+        raise HTTPException(404, "견적서를 찾을 수 없습니다.")
+    if q["created_by"] != user["id"] and user["role"] != "admin":
+        raise HTTPException(403, "작성자 또는 관리자만 수정할 수 있습니다.")
+    return q
+
+
+QUOTE_FIELDS = ("title", "customer_name", "customer_contact", "customer_phone", "customer_email",
+                "quote_date", "valid_until", "delivery", "payment_terms", "vat_mode", "note", "status")
+
+
+@app.get("/api/quotes")
+def list_quotes(q: str = "", status: str = "", user: dict = Depends(current_user)):
+    where, params = [], []
+    if q:
+        where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?)")
+        params += [f"%{q}%"] * 3
+    if status:
+        where.append("qt.status = ?")
+        params.append(status)
+    sql = ("SELECT qt.*, u.name AS creator_name FROM quotes qt JOIN users u ON u.id = qt.created_by"
+           + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY qt.id DESC LIMIT 300")
+    with db() as c:
+        return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+
+@app.get("/api/quotes/suggest")
+def quote_suggest(user: dict = Depends(current_user)):
+    """이전 견적서의 거래처/품목을 자동완성 후보로 제공."""
+    with db() as c:
+        customers = c.execute(
+            "SELECT customer_name, customer_contact, customer_phone, customer_email FROM quotes"
+            " WHERE id IN (SELECT MAX(id) FROM quotes GROUP BY customer_name) ORDER BY customer_name"
+        ).fetchall()
+        items = c.execute(
+            "SELECT name, spec, unit, unit_price FROM quote_items"
+            " WHERE id IN (SELECT MAX(id) FROM quote_items GROUP BY name, spec) ORDER BY name LIMIT 1000"
+        ).fetchall()
+    return {"customers": [dict(r) for r in customers], "items": [dict(r) for r in items]}
+
+
+@app.get("/api/quotes/{qid}")
+def get_quote(qid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        q = c.execute(
+            "SELECT qt.*, u.name AS creator_name, u.position AS creator_position, u.email AS creator_email"
+            " FROM quotes qt JOIN users u ON u.id = qt.created_by WHERE qt.id = ?",
+            (qid,),
+        ).fetchone()
+        if not q:
+            raise HTTPException(404, "견적서를 찾을 수 없습니다.")
+        items = c.execute("SELECT * FROM quote_items WHERE quote_id = ? ORDER BY seq", (qid,)).fetchall()
+    return {**dict(q), "items": [dict(r) for r in items]}
+
+
+@app.post("/api/quotes")
+def create_quote(body: QuoteIn, user: dict = Depends(current_user)):
+    items = check_quote(body)
+    with db() as c:
+        if body.task_id:
+            get_task_row(c, body.task_id, user)
+        quote_no = next_quote_no(c, body.quote_date)
+        ts = now()
+        cur = c.execute(
+            f"INSERT INTO quotes (quote_no, {', '.join(QUOTE_FIELDS)}, task_id, created_by, created_at, updated_at)"
+            f" VALUES (?, {', '.join('?' * len(QUOTE_FIELDS))}, ?, ?, ?, ?)",
+            (quote_no, *[getattr(body, f).strip() for f in QUOTE_FIELDS], body.task_id, user["id"], ts, ts),
+        )
+        qid = cur.lastrowid
+        save_quote_items(c, qid, items, body.vat_mode)
+        mail = link_task(c, body, user, qid, quote_no)
+    if mail:
+        mailer.send_async(db, *mail)
+    return {"id": qid, "quote_no": quote_no}
+
+
+@app.put("/api/quotes/{qid}")
+def update_quote(qid: int, body: QuoteIn, user: dict = Depends(current_user)):
+    items = check_quote(body)
+    with db() as c:
+        q = editable_quote(c, qid, user)
+        c.execute(
+            f"UPDATE quotes SET {', '.join(f + ' = ?' for f in QUOTE_FIELDS)}, updated_at = ? WHERE id = ?",
+            (*[getattr(body, f).strip() for f in QUOTE_FIELDS], now(), qid),
+        )
+        save_quote_items(c, qid, items, body.vat_mode)
+        mail = None
+        if body.complete_task and q["task_id"]:
+            t = get_task_row(c, q["task_id"], user)
+            mail = change_status(c, t, user, "done")
+    if mail:
+        mailer.send_async(db, *mail)
+    return {"id": qid, "quote_no": q["quote_no"]}
+
+
+@app.delete("/api/quotes/{qid}")
+def delete_quote(qid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        editable_quote(c, qid, user)
+        c.execute("DELETE FROM quotes WHERE id = ?", (qid,))
+    return {"ok": True}
+
+
+@app.get("/api/company")
+def get_company(user: dict = Depends(current_user)):
+    with db() as c:
+        return {k: get_setting(c, "company_" + k) for k in COMPANY_KEYS}
+
+
+@app.put("/api/company")
+def put_company(body: dict, _: dict = Depends(admin_user)):
+    stamp = body.get("stamp", "")
+    if stamp and (not str(stamp).startswith("data:image/") or len(stamp) > 400_000):
+        raise HTTPException(400, "도장 이미지는 400KB 이하의 이미지 파일이어야 합니다.")
+    with db() as c:
+        for k in COMPANY_KEYS:
+            if k in body:
+                set_setting(c, "company_" + k, str(body[k] or "").strip())
     return {"ok": True}
 
 
