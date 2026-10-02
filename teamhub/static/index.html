@@ -2603,50 +2603,69 @@ async function renderProducts(an) {
   const [d, exNote] = await Promise.all([api(`/api/analytics/products?basis=${an.basis}`), excludeNote()]);
   const years = d.years.slice(-6), Y = years[years.length - 1], P = Y - 1;
   const now = new Date(), upto = Y === now.getFullYear() ? now.toISOString().slice(5, 10) : '12-31';
-  const list = an.pv === 'prod' ? d.products : d.customers;
-  const ql = (an.q || '').toLowerCase();
-  const sortKey = an.psort || 'amount';
-  const yv = (e, y, k) => ((e.years[y] || {})[k] || 0);
-  const rows = list.filter(e => !ql || e.name.toLowerCase().includes(ql) || e.by.some(b => b.name.toLowerCase().includes(ql)))
-    .sort((a, b) => sortKey === 'name' ? a.name.localeCompare(b.name) : yv(b, Y, sortKey) - yv(a, Y, sortKey) || yv(b, P, sortKey) - yv(a, P, sortKey));
   const isProd = an.pv === 'prod';
+  const yv = (e, y, k) => ((e.years[y] || {})[k] || 0);
+  // 띄어쓰기·기호·대소문자 무시 ('cis 6 nonenal' = 'cis-6-Nonenal')
+  const norm = v => String(v || '').toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+  const names = [...new Set([...d.products.map(e => e.name), ...d.customers.map(e => e.name)])].sort((a, b) => a.localeCompare(b));
   $('#main').innerHTML = `<div class="card viz">
     <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 매출분석</h3><span class="spacer"></span>
-      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
-      <input id="anQ" placeholder="${isProd ? '제품' : '거래처'} 또는 ${isProd ? '거래처' : '제품'} 검색" value="${esc(an.q || '')}" style="max-width:200px"></div>
+      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select></div>
     <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
+    <div class="row" style="margin:6px 0 10px;gap:8px">
+      <input id="pQ" list="pQList" placeholder="🔍 제품명 또는 거래처명 검색 (예: vanillin, 고려에프앤에프)" value="${esc(an.pq || '')}" style="flex:1;min-width:220px;font-size:15px;padding:10px 12px" autocomplete="off">
+      <datalist id="pQList">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <button class="btn" id="pQClear" ${an.pq ? '' : 'style="display:none"'}>✕ 지우기</button></div>
     <div class="row" style="margin-bottom:8px;gap:6px">
       <button class="btn sm ${isProd ? 'primary' : ''}" data-pv="prod">제품별 (어느 거래처가 샀나)</button>
       <button class="btn sm ${!isProd ? 'primary' : ''}" data-pv="cust">거래처별 (무엇을 샀나)</button>
       <span class="spacer"></span><span class="muted" style="font-size:12px">정렬</span>
       <select id="pSort" style="width:auto"><option value="amount">${Y}년 금액</option><option value="qty">${Y}년 수량</option><option value="name">이름</option></select></div>
-    <div class="muted" style="font-size:12px;margin-bottom:6px">거래명세서(발행·출고완료) 품목 기준 · ${rows.length}${isProd ? '개 제품' : '곳'} · 줄을 누르면 ${isProd ? '거래처별' : '제품별'} 기록이 펼쳐집니다 · 금액 단위 만원${upto !== '12-31' ? ` · 전년 대비는 ${P}년 같은 기간(~${upto})과 비교` : ''}</div>
+    <div id="pInfo" class="muted" style="font-size:12px;margin-bottom:6px"></div>
     <div class="qscroll" style="max-height:640px;overflow:auto"><table class="an-table"><thead><tr><th>${isProd ? '제품' : '거래처'}</th>
-      ${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">전년 대비</th><th class="num">${isProd ? '거래처' : '제품'} 수</th><th>마지막</th></tr></thead><tbody>
-      ${rows.slice(0, 400).map((e, i) => {
-        return `<tr data-row="${i}" style="cursor:pointer"><td title="${esc(e.name)}"><b>${esc(e.name)}</b></td>
-          ${years.map(y => `<td class="num">${yv(e, y, 'qty') ? kg(yv(e, y, 'qty')) : '-'}</td>`).join('')}
-          <td class="num"><b>${man(yv(e, Y, 'amount'))}</b></td><td class="num">${man(yv(e, P, 'amount'))}</td>
-          <td class="num">${deltaHtml(yv(e, Y, 'qty'), yv(e, P, 'qty'))}</td>
-          <td class="num">${e.by.filter(b => (b.years[Y] || {}).qty || (b.years[P] || {}).qty).length}</td><td><small>${esc(e.last)}</small></td></tr>
-          <tr class="hidden" data-sub="${i}"><td colspan="${years.length + 6}" style="background:var(--bg);padding:6px 10px">
-            <table class="an-table" style="background:transparent"><thead><tr><th>${isProd ? '거래처' : '제품'}</th>${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">${Y} 평균단가</th></tr></thead><tbody>
-            ${e.by.slice().sort((a, b) => ((b.years[Y] || {}).amount || 0) - ((a.years[Y] || {}).amount || 0) || ((b.years[P] || {}).amount || 0) - ((a.years[P] || {}).amount || 0)).map(b => {
-              const cy = b.years[Y] || {}, py = b.years[P] || {};
-              return `<tr><td>${esc(b.name)}</td>${years.map(y => `<td class="num">${(b.years[y] || {}).qty ? kg(b.years[y].qty) : '-'}</td>`).join('')}
-                <td class="num">${man(cy.amount || 0)}</td><td class="num">${man(py.amount || 0)}</td><td class="num">${cy.qty ? won((cy.amount || 0) / cy.qty) : '-'}</td></tr>`; }).join('')}
-            </tbody></table></td></tr>`; }).join('') || `<tr><td colspan="${years.length + 6}" class="empty">거래명세서가 없습니다.</td></tr>`}
-    </tbody></table></div>
-    <div class="muted" style="font-size:12px;margin-top:6px">· 품명의 포장 표시(예: "(25kg *4)_식")와 제품코드 숫자를 빼고 같은 제품끼리 묶습니다. 거래처는 매출분석의 제외·이름 합치기 설정을 따릅니다.</div>
+      ${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">전년 대비</th><th class="num">${isProd ? '거래처' : '제품'} 수</th><th>마지막</th></tr></thead><tbody id="pBody"></tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:6px">· 검색은 띄어쓰기·기호·대소문자를 무시합니다. ${isProd ? '거래처' : '제품'} 이름으로 찾으면 그 ${isProd ? '거래처가 산 제품' : '제품을 산 거래처'}이 펼쳐져 강조됩니다.
+      <br>· 품명의 포장 표시(예: "(25kg *4)_식")와 제품코드 숫자를 빼고 같은 제품끼리 묶습니다. 거래처는 매출분석의 제외·이름 합치기 설정을 따릅니다.</div>
   </div>`;
+  const draw = () => {
+    const list = isProd ? d.products : d.customers;
+    const q = norm(an.pq), sortKey = an.psort || 'amount';
+    const hit = n => q && norm(n).includes(q);
+    const rows = list.filter(e => !q || hit(e.name) || e.by.some(b => hit(b.name)))
+      .sort((a, b) => sortKey === 'name' ? a.name.localeCompare(b.name) : yv(b, Y, sortKey) - yv(a, Y, sortKey) || yv(b, P, sortKey) - yv(a, P, sortKey));
+    // 검색 결과 합계 (거래처·제품 이름으로 찾았으면 그 줄만 더함)
+    const tot = {};
+    rows.forEach(e => {
+      const parts = q && !hit(e.name) ? e.by.filter(b => hit(b.name)) : [e];
+      parts.forEach(x => years.forEach(y => { const v = x.years[y] || {}; (tot[y] ||= {qty: 0, amount: 0}); tot[y].qty += v.qty || 0; tot[y].amount += v.amount || 0; }));
+    });
+    $('#pInfo').innerHTML = `거래명세서(발행·출고완료) 품목 기준 · ${rows.length}${isProd ? '개 제품' : '곳'}${q ? ` 검색됨 — 합계 ${years.slice(-3).map(y => `${y}년 ${kg((tot[y] || {}).qty || 0)} / ${man((tot[y] || {}).amount || 0)}만원`).join(' · ')}` : ''}
+      · 줄을 누르면 ${isProd ? '거래처별' : '제품별'} 기록이 펼쳐집니다 · 금액 단위 만원${upto !== '12-31' ? ` · 전년 대비는 ${P}년 같은 기간(~${upto})과 비교` : ''}`;
+    $('#pBody').innerHTML = rows.slice(0, 400).map((e, i) => {
+      const subHit = q && !hit(e.name);
+      return `<tr data-row="${i}" style="cursor:pointer"><td title="${esc(e.name)}"><b ${hit(e.name) ? 'style="background:#fef08a"' : ''}>${esc(e.name)}</b></td>
+        ${years.map(y => `<td class="num">${yv(e, y, 'qty') ? kg(yv(e, y, 'qty')) : '-'}</td>`).join('')}
+        <td class="num"><b>${man(yv(e, Y, 'amount'))}</b></td><td class="num">${man(yv(e, P, 'amount'))}</td>
+        <td class="num">${deltaHtml(yv(e, Y, 'qty'), yv(e, P, 'qty'))}</td>
+        <td class="num">${e.by.filter(b => (b.years[Y] || {}).qty || (b.years[P] || {}).qty).length}</td><td><small>${esc(e.last)}</small></td></tr>
+        <tr class="${subHit || rows.length === 1 ? '' : 'hidden'}" data-sub="${i}"><td colspan="${years.length + 6}" style="background:var(--bg);padding:6px 10px">
+          <table class="an-table" style="background:transparent"><thead><tr><th>${isProd ? '거래처' : '제품'}</th>${years.map(y => `<th class="num">${y} 수량</th>`).join('')}<th class="num">${Y} 금액</th><th class="num">${P} 금액</th><th class="num">${Y} 평균단가</th></tr></thead><tbody>
+          ${e.by.slice().sort((a, b) => (hit(b.name) - hit(a.name)) || ((b.years[Y] || {}).amount || 0) - ((a.years[Y] || {}).amount || 0) || ((b.years[P] || {}).amount || 0) - ((a.years[P] || {}).amount || 0)).map(b => {
+            const cy = b.years[Y] || {}, py = b.years[P] || {};
+            return `<tr ${hit(b.name) ? 'style="background:#fef9c3"' : ''}><td>${esc(b.name)}</td>${years.map(y => `<td class="num">${(b.years[y] || {}).qty ? kg(b.years[y].qty) : '-'}</td>`).join('')}
+              <td class="num">${man(cy.amount || 0)}</td><td class="num">${man(py.amount || 0)}</td><td class="num">${cy.qty ? won((cy.amount || 0) / cy.qty) : '-'}</td></tr>`; }).join('')}
+          </tbody></table></td></tr>`; }).join('') || `<tr><td colspan="${years.length + 6}" class="empty">${q ? `'${esc(an.pq)}' 검색 결과가 없습니다.` : '거래명세서가 없습니다.'}</td></tr>`;
+    $$('tr[data-row]').forEach(tr => tr.onclick = () => $(`tr[data-sub="${tr.dataset.row}"]`).classList.toggle('hidden'));
+  };
+  draw();
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
   $$('[data-pv]').forEach(b => b.onclick = () => { an.pv = b.dataset.pv; renderAnalytics(); });
-  $('#pSort').value = sortKey; $('#pSort').onchange = e => { an.psort = e.target.value; renderAnalytics(); };
+  $('#pSort').value = an.psort || 'amount'; $('#pSort').onchange = e => { an.psort = e.target.value; draw(); };
   $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
   let timer;
-  $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
-  $$('tr[data-row]').forEach(tr => tr.onclick = () => $(`tr[data-sub="${tr.dataset.row}"]`).classList.toggle('hidden'));
+  $('#pQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.pq = e.target.value.trim(); $('#pQClear').style.display = an.pq ? '' : 'none'; draw(); }, 200); };
+  $('#pQClear').onclick = () => { an.pq = ''; $('#pQ').value = ''; $('#pQClear').style.display = 'none'; draw(); $('#pQ').focus(); };
   bindExcludeEdit();
 }
 
