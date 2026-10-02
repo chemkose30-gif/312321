@@ -362,7 +362,8 @@ def init_db():
                                 ("shipments", "cs_out_at", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_events", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("shipments", "cs_checked_at", "TEXT NOT NULL DEFAULT ''"),
-                                ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''")):
+                                ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -2362,7 +2363,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -2370,7 +2371,8 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
 
 def inv_settings(c) -> dict:
     return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1",
-            "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", "")}
+            "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", ""),
+            "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서")}
 
 
 @app.get("/api/inventory")
@@ -2899,6 +2901,176 @@ def shipment_status(sid: int, body: dict, user: dict = Depends(current_user)):
         c.execute("UPDATE shipments SET status = ?, arrived_at = ?, updated_at = ? WHERE id = ?",
                   (st, now() if st == "arrived" else None, now(), sid))
     return {"ok": True}
+
+
+# ---- 📋 인바운딩(수입 예정) 엑셀 → 입고예정 자동 등록·갱신
+INB_COLS = {"done": ("",), "order": ("order", "soorpo"), "client": ("client",), "ref": ("ref",), "supplier": ("supplier",),
+            "product": ("product", "goods"), "cas": ("cas",), "qty": ("qty",), "desp": ("desp", "despinv", "despetd"),
+            "etd": ("etd",), "eta": ("eta",), "clear": ("clear",), "recd": ("recd",), "pymt": ("pymt",),
+            "danger": ("danger",)}
+MONTHS_EN = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
+                                              "dec"))}
+
+
+def inb_date(v) -> str:
+    """엑셀 날짜숫자(46297) / 2026-07-08 / '→ 2026-07-08' / 250312 → 'YYYY-MM-DD'. 날짜가 아니면 ''."""
+    s = str(v or "").strip().lstrip("→").strip()
+    if re.match(r"^\d{5}(\.\d+)?$", s):
+        n = float(s)
+        if 30000 < n < 60000:
+            return (datetime(1899, 12, 30) + timedelta(days=int(n))).strftime("%Y-%m-%d")
+        return ""
+    return inv_date(s)
+
+
+def parse_inbound(data: bytes) -> list:
+    """'Inbounding' 시트(없으면 머리글이 맞는 첫 시트): 머리글 Order·Client·Supplier·Product·Qty·ETD·ETA·Recd…"""
+    names = xlsx_sheet_names(data)
+    names = sorted(names, key=lambda n: ("inbound" not in n.lower(),))
+    for name in names:
+        rows = read_xlsx_values(data, name)
+        hi = next((i for i, r in enumerate(rows[:10]) if {"supplier", "product", "eta"} <= {_inv_h(x) for x in r}), None)
+        if hi is None:
+            continue
+        hdr = [_inv_h(x) for x in rows[hi]]
+        col = {}
+        for f, keys in INB_COLS.items():
+            if f == "done":
+                col[f] = 0
+                continue
+            col[f] = next((i for i, h in enumerate(hdr) if h in keys), None)
+        if col["ref"] is not None:          # 'Ref.' 이 두 번 있음: 앞은 구분(Offer/월), 뒤는 비고
+            refs = [i for i, h in enumerate(hdr) if h == "ref"]
+            col["ref"], col["memo"] = refs[0], (refs[1] if len(refs) > 1 else None)
+        g = lambda r, f: (str(r[col[f]]).strip() if col.get(f) is not None and col[f] < len(r) else "")
+        out = []
+        for i, r in enumerate(rows[hi + 1:], hi + 2):
+            product, supplier = g(r, "product"), g(r, "supplier")
+            if not product:
+                continue
+            order = g(r, "order")
+            order_d = inb_date(order) or (order[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", order) else "")
+            out.append({"row": i, "done": g(r, "done").upper() == "O", "order": order, "order_date": order_d,
+                        "client": g(r, "client"), "ref": g(r, "ref"), "supplier": supplier, "product": product,
+                        "cas": g(r, "cas"), "qty": _numn(g(r, "qty")) or 0, "desp_raw": g(r, "desp"),
+                        "desp": inb_date(g(r, "desp")), "etd": inb_date(g(r, "etd")), "eta": inb_date(g(r, "eta")),
+                        "eta_raw": g(r, "eta"), "clear": inb_date(g(r, "clear")), "clear_raw": g(r, "clear"),
+                        "recd": inb_date(g(r, "recd")), "pymt": g(r, "pymt"), "memo": g(r, "memo"),
+                        "danger": g(r, "danger")})
+        return out
+    return []
+
+
+def _inb_key(r: dict) -> str:
+    return f"{r['order']}|{_item_norm(r['supplier'])}|{_item_norm(r['product'])}"
+
+
+def _inb_eta(r: dict):
+    """예상 입고일: ETA → ETD+? (ETD 그대로) → 출고일 → 'Oct' 같은 월 표시(그 달 15일) → 주문일+30일. (날짜, 추정 여부)"""
+    for k in ("eta", "etd", "desp"):
+        if r[k]:
+            return r[k], k != "eta"
+    m = MONTHS_EN.get((r["ref"] or "")[:3].lower())
+    base = date.fromisoformat(r["order_date"]) if r["order_date"] else date.today()
+    if m:
+        y = base.year + (1 if m < base.month - 1 else 0)
+        return date(y, m, 15).isoformat(), True
+    return (base + timedelta(days=30)).isoformat(), True
+
+
+def sync_inbound(c, rows: list, by_id: int) -> dict:
+    """진행 중인 줄(맨 앞 'O' 없음, 입고일 없음)은 입고예정으로 만들거나 갱신, 끝난 줄은 연결된 입고예정을 입고완료로."""
+    existing = {r["src_key"]: dict(r) for r in c.execute("SELECT * FROM shipments WHERE src_key != ''")}
+    manual = [dict(r) for r in c.execute("SELECT * FROM shipments WHERE src_key = '' AND status != 'arrived'")]
+    stat = {"rows": len(rows), "open": 0, "created": 0, "updated": 0, "linked": 0, "arrived": 0}
+    ts = now()
+    seen = set()
+    for r in rows:
+        key = _inb_key(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        sh = existing.get(key)
+        finished = r["done"] or bool(r["recd"])
+        if finished:
+            if sh and sh["status"] != "arrived":
+                c.execute("UPDATE shipments SET status = 'arrived', arrived_at = ?, updated_at = ? WHERE id = ?",
+                          ((r["recd"] or ts[:10]) + " 00:00:00" if r["recd"] else ts, ts, sh["id"]))
+                stat["arrived"] += 1
+            continue
+        stat["open"] += 1
+        eta, guessed = _inb_eta(r)
+        status = "customs" if r["clear"] else "shipped" if (r["etd"] or r["desp"]) and (r["etd"] or r["desp"]) <= ts[:10] \
+            else "ordered"
+        note = " · ".join(x for x in (
+            f"[인바운딩] {r['order']}" + (f" / {r['ref']}" if r["ref"] else ""),
+            "ETA 미정 — 추정일" if guessed else "", f"출고 {r['desp_raw']}" if r["desp_raw"] and not r["desp"] else "",
+            f"통관 {r['clear_raw']}" if r["clear_raw"] else "", f"결제 {r['pymt']}" if r["pymt"] else "",
+            r["memo"], f"위험물 {r['danger']}" if r["danger"] else "", f"CAS {r['cas']}" if r["cas"] else "") if x)
+        vals = {"item": r["product"][:150], "supplier": r["supplier"][:100], "customer": r["client"][:60],
+                "qty": r["qty"], "eta": eta, "note": note[:1000]}
+        if not sh:
+            # 직접 만들어 둔 입고예정과 같은 건이면(품목·공급사 같고 예정일 ±45일) 새로 만들지 않고 연결
+            ni, ns = _item_norm(r["product"]), _item_norm(r["supplier"])
+            for m in manual:
+                mi = _item_norm(m["item"])
+                if mi and (mi in ni or ni in mi) and (not m["supplier"] or _item_norm(m["supplier"])[:5] == ns[:5]) \
+                        and abs((date.fromisoformat(m["eta"]) - date.fromisoformat(eta)).days) <= 45:
+                    sh = m
+                    manual.remove(m)
+                    c.execute("UPDATE shipments SET src_key = ? WHERE id = ?", (key, m["id"]))
+                    stat["linked"] += 1
+                    break
+        if sh:
+            if sh["status"] == "arrived":
+                continue                         # TeamHub 에서 입고완료로 바꾼 건은 그대로 둔다
+            # 통관 단계는 UNI-PASS 가 더 정확하면 그쪽을 따름 (이미 customs 면 내리지 않음)
+            st = sh["status"] if sh["status"] == "customs" else status
+            c.execute("UPDATE shipments SET item = ?, supplier = ?, customer = ?, qty = ?, eta = ?, note = ?, status = ?,"
+                      " updated_at = ? WHERE id = ?", (vals["item"], vals["supplier"], vals["customer"], vals["qty"],
+                                                       vals["eta"], vals["note"], st, ts, sh["id"]))
+            stat["updated"] += 1
+        else:
+            c.execute("INSERT INTO shipments (item, spec, supplier, customer, qty, unit, eta, status, bl_no, hbl_no, warehouse,"
+                      " note, arrived_at, created_by, created_at, updated_at, src_key) VALUES"
+                      " (?, '', ?, ?, ?, 'kg', ?, ?, '', '', '', ?, NULL, ?, ?, ?, ?)",
+                      (vals["item"], vals["supplier"], vals["customer"], vals["qty"], vals["eta"], status, vals["note"],
+                       by_id, ts, ts, key))
+            stat["created"] += 1
+    return stat
+
+
+@app.post("/api/inbound/upload")
+async def inbound_upload(file: UploadFile = File(...), dry_run: bool = False, user: dict = Depends(upload_user),
+                         x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    if not filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "xlsx 엑셀 파일만 올릴 수 있습니다.")
+    try:
+        rows = parse_inbound(data)
+    except Exception as e:
+        raise HTTPException(400, f"엑셀을 읽지 못했습니다: {e}")
+    if not rows:
+        raise HTTPException(400, "인바운딩 시트(Supplier·Product·ETA 머리글)를 찾지 못했습니다.")
+    open_rows = [r for r in rows if not (r["done"] or r["recd"])]
+    if dry_run:
+        return {"rows": len(rows), "open": len(open_rows)}
+    with db() as c:
+        by = user.get("id") or _first_admin(c)
+        stat = sync_inbound(c, rows, by)
+        meta = {"filename": filename, "uploaded_at": now(), "by": user["name"], **stat}
+        set_setting(c, "inbound_meta", json.dumps(meta, ensure_ascii=False))
+        if stat["created"]:
+            for a in c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1"):
+                notify(c, a[0], f"📋 인바운딩: 새 수입 예정 {stat['created']}건을 입고예정에 등록했습니다.")
+    return meta
+
+
+@app.get("/api/inbound/meta")
+def inbound_meta(_: dict = Depends(current_user)):
+    with db() as c:
+        return json.loads(get_setting(c, "inbound_meta", "{}") or "{}")
 
 
 # ---- UNI-PASS 로 B/L 진행 확인 (입항·반입·통관 수리·반출)

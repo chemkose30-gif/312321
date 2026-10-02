@@ -1796,6 +1796,32 @@ async function openUnipassSettings() {
   });
 }
 
+
+function openInboundUpload() {
+  openModal(`<h2>📋 인바운딩 엑셀 올리기</h2>
+    <div class="muted" style="font-size:13px;line-height:1.7">공유문서의 <b>Inbounding</b> 엑셀을 올리면, 맨 앞 칸에 'O' 가 없고 입고일(Recd)이 비어 있는 <b>진행 중인 건</b>을 입고예정에 등록·갱신하고,
+      끝난 건('O' 또는 Recd 입력)은 입고완료로 바꿉니다. ETA 가 없으면 ETD → 출고일 → 'Oct' 같은 월 표시 → 주문일+30일 순으로 예상일을 정합니다(메모에 '추정' 표시).<br>
+      매일 자동으로 올리려면 📦 재고 → ⚙ 자동 업로드에서 인바운딩 폴더를 확인하고 설치 파일을 다시 받아 실행하세요.</div>
+    <label>엑셀 파일</label><input type="file" id="ibFile" accept=".xlsx,.xlsm">
+    <div id="ibPrev" class="muted" style="margin-top:8px"></div><div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ibGo" disabled>반영하기</button></div>`, (bg, close) => {
+    const send = async dry => {
+      const fd = new FormData(); fd.append('file', $('#ibFile', bg).files[0]);
+      const res = await fetch(`/api/inbound/upload?dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const data = await res.json(); if (!res.ok) throw new Error(data.detail || '올리기 실패'); return data;
+    };
+    $('#ibFile', bg).onchange = async () => {
+      $('.err', bg).textContent = ''; $('#ibGo', bg).disabled = true;
+      try { const r = await send(true); $('#ibPrev', bg).innerHTML = `전체 ${r.rows}줄 중 <b>진행 중 ${r.open}건</b>`; $('#ibGo', bg).disabled = false; }
+      catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    $('#ibGo', bg).onclick = async () => {
+      try { const r = await send(false); close(); toast(`진행 중 ${r.open}건 · 새로 ${r.created} · 갱신 ${r.updated} · 입고완료 ${r.arrived}`); renderShipments(); }
+      catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
 async function renderShipments() {
   const view = state.shView || 'open';
   const q = new URLSearchParams({view});
@@ -1803,26 +1829,28 @@ async function renderShipments() {
   const list = await api('/api/shipments?' + q);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🚢 입고 예정</h3><span class="spacer"></span>
-      ${state.me.role === 'admin' ? '<button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
+      ${state.me.role === 'admin' ? '<button class="btn" id="shInb">📋 인바운딩 올리기</button><button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
     <div class="tabs">
       <button data-v="open">진행중</button><button data-v="cleared">통관완료</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
     </div>
     <div class="row" style="margin-bottom:8px;gap:6px"><input id="shBl" placeholder="B/L·항공 운송장 번호로 바로 등록 (UNI-PASS 조회)" style="max-width:340px"><button class="btn" id="shBlGo">🛃 조회해서 등록</button></div>
-    <div id="shWatch"></div>
+    <div id="shWatch"></div><div id="shInbMeta" class="muted" style="font-size:12px;margin-bottom:6px"></div>
     <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B/L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
     ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
-        <div class="l1">${shTag(sh.status)}<b>${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
+        <div class="l1">${shTag(sh.status)}<b>${sh.src_key ? '📋 ' : ''}${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
         ${csTag(sh) ? `<div class="l2">${csTag(sh)}</div>` : ''}
         <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
       <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">M B/L / H B/L · 창고</th></tr></thead><tbody>
       ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}</td>
-        <td class="title">${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
+        <td class="title">${sh.src_key ? '<span title="인바운딩 엑셀에서 자동 등록">📋</span> ' : ''}${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
         <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">등록된 입고 예정이 없습니다.</div>'}
   </div>`;
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.v === view); b.onclick = () => { state.shView = b.dataset.v; renderShipments(); }; });
   $('#shNew').onclick = () => openShipment(null, todayStr());
   if ($('#shUp')) $('#shUp').onclick = openUnipassSettings;
+  if ($('#shInb')) $('#shInb').onclick = openInboundUpload;
+  api('/api/inbound/meta').then(m => { if (m.filename && $('#shInbMeta')) $('#shInbMeta').innerHTML = `📋 인바운딩 <b>${esc(m.filename)}</b> · ${esc((m.uploaded_at || '').slice(0, 16))} · 진행 중 ${m.open}건 (새로 ${m.created} · 갱신 ${m.updated} · 입고완료 처리 ${m.arrived})`; }).catch(() => {});
   $('#shBlGo').onclick = async () => {
     const number = $('#shBl').value.trim(); if (!number) return;
     $('#shBlGo').disabled = true; $('#shBlGo').textContent = '조회 중…';
@@ -1947,12 +1975,13 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir) => `param([switch]$Install)
+  const script = (key, time, invDir, ledDir, inbDir) => `param([switch]$Install)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
-  @{ Name = "재고";       Dir = "${(invDir || '').replace(/"/g, '')}"; Url = "${host}/api/inventory/upload"; Ext = @('.xlsx', '.xlsm') },
-  @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm') }
+  @{ Name = "재고";       Dir = "${(invDir || '').replace(/"/g, '')}"; Url = "${host}/api/inventory/upload"; Ext = @('.xlsx', '.xlsm'); Like = '*'; Depth = 2 },
+  @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2 },
+  @{ Name = "인바운딩";   Dir = "${(inbDir || '').replace(/"/g, '')}"; Url = "${host}/api/inbound/upload";   Ext = @('.xlsx', '.xlsm'); Like = '*Inbound*'; Depth = 0 }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -1971,8 +2000,8 @@ foreach ($job in $jobs) {
   if (-not $job.Dir) { continue }
   if (-not (Test-Path -LiteralPath $job.Dir)) { Say "[$($job.Name)] 폴더를 찾을 수 없습니다: $($job.Dir)  (이 PC에 나스 드라이브가 연결되어 있는지 확인)"; continue }
   # 하위 폴더(예: 월별 폴더)까지 찾음
-  $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
-           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' } |
+  $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth $job.Depth -ErrorAction SilentlyContinue |
+           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like } |
            Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
            Select-Object -First 5
   if (-not $files) { Say "[$($job.Name)] 엑셀 파일을 찾지 못했습니다: $($job.Dir)"; continue }
@@ -1990,7 +2019,7 @@ foreach ($job in $jobs) {
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
@@ -2007,6 +2036,7 @@ foreach ($job in $jobs) {
       <b>② 올릴 폴더 (나스)</b>
       <label style="margin-top:6px">📦 재고리스트 폴더</label><input id="invDir" value="${esc(s.inv_dir || '')}">
       <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
+      <label>📋 인바운딩(수입 예정) 폴더 <small class="muted">— 이름에 'Inbound' 가 들어간 엑셀, 하위 폴더는 안 봄</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
     <div class="ec-box">
@@ -2042,9 +2072,10 @@ foreach ($job in $jobs) {
       await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
-    ['invDir', 'ledDir'].forEach(id => $('#' + id, bg).onchange = e => save({[id === 'invDir' ? 'inv_dir' : 'ledger_dir']: e.target.value}));
+    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir'};
+    Object.keys(DIRK).forEach(id => $('#' + id, bg).onchange = e => save({[DIRK[id]]: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
