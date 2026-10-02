@@ -4117,7 +4117,9 @@ def notify_thread(c, head_id: int):
         notify(c, m["owner_id"], f"📥 메일에서 {what}을 찾았습니다: {m['subject'][:40]}")
     if cands and m["status"] == "new" and not m["private"] and m["topic"]:
         owner = c.execute("SELECT name FROM users WHERE id IS ?", (m["owner_id"],)).fetchone()
-        for u in topic_members(c, m["topic"]):
+        share = get_setting(c, "mail_share_all", "1") == "1"
+        members = [r[0] for r in c.execute("SELECT id FROM users WHERE active = 1")] if share else topic_members(c, m["topic"])
+        for u in members:
             if u != m["owner_id"]:
                 notify(c, u, f"📥 [{MAIL_TOPICS.get(m['topic'], '')}] {owner['name'] + '님 ' if owner else ''}메일 일정: {m['subject'][:40]}")
 
@@ -4206,9 +4208,16 @@ def topic_members(c, topic: str) -> list:
             if topic in str(r["mail_topics"] or "").split(",")]
 
 
+def mail_share_all() -> bool:
+    with db() as c:
+        return get_setting(c, "mail_share_all", "1") == "1"
+
+
 def mail_visible(user: dict):
-    # 본인 메일 + 내가 맡은 업무로 분류된 다른 사람 메일(주인이 🔒 공유 안 함으로 둔 것 제외).
-    # 관리자는 주인을 못 찾은 메일(직원 메일 주소 미등록)도 본다.
+    # 전체 공개(기본 — 회사 메인 메일 하나만 연결): 모든 직원이 모든 메일을 봄(🔒 나만 보기 제외).
+    # 아니면 본인 메일 + 내가 맡은 업무로 분류된 다른 사람 메일. 관리자는 주인을 못 찾은 메일도 본다.
+    if mail_share_all():
+        return "(m.owner_id IS ? OR m.private = 0)", [user["id"]]
     clause, params = "m.owner_id = ?", [user["id"]]
     tops = user_topics(user)
     if tops:
@@ -4254,6 +4263,7 @@ def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = 
         for r in rows:        # 그 사이 등록된 입고예정과 다시 맞춰 봄 (자동 등록된 B/L 등)
             r["candidates"] = match_shipments(c, json.loads(r["candidates"] or "[]"), r["subject"])
     return {"items": rows, "counts": counts, "ai": ai_mail.enabled(), "topics": MAIL_TOPICS, "my_topics": user_topics(user),
+            "share_all": mail_share_all(),
             "topic_counts": tcounts}
 
 
@@ -4275,6 +4285,14 @@ def mailin_get(mid: int, user: dict = Depends(current_user)):
                         "subject": t["subject"], "body": t["body"]} for t in thread_rows(c, r["thread_key"])]
         r["candidates"] = match_shipments(c, json.loads(r["t_candidates"] or "[]"), r["subject"])
     return r
+
+
+@app.put("/api/mailin/share")
+def mailin_share(body: dict, _: dict = Depends(admin_user)):
+    """모든 직원이 모든 메일 보기 켜기/끄기"""
+    with db() as c:
+        set_setting(c, "mail_share_all", "1" if body.get("all") else "0")
+    return {"ok": True}
 
 
 @app.patch("/api/mailin/{mid}")
