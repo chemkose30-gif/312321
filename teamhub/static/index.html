@@ -820,12 +820,15 @@ async function renderQuotes() {
       <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     <div class="row" style="margin-bottom:10px">
       <select id="qStatus" style="width:auto"><option value="">전체 상태</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${state.qStatus === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <input id="qSearch" placeholder="거래처/건명/${D.no} 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
+      <input id="qSearch" placeholder="거래처/품명/건명/${D.no} 검색" value="${esc(state.qSearch || '')}" style="max-width:260px">
       <span class="muted">${list.length}건 · 합계 ${won(sum)}원</span>
     </div>
-    ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.no}</th><th>${D.date}</th><th>거래처</th><th class="hide-m">건명</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
+    ${list.length ? `<div class="qscroll"><table><thead><tr><th>${D.no}</th><th>${D.date}</th><th>거래처</th><th>품명</th><th style="text-align:right">수량</th><th style="text-align:right">합계금액</th><th>상태</th><th class="hide-m">작성자</th></tr></thead><tbody>
       ${list.map(x => `<tr data-q="${x.id}"><td>${esc(x.quote_no)}</td><td>${esc(x.quote_date)}</td><td class="title">${esc(x.customer_name)}</td>
-        <td class="hide-m">${esc(x.title)}</td><td class="money">${won(x.grand_total)}</td><td>${qTag(x.status, dt)}</td><td class="hide-m">${esc(x.creator_name)}</td></tr>`).join('')}
+        <td>${esc(x.first_item || '')}${x.item_count > 1 ? ` <small class="muted">외 ${x.item_count - 1}건</small>` : ''}
+          ${x.title && !x.title.startsWith(x.first_item || '\u0000') ? `<br><small class="muted">${esc(x.title)}</small>` : ''}</td>
+        <td class="money">${x.total_qty != null ? Number(x.total_qty).toLocaleString('ko-KR', {maximumFractionDigits: 2}) + (x.qty_unit ? ' ' + esc(x.qty_unit) : '') : ''}</td>
+        <td class="money">${won(x.grand_total)}</td><td>${qTag(x.status, dt)}</td><td class="hide-m">${esc(x.creator_name)}</td></tr>`).join('')}
     </tbody></table></div>` : `<div class="empty">${D.label}가 없습니다. [+ 새 ${D.label}]로 작성해 보세요.</div>`}
   </div>`;
   $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);

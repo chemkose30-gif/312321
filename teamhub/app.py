@@ -849,12 +849,19 @@ QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer
 def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", user: dict = Depends(current_user)):
     where, params = ["qt.doc_type = ?"], [doc_type]
     if q:
-        where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?)")
-        params += [f"%{q}%"] * 3
+        where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?"
+                     " OR EXISTS (SELECT 1 FROM quote_items qi WHERE qi.quote_id = qt.id AND qi.name LIKE ?))")
+        params += [f"%{q}%"] * 4
     if status:
         where.append("qt.status = ?")
         params.append(status)
-    sql = ("SELECT qt.*, u.name AS creator_name FROM quotes qt JOIN users u ON u.id = qt.created_by"
+    sql = ("SELECT qt.*, u.name AS creator_name,"
+           " (SELECT name FROM quote_items qi WHERE qi.quote_id = qt.id ORDER BY seq LIMIT 1) AS first_item,"
+           " (SELECT COUNT(*) FROM quote_items qi WHERE qi.quote_id = qt.id) AS item_count,"
+           " (SELECT SUM(qty) FROM quote_items qi WHERE qi.quote_id = qt.id) AS total_qty,"
+           " (SELECT CASE WHEN COUNT(DISTINCT unit) = 1 THEN MAX(unit) ELSE '' END FROM quote_items qi"
+           "  WHERE qi.quote_id = qt.id) AS qty_unit"
+           " FROM quotes qt JOIN users u ON u.id = qt.created_by"
            + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY qt.quote_date DESC, qt.id DESC LIMIT 500")
     with db() as c:
         return [dict(r) for r in c.execute(sql, params).fetchall()]
