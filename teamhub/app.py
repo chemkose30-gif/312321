@@ -233,6 +233,27 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
             CREATE INDEX IF NOT EXISTS idx_inv_ships_lot ON inv_ships(lot_id);
+            CREATE TABLE IF NOT EXISTS ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                day INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                item TEXT NOT NULL,
+                item_base TEXT NOT NULL DEFAULT '',
+                qty REAL NOT NULL DEFAULT 0,
+                customer TEXT NOT NULL DEFAULT '',
+                supplier TEXT NOT NULL DEFAULT '',
+                sale_price REAL,
+                buy_price REAL,
+                origin TEXT NOT NULL DEFAULT '',
+                sales REAL NOT NULL DEFAULT 0,
+                purchase REAL NOT NULL DEFAULT 0,
+                profit REAL NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                src_row INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger(year, date);
             CREATE TABLE IF NOT EXISTS ecount_products (
                 code TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', spec TEXT NOT NULL DEFAULT '',
                 unit TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0
@@ -2220,7 +2241,7 @@ async def inventory_upload(file: UploadFile = File(...), dry_run: bool = False, 
 @app.get("/api/inventory/settings")
 def inventory_settings(_: dict = Depends(admin_user)):
     with db() as c:
-        return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1"}
+        return inv_settings(c)
 
 
 @app.put("/api/inventory/settings")
@@ -2230,7 +2251,15 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1"}
+        for k in ("inv_dir", "ledger_dir"):
+            if k in body:
+                set_setting(c, k, str(body[k] or "").strip())
+        return inv_settings(c)
+
+
+def inv_settings(c) -> dict:
+    return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1",
+            "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", "")}
 
 
 @app.get("/api/inventory")
@@ -2285,170 +2314,188 @@ def inv_customer_fn(c):
     return fn
 
 
-# 거래명세서 품명 ↔ 재고 엑셀 품목 맞추기
-_CODE_RE = re.compile(r"\b(?:[a-z]{1,3})?\d{5,}\b", re.I)    # 끝에 붙는 제품코드: 937450, AH11914, F13841, JC163890
+# ---------------------------------------------------------------- 매입매출장 (일계장 엑셀) → 이익
+LEDGER_COLS = {"month": ("월",), "day": ("일",), "item": ("품목",), "qty": ("수량",), "customer": ("매출처",),
+               "supplier": ("매입처",), "sale_price": ("매출단가",), "buy_price": ("매입단가",), "origin": ("origin",),
+               "sales": ("총매출액", "매출액"), "purchase": ("총매입액", "매입액"), "profit": ("총손익", "손익"),
+               "note": ("비고",)}
 
 
-def _item_tokens(name: str) -> tuple:
-    s = _CODE_RE.sub(" ", str(name or "").lower())
-    return tuple(sorted(t for t in re.split(r"[^0-9a-z가-힣]+", s) if t))
+def read_xls_sheets(data: bytes) -> dict:
+    """.xls(옛 엑셀) → {시트이름: 행 목록}. 숫자는 문자열로 (read_xlsx_values 와 같은 모양)."""
+    import xlrd
+    book = xlrd.open_workbook(file_contents=data)
+    out = {}
+    for sh in book.sheets():
+        rows = []
+        for r in range(sh.nrows):
+            vals = []
+            for v in sh.row_values(r):
+                if isinstance(v, float):
+                    v = str(int(v)) if v == int(v) else repr(v)
+                vals.append(str(v).strip())
+            rows.append(vals)
+        out[sh.name] = rows
+    return out
 
 
-def _item_norm(name: str) -> str:
-    return re.sub(r"[^0-9a-z가-힣]", "", str(name or "").lower())
+def item_base(name: str) -> str:
+    """'Heliotropine(Piperonal) (25kg *4)_향' → 'Heliotropine(Piperonal)' (포장·용도 표시 제거)."""
+    n = re.sub(r"\s*\(\s*[\d.]+\s*(kg|g|l|ml|ea)\b[^)]*\).*$", "", str(name or ""), flags=re.I)
+    n = re.sub(r"_.*$", "", n)
+    return n.strip() or str(name or "").strip()
 
 
-def cost_item_map(c) -> dict:
-    """관리자가 직접 연결한 것: {거래명세서 품명: {"item": 재고 품목} 또는 {"cost": 원/kg}}"""
+def parse_ledger_rows(rows: list):
+    """머리글(월·일·품목·매출처·매입처·총매출액·총매입액…) 아래 거래 줄만 읽는다. 월 합계 줄은 건너뜀."""
+    hi = next((i for i, r in enumerate(rows[:15]) if {"매출처", "매입처"} <= {_inv_h(x) for x in r}), None)
+    if hi is None:
+        return None, []
+    hdr = [_inv_h(x) for x in rows[hi]]
+    col = {}
+    for f, keys in LEDGER_COLS.items():
+        col[f] = next((i for k in keys for i, h in enumerate(hdr) if h == k or (len(k) > 1 and h.startswith(k))), None)
+    if col["sales"] is None or col["purchase"] is None:
+        return None, []
+    title = " ".join(" ".join(r) for r in rows[:hi])
+    m = re.search(r"(20\d{2})\s*년", title)
+    year = int(m[1]) if m else None
+    g = lambda r, f: (r[col[f]] if col[f] is not None and col[f] < len(r) else "")
+    out = []
+    for i, r in enumerate(rows[hi + 1:], hi + 2):
+        mo, dd = _numn(g(r, "month")), _numn(g(r, "day"))
+        item = str(g(r, "item")).strip()
+        if not mo or not dd or not item or not (1 <= mo <= 12 and 1 <= dd <= 31):
+            continue
+        sales, purchase = _numn(g(r, "sales")) or 0, _numn(g(r, "purchase")) or 0
+        profit = _numn(g(r, "profit"))
+        out.append({"month": int(mo), "day": int(dd), "item": item, "item_base": item_base(item),
+                    "qty": _numn(g(r, "qty")) or 0, "customer": str(g(r, "customer")).strip(),
+                    "supplier": str(g(r, "supplier")).strip(), "sale_price": _numn(g(r, "sale_price")),
+                    "buy_price": _numn(g(r, "buy_price")), "origin": str(g(r, "origin")).strip(),
+                    "sales": sales, "purchase": purchase,
+                    "profit": profit if profit is not None else sales - purchase,
+                    "note": str(g(r, "note")).strip(), "src_row": i})
+    return year, out
+
+
+def parse_ledger(filename: str, data: bytes):
+    """일계장 파일에서 '매입매출장' 시트(없으면 머리글이 맞는 시트)를 찾는다."""
+    if data[:4] == b"\xd0\xcf\x11\xe0":
+        sheets = read_xls_sheets(data)
+    else:
+        sheets = {n: read_xlsx_values(data, n) for n in xlsx_sheet_names(data)}
+    names = sorted(sheets, key=lambda n: (_inv_h(n) != "매입매출장",))
+    for n in names:
+        year, rows = parse_ledger_rows(sheets[n])
+        if rows:
+            return n, year, rows
+    return None, None, []
+
+
+LEDGER_FIELDS = ("year", "month", "day", "date", "item", "item_base", "qty", "customer", "supplier", "sale_price",
+                 "buy_price", "origin", "sales", "purchase", "profit", "note", "src_row")
+
+
+def ledger_meta(c) -> dict:
     try:
-        return json.loads(get_setting(c, "cost_item_map", "{}")) or {}
+        return json.loads(get_setting(c, "ledger_meta", "{}")) or {}
     except ValueError:
         return {}
 
 
-class CostBook:
-    """품목별 원가 찾기. 1) 재고 엑셀 출고 기록과 날짜(±3일)·거래처·수량이 맞으면 그 로트 원가
-    2) 아니면 판매일 이전에 통관된 가장 최근 로트 원가 3) 그것도 없으면 가장 오래된 로트 원가."""
-
-    def __init__(self, c, cust_fn):
-        self.cust = cust_fn
-        self.lots, self.by_norm, self.by_tok, self.ships = {}, {}, {}, {}
-        for l in c.execute("SELECT id, item, cost_krw, customs_date FROM inv_lots WHERE cost_krw > 0"):
-            self.lots.setdefault(l["item"], []).append(dict(l))
-        for item, lots in self.lots.items():
-            lots.sort(key=lambda l: l["customs_date"] or "")
-            self.by_norm.setdefault(_item_norm(item), item)
-            self.by_tok.setdefault(_item_tokens(item), item)
-        for s in c.execute("SELECT s.ship_date, s.customer, s.qty, l.item, l.cost_krw FROM inv_ships s"
-                           " JOIN inv_lots l ON l.id = s.lot_id WHERE l.cost_krw > 0"):
-            self.ships.setdefault(s["item"], []).append(
-                (s["ship_date"], _company_key(self.cust(s["customer"])), s["qty"], s["cost_krw"]))
-        self.manual = cost_item_map(c)
-
-    def match_item(self, name: str):
-        m = self.manual.get(name)
-        if m and m.get("item") in self.lots:
-            return m["item"]
-        return self.by_norm.get(_item_norm(name)) or self.by_norm.get(_item_norm(_CODE_RE.sub("", name))) \
-            or self.by_tok.get(_item_tokens(name))
-
-    def cost(self, name: str, date: str, customer: str, qty: float):
-        """(원/kg, 근거) 근거: lot(출고 기록 일치) / date(날짜 기준 로트) / manual / None"""
-        m = self.manual.get(name) or {}
-        if m.get("cost"):
-            return float(m["cost"]), "manual", ""
-        item = self.match_item(name)
-        if not item:
-            return None, None, ""
-        ck = _company_key(customer)
-        try:
-            d0 = datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            d0 = None
-        near = [s for s in self.ships.get(item, []) if s[1] == ck and d0 and
-                abs((datetime.strptime(s[0], "%Y-%m-%d") - d0).days) <= 3]
-        for s in near:
-            if abs(s[2] - qty) < 0.01:
-                return s[3], "lot", item
-        if near and abs(sum(s[2] for s in near) - qty) < 0.01 and qty:
-            return sum(s[2] * s[3] for s in near) / qty, "lot", item
-        lots = self.lots[item]
-        before = [l for l in lots if l["customs_date"] and l["customs_date"] <= date]
-        return (before[-1] if before else lots[0])["cost_krw"], "date", item
+@app.post("/api/ledger/upload")
+async def ledger_upload(file: UploadFile = File(...), dry_run: bool = False, year: int = 0,
+                        user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    if not filename.lower().endswith((".xls", ".xlsx", ".xlsm")):
+        raise HTTPException(400, "엑셀 파일(xls, xlsx)만 올릴 수 있습니다.")
+    try:
+        sheet, y, rows = parse_ledger(filename, data)
+    except Exception as e:
+        raise HTTPException(400, f"엑셀을 읽지 못했습니다: {e}")
+    if not rows:
+        raise HTTPException(400, "매입매출장 시트(월·일·품목·매출처·매입처·총매출액·총매입액 머리글)를 찾지 못했습니다.")
+    y = year or y or int((file_date(filename) or "0")[:4]) or None
+    if not y:
+        raise HTTPException(400, "연도를 알 수 없습니다. 연도를 골라 다시 올려 주세요.")
+    summary = {"sheet": sheet, "year": y, "rows": len(rows), "sales": sum(r["sales"] for r in rows),
+               "profit": sum(r["profit"] for r in rows), "last": max(f"{r['month']:02d}-{r['day']:02d}" for r in rows)}
+    if dry_run:
+        return summary
+    with db() as c:
+        meta = ledger_meta(c)
+        cur = meta.get(str(y), {})
+        fd = file_date(filename)
+        if user["role"] == "auto" and fd and cur.get("file_date") and fd < cur["file_date"]:
+            return {**summary, "skipped": f"이미 {cur['file_date']} 파일이 올라가 있어 건너뜀"}
+        c.execute("DELETE FROM ledger WHERE year = ?", (y,))
+        c.executemany(f"INSERT INTO ledger ({', '.join(LEDGER_FIELDS)}) VALUES ({', '.join('?' * len(LEDGER_FIELDS))})",
+                      [[{**r, "year": y, "date": f"{y}-{r['month']:02d}-{r['day']:02d}"}.get(f) for f in LEDGER_FIELDS]
+                       for r in rows])
+        meta[str(y)] = {"filename": filename, "file_date": fd, "uploaded_at": now(), "by": user["name"],
+                        "rows": len(rows), "last": summary["last"]}
+        set_setting(c, "ledger_meta", json.dumps(meta, ensure_ascii=False))
+    return summary
 
 
 @app.get("/api/inventory/profit")
-def inventory_profit(year: int = 0, low: float = 10, user: dict = Depends(current_user)):
-    """이익 = 거래명세서 공급가액 − 출고량 × 원가(재고 엑셀 로트의 원가(원화)).
-    재고 엑셀의 납품가는 쓰지 않는다."""
+def inventory_profit(year: int = 0, low: float = 10, include_ex: bool = False, user: dict = Depends(current_user)):
+    """매입매출장 기준 이익: 줄마다 총매출액 − 총매입액(= 총손익)."""
     with db() as c:
         if not can_see_cost(c, user):
             raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
-        is_ex, canon = exclude_matcher(c), canon_fn(c)
-        book = CostBook(c, inv_customer_fn(c))
-        rows = c.execute("SELECT q.quote_date, q.customer_name, i.name, i.qty, i.supply FROM quote_items i"
-                         " JOIN quotes q ON q.id = i.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft'"
-                         " AND i.name != ''").fetchall()
-        meta = inv_meta(c)
-    years = sorted({int(r["quote_date"][:4]) for r in rows if r["quote_date"][:4].isdigit()})
-    if not years or not book.lots:
-        return {"years": years if book.lots else [], "year": None, "meta": meta, "no_inventory": not book.lots}
+        is_ex, canon = exclude_matcher(c), inv_customer_fn(c)
+        rows = c.execute("SELECT * FROM ledger ORDER BY date, src_row").fetchall()
+        meta = ledger_meta(c)
+    years = sorted({r["year"] for r in rows})
+    if not years:
+        return {"years": [], "year": None, "meta": meta}
     year = year if year in years else years[-1]
-    monthly = {y: {"rev": [0] * 12, "cost": [0] * 12, "profit": [0] * 12, "all": [0] * 12} for y in (year, year - 1)}
-    cust, items, low_rows, unmatched = {}, {}, [], {}
-    stats = {"lines": 0, "matched": 0, "rev_all": 0, "rev_matched": 0, "by_lot": 0, "by_date": 0, "manual": 0}
+    monthly = {y: {"rev": [0] * 12, "cost": [0] * 12, "profit": [0] * 12} for y in (year, year - 1)}
+    yearly, cust, items, sups, low_rows = {}, {}, {}, {}, []
+    stats = {"lines": 0, "excluded": 0, "excluded_sales": 0, "excluded_profit": 0}
     for r in rows:
-        d = r["quote_date"]
-        y, m = int(d[:4]), int(d[5:7])
-        name = canon(r["customer_name"])
-        if is_ex(name) or y not in monthly:
-            continue
-        rev, qty = r["supply"] or 0, r["qty"] or 0
-        unit, how, item = book.cost(r["name"], d, name, qty)
-        mm = monthly[y]
-        mm["all"][m - 1] += rev
-        if y == year:
-            stats["lines"] += 1
-            stats["rev_all"] += rev
-        if unit is None:
+        y, m = r["year"], r["month"]
+        name = canon(r["customer"]) or "(매출처 없음)"
+        if is_ex(name) and not include_ex:
             if y == year:
-                u = unmatched.setdefault(r["name"], {"name": r["name"], "rev": 0, "qty": 0, "count": 0})
-                u["rev"] += rev
-                u["qty"] += qty
-                u["count"] += 1
+                stats["excluded"] += 1
+                stats["excluded_sales"] += r["sales"]
+                stats["excluded_profit"] += r["profit"]
             continue
-        cost = qty * unit
-        profit = rev - cost
-        mm["rev"][m - 1] += rev
-        mm["cost"][m - 1] += cost
-        mm["profit"][m - 1] += profit
+        rev, cost, profit = r["sales"], r["purchase"], r["profit"]
+        yy = yearly.setdefault(y, {"rev": 0, "cost": 0, "profit": 0})
+        yy["rev"] += rev
+        yy["cost"] += cost
+        yy["profit"] += profit
+        if y in monthly:
+            mm = monthly[y]
+            mm["rev"][m - 1] += rev
+            mm["cost"][m - 1] += cost
+            mm["profit"][m - 1] += profit
         if y != year:
             continue
-        stats["matched"] += 1
-        stats["rev_matched"] += rev
-        stats["by_" + how if how != "manual" else "manual"] += 1
-        for key, bucket in ((name, cust), (item or r["name"], items)):
+        stats["lines"] += 1
+        sup = re.sub(r"\(재고\)$", "", r["supplier"]).strip() or "(매입처 없음)"
+        for key, bucket in ((name, cust), (r["item_base"], items), (sup, sups)):
             e = bucket.setdefault(key, {"name": key, "rev": 0, "cost": 0, "profit": 0, "qty": 0, "count": 0})
             e["rev"] += rev
             e["cost"] += cost
             e["profit"] += profit
-            e["qty"] += qty
+            e["qty"] += r["qty"]
             e["count"] += 1
         margin = profit / rev * 100 if rev else 0
-        if qty > 0 and margin < low:
-            low_rows.append({"date": d, "customer": name, "item": r["name"], "inv_item": item, "qty": qty,
-                             "price": rev / qty if qty else 0, "unit_cost": unit, "profit": profit,
-                             "margin": margin, "how": how})
+        if rev > 0 and margin < low:
+            low_rows.append({"date": r["date"], "customer": name, "item": r["item"], "supplier": r["supplier"],
+                             "qty": r["qty"], "price": r["sale_price"], "unit_cost": r["buy_price"],
+                             "profit": profit, "margin": margin, "note": r["note"]})
     low_rows.sort(key=lambda x: (x["margin"], x["profit"]))
     by_profit = lambda dct: sorted(dct.values(), key=lambda e: -e["profit"])
-    return {"years": years, "year": year, "monthly": monthly, "customers": by_profit(cust), "items": by_profit(items),
-            "low": low_rows[:200], "low_threshold": low, "stats": stats, "meta": meta,
-            "unmatched": sorted(unmatched.values(), key=lambda e: -e["rev"])[:300]}
-
-
-@app.get("/api/inventory/cost-map")
-def get_cost_map(_: dict = Depends(admin_user)):
-    with db() as c:
-        items = [r[0] for r in c.execute("SELECT DISTINCT item FROM inv_lots WHERE cost_krw > 0 ORDER BY item COLLATE NOCASE")]
-        return {"map": cost_item_map(c), "items": items}
-
-
-@app.put("/api/inventory/cost-map")
-def put_cost_map(body: dict, _: dict = Depends(admin_user)):
-    """{"name": 거래명세서 품명, "item": 재고 품목 | "cost": 원/kg | 둘 다 없으면 연결 해제}"""
-    name = str(body.get("name", "")).strip()
-    if not name:
-        raise HTTPException(400, "품명이 없습니다.")
-    with db() as c:
-        m = cost_item_map(c)
-        if body.get("item"):
-            m[name] = {"item": str(body["item"])}
-        elif _num(body.get("cost")) > 0:
-            m[name] = {"cost": _num(body["cost"])}
-        else:
-            m.pop(name, None)
-        set_setting(c, "cost_item_map", json.dumps(m, ensure_ascii=False))
-    return {"ok": True}
+    return {"years": years, "year": year, "monthly": monthly, "yearly": yearly, "customers": by_profit(cust),
+            "items": by_profit(items), "suppliers": by_profit(sups), "low": low_rows[:300], "low_threshold": low,
+            "stats": stats, "meta": meta, "include_ex": include_ex}
 
 
 # ---------------------------------------------------------------- 입고 예정

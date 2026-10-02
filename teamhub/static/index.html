@@ -1542,12 +1542,14 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time) => `param([switch]$Install)
-# TeamHub 재고 자동 업로드: 창고관리 폴더에서 파일 이름의 날짜가 가장 최근인 재고 엑셀을 올립니다
-# (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일을 올림. 날짜가 없으면 수정한 시각 기준)
-$dir = "Z:\\VOL1\\공유문서\\창고관리"
+  const script = (key, time, invDir, ledDir) => `param([switch]$Install)
+# TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
+# (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
+$jobs = @(
+  @{ Name = "재고";       Dir = "${(invDir || '').replace(/"/g, '')}"; Url = "${host}/api/inventory/upload"; Ext = @('.xlsx', '.xlsm') },
+  @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm') }
+)
 $key = "${key || '(키 만들기 필요)'}"
-$url = "${host}/api/inventory/upload"
 $log = "C:\\TeamHub\\log.txt"
 function Say($msg) { Write-Host $msg; Add-Content -LiteralPath $log -Value ("{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm"), $msg) -Encoding UTF8 }
 if ($Install) {
@@ -1555,38 +1557,41 @@ if ($Install) {
   if ($LASTEXITCODE -eq 0) { Say "작업 스케줄러 등록 완료: 매일 ${time || '18:00'}" } else { Say "작업 스케줄러 등록 실패" }
   try { $t = Get-ScheduledTask -TaskName "TeamHub Inventory"; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t | Out-Null } catch {}
 }
-if (-not (Test-Path -LiteralPath $dir)) { Say "폴더를 찾을 수 없습니다: $dir  (이 PC에 Z: 드라이브가 연결되어 있는지 확인)"; exit 1 }
 function Get-FileDate($name) {
   if ($name -match '(20\\d{2})[.\\-_ ]?(\\d{1,2})[.\\-_ ]?(\\d{1,2})(?!\\d)') { return '{0}{1:D2}{2:D2}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3] }
   if ($name -match '(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)') { return '20{0}{1}{2}' -f $Matches[1], $Matches[2], $Matches[3] }
   return '00000000'
 }
-# 하위 폴더(예: 월별 폴더)까지 찾음
-$files = Get-ChildItem -LiteralPath $dir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
-         Where-Object { $_.Extension -in '.xlsx', '.xlsm' -and $_.Name -notlike '~$*' } |
-         Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
-         Select-Object -First 5
-if (-not $files) { Say "엑셀 파일을 찾지 못했습니다: $dir"; exit 1 }
-$tmp = Join-Path $env:TEMP "teamhub_inv.xlsx"   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
-foreach ($f in $files) {   # 재고 시트가 없는 파일이면 다음 파일로
-  Copy-Item -LiteralPath $f.FullName $tmp -Force
-  $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" $url
-  $code = ("$out" -split '\\|')[-1]
-  if ($code -eq '200') { Say "올림 성공: $($f.Name)"; exit 0 }
-  Say "실패($code): $($f.Name)  $out"
-}
-exit 1`;
+foreach ($job in $jobs) {
+  if (-not $job.Dir) { continue }
+  if (-not (Test-Path -LiteralPath $job.Dir)) { Say "[$($job.Name)] 폴더를 찾을 수 없습니다: $($job.Dir)  (이 PC에 나스 드라이브가 연결되어 있는지 확인)"; continue }
+  # 하위 폴더(예: 월별 폴더)까지 찾음
+  $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' } |
+           Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
+           Select-Object -First 5
+  if (-not $files) { Say "[$($job.Name)] 엑셀 파일을 찾지 못했습니다: $($job.Dir)"; continue }
+  $done = $false
+  foreach ($f in $files) {   # 맞는 시트가 없는 파일이면 다음 파일로
+    $tmp = Join-Path $env:TEMP ("teamhub_upload" + $f.Extension)   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
+    Copy-Item -LiteralPath $f.FullName $tmp -Force
+    $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" $job.Url
+    $code = ("$out" -split '\\|')[-1]
+    if ($code -eq '200') { Say "[$($job.Name)] 올림 성공: $($f.Name)"; $done = $true; break }
+    Say "[$($job.Name)] 실패($code): $($f.Name)  $out"
+  }
+}`;
   // 더블클릭 설치 파일(.cmd): 아래 PowerShell 부분을 C:\TeamHub 에 저장하고 -Install 로 실행
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
     a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
-  openModal(`<h2>⚙ 재고 자동 업로드</h2>
+  openModal(`<h2>⚙ 자동 업로드 (재고 · 매입매출장)</h2>
     <div class="muted" style="font-size:13px">나스(Z: 드라이브)가 연결된 <b>사무실 PC</b>에서 이 화면을 열고 아래 순서대로 하세요.</div>
     <div class="ec-box">
       <b>① 키 만들기</b>
@@ -1594,21 +1599,27 @@ exit 1`;
       <div class="muted" style="font-size:12px;margin-top:4px">${s.upload_key ? '이미 있습니다. 그대로 두고 ②로 가세요. (새로 만들면 예전에 설치한 PC는 다시 설치해야 합니다)' : '버튼을 한 번 누르세요.'}</div>
     </div>
     <div class="ec-box">
-      <b>② 설치 파일 받기</b>
+      <b>② 올릴 폴더 (나스)</b>
+      <label style="margin-top:6px">📦 재고리스트 폴더</label><input id="invDir" value="${esc(s.inv_dir || '')}">
+      <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
+      <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
+    </div>
+    <div class="ec-box">
+      <b>③ 설치 파일 받기</b>
       <div class="row" style="margin-top:6px"><span>매일</span><input type="time" id="upTime" value="18:00" style="width:auto"><span>에 자동으로 올리기</span></div>
       <button class="btn primary" id="dlInstall" style="margin-top:8px">⬇ 설치 파일 받기 (TeamHub_install.cmd)</button>
       <div class="muted" style="font-size:12px;margin-top:4px">브라우저가 "위험할 수 있는 파일"이라고 하면 <b>…</b> 또는 <b>^</b> 버튼 → <b>유지</b>를 누르세요.</div>
     </div>
     <div class="ec-box">
-      <b>③ 받은 파일 더블클릭</b>
+      <b>④ 받은 파일 더블클릭</b>
       <div style="font-size:13px;line-height:1.7;margin-top:4px">다운로드 폴더의 <code>TeamHub_install.cmd</code> 를 더블클릭하세요.<br>
         파란 창 "Windows의 PC 보호"가 뜨면 <b>추가 정보</b> → <b>실행</b>.<br>
-        검은 창에 <b>"작업 스케줄러 등록 완료"</b>, <b>"올림 성공"</b>이 나오면 끝입니다. 아무 키나 눌러 닫으세요.<br>
+        검은 창에 <b>"작업 스케줄러 등록 완료"</b>, <b>"[재고] 올림 성공"</b>, <b>"[매입매출장] 올림 성공"</b>이 나오면 끝입니다. 아무 키나 눌러 닫으세요.<br>
         그 뒤로는 PC가 켜져 있으면 매일 정한 시각에 저절로 올라갑니다. (PC가 꺼져 있던 날은 다음에 켤 때)</div>
     </div>
     <details style="margin-top:12px;font-size:13px"><summary class="muted">문제가 있을 때</summary>
       <div style="line-height:1.7;margin-top:6px">· 기록은 <code>C:\\TeamHub\\log.txt</code> 에 남습니다. "폴더를 찾을 수 없습니다"가 나오면 그 PC에서 Z: 드라이브가 열리는지 확인하세요.<br>
-      · 시각을 바꾸려면 ②에서 시각을 바꿔 다시 받고 다시 실행하면 됩니다.<br>
+      · 시각이나 폴더를 바꾸려면 여기서 바꾸고 설치 파일을 다시 받아 다시 실행하면 됩니다.<br>
       · 지우려면 작업 스케줄러에서 "TeamHub Inventory" 작업을 삭제하세요.</div>
       <button class="btn sm" id="dlScript" style="margin-top:6px">PowerShell 스크립트만 받기 (.ps1)</button>
     </details>
@@ -1623,11 +1634,12 @@ exit 1`;
     $('#pfPub', bg).onchange = async e => { const r = await save({profit_public: e.target.value === '1'}); toast(r.profit_public ? '전 직원이 이익분석을 볼 수 있습니다.' : '관리자만 볼 수 있습니다.'); };
     $('#newKey', bg).onclick = async () => {
       if ($('#upKey', bg).value && !confirm('키를 새로 만들면 이미 설치한 PC는 설치 파일을 다시 받아 실행해야 합니다. 계속할까요?')) return;
-      await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 설치 파일을 받으세요.');
+      await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
+    ['invDir', 'ledDir'].forEach(id => $('#' + id, bg).onchange = e => save({[id === 'invDir' ? 'inv_dir' : 'ledger_dir']: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
@@ -1715,120 +1727,109 @@ function openInvItem(lots, canCost, today) {
 }
 
 // ===================================================== 💰 이익 분석 (재고 엑셀 출고 기록 × 원가)
+function openLedgerUpload(after) {
+  const y0 = new Date().getFullYear();
+  openModal(`<h2>💰 매입매출장 올리기</h2>
+    <div class="muted" style="font-size:13px">일계장 엑셀(xls/xlsx)의 <b>매입매출장</b> 시트를 읽습니다. 같은 연도는 올릴 때마다 이 파일 내용으로 바뀝니다.</div>
+    <label>엑셀 파일</label><input type="file" id="ldFile" accept=".xls,.xlsx,.xlsm">
+    <label>연도 <small class="muted">(시트 제목의 "2026년도"를 자동으로 읽음)</small></label>
+    <select id="ldYear"><option value="0">자동</option>${[0, 1, 2, 3, 4, 5].map(k => `<option>${y0 - k}</option>`).join('')}</select>
+    <div id="ldPrev" class="muted" style="margin-top:8px"></div><div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ldGo" disabled>올리기</button></div>`, (bg, close) => {
+    const send = async dry => {
+      const fd = new FormData(); fd.append('file', $('#ldFile', bg).files[0]);
+      const res = await fetch(`/api/ledger/upload?dry_run=${dry}&year=${$('#ldYear', bg).value}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '업로드 실패');
+      return data;
+    };
+    $('#ldFile', bg).onchange = $('#ldYear', bg).onchange = async () => {
+      if (!$('#ldFile', bg).files[0]) return;
+      $('.err', bg).textContent = ''; $('#ldGo', bg).disabled = true; $('#ldPrev', bg).textContent = '읽는 중…';
+      try {
+        const r = await send(true);
+        $('#ldPrev', bg).innerHTML = `시트 <b>${esc(r.sheet)}</b> · <b>${r.year}년</b> ${r.rows}줄 (마지막 ${esc(r.last)}) · 매출 ${krw(r.sales)}원 · 손익 ${krw(r.profit)}원`;
+        $('#ldGo', bg).disabled = false;
+      } catch (err) { $('#ldPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+    };
+    $('#ldGo', bg).onclick = async () => {
+      try { const r = await send(false); close(); toast(`${r.year}년 ${r.rows}줄을 반영했습니다.`); after && after(); }
+      catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
 async function renderProfit() {
-  const pf = state.pf ||= {year: 0, tab: 'cust', low: 10, q: ''};
-  const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}`), excludeNote()]);
+  const pf = state.pf ||= {year: 0, tab: 'cust', low: 10, q: '', inc: false};
+  const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}&include_ex=${pf.inc}`), excludeNote()]);
   const admin = state.me.role === 'admin';
-  if (!d.years.length || !d.year) {
-    $('#main').innerHTML = `<div class="card"><h3>💰 이익분석</h3><div class="empty">${d.no_inventory ? '원가를 가져올 재고 엑셀이 없습니다. 📦 재고에서 엑셀을 올려 주세요.' : '거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져와 주세요.'}</div></div>`;
+  const tools = admin ? '<button class="btn" id="pfSet" title="자동 업로드 설정">⚙</button><button class="btn primary" id="pfUp">매입매출장 올리기</button>' : '';
+  if (!d.years.length) {
+    $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>${tools}</div><div class="empty">${admin ? '일계장 엑셀(매입매출장 시트)을 올려 주세요. ⚙ 에서 폴더를 정하면 매일 자동으로 올라옵니다.' : '아직 매입매출장이 올라오지 않았습니다.'}</div></div>`;
+    if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
     return;
   }
   const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
   const now = new Date();
   const cm = d.monthly[Y], pm = d.monthly[P];
-  const lastM = cm.all.reduce((acc, v, i) => v ? i + 1 : acc, 0);
-  const upto = Y === now.getFullYear() ? now.getMonth() + 1 : (lastM || 12);
+  const lastM = cm.rev.reduce((acc, v, i) => v ? i + 1 : acc, 0);
+  const upto = Y === now.getFullYear() ? Math.max(lastM, 1) : (lastM || 12);
   const ytd = k => sum(cm[k].slice(0, upto)), pytd = k => sum(pm[k].slice(0, upto));
   const rate = (p, r) => r ? (p / r * 100).toFixed(1) + '%' : '-';
-  const st = d.stats, cover = st.rev_all ? st.rev_matched / st.rev_all * 100 : 0;
+  const st = d.stats, m = d.meta[Y] || {};
   const ql = pf.q.toLowerCase();
-  const list = (pf.tab === 'cust' ? d.customers : d.items).filter(e => !ql || e.name.toLowerCase().includes(ql));
-  const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item).toLowerCase().includes(ql));
-  const unm = d.unmatched.filter(e => !ql || e.name.toLowerCase().includes(ql));
-  const HOW = {lot: '출고 기록 일치', date: '날짜 기준 로트', manual: '직접 입력'};
+  const src = {cust: d.customers, item: d.items, sup: d.suppliers}[pf.tab] || [];
+  const list = src.filter(e => !ql || e.name.toLowerCase().includes(ql));
+  const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item + ' ' + e.supplier).toLowerCase().includes(ql));
   let table;
-  if (pf.tab === 'low') table = `<div class="row" style="margin-bottom:6px"><span class="muted">이익률</span><select id="pfLow" style="width:auto">${[0, 5, 10, 15, 20, 30].map(v => `<option value="${v}" ${v === pf.low ? 'selected' : ''}>${v}% 미만</option>`).join('')}</select><span class="muted" style="font-size:12px">${Y}년 · 0% 미만은 손해</span></div>
-      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>날짜</th><th>거래처</th><th class="num">수량</th><th class="num">판매단가</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th><th>원가 근거</th></tr></thead><tbody>
-      ${lows.map(e => `<tr><td title="${esc(e.item)}">${esc(e.item)}</td><td>${esc(e.date)}</td><td>${esc(e.customer)}</td><td class="num">${kg(e.qty)}</td><td class="num">${won(e.price)}</td>
-        <td class="num">${won(e.unit_cost)}</td><td class="num ${e.profit < 0 ? 'down' : ''}">${won(e.profit)}</td><td class="num ${e.margin < 0 ? 'down' : ''}">${e.margin.toFixed(1)}%</td><td><small class="muted">${HOW[e.how] || ''}${e.inv_item && e.inv_item !== e.item ? ' · ' + esc(e.inv_item) : ''}</small></td></tr>`).join('') || '<tr><td colspan="9" class="empty">없습니다.</td></tr>'}
+  if (pf.tab === 'month') table = `<div class="qscroll"><table class="an-table"><thead><tr><th>월</th><th class="num">매출</th><th class="num">매입</th><th class="num">이익</th><th class="num">이익률</th><th class="num">${P}년 이익</th><th class="num">전년 대비</th></tr></thead><tbody>
+      ${months.map((mn, i) => `<tr><td>${mn}</td><td class="num">${man(cm.rev[i])}</td><td class="num">${man(cm.cost[i])}</td><td class="num"><b>${man(cm.profit[i])}</b></td><td class="num">${rate(cm.profit[i], cm.rev[i])}</td><td class="num">${man(pm.profit[i])}</td><td class="num">${cm.rev[i] ? deltaHtml(cm.profit[i], pm.profit[i]) : '-'}</td></tr>`).join('')}
+      <tr><td><b>합계</b></td><td class="num"><b>${man(sum(cm.rev))}</b></td><td class="num"><b>${man(sum(cm.cost))}</b></td><td class="num"><b>${man(sum(cm.profit))}</b></td><td class="num"><b>${rate(sum(cm.profit), sum(cm.rev))}</b></td><td class="num">${man(sum(pm.profit))}</td><td class="num">${deltaHtml(ytd('profit'), pytd('profit'))}</td></tr>
+      </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원</div>`;
+  else if (pf.tab === 'low') table = `<div class="row" style="margin-bottom:6px"><span class="muted">이익률</span><select id="pfLow" style="width:auto">${[0, 5, 10, 15, 20, 30].map(v => `<option value="${v}" ${v === pf.low ? 'selected' : ''}>${v}% 미만</option>`).join('')}</select><span class="muted" style="font-size:12px">${Y}년 · 0% 미만은 손해</span></div>
+      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>품목</th><th>날짜</th><th>매출처</th><th>매입처</th><th class="num">수량</th><th class="num">매출단가</th><th class="num">매입단가</th><th class="num">이익</th><th class="num">이익률</th><th>비고</th></tr></thead><tbody>
+      ${lows.map(e => `<tr><td title="${esc(e.item)}">${esc(e.item)}</td><td>${esc(e.date)}</td><td>${esc(e.customer)}</td><td>${esc(e.supplier)}</td><td class="num">${kg(e.qty)}</td><td class="num">${e.price != null ? won(e.price) : '-'}</td>
+        <td class="num">${e.unit_cost != null ? won(e.unit_cost) : '-'}</td><td class="num ${e.profit < 0 ? 'down' : ''}">${won(e.profit)}</td><td class="num ${e.margin < 0 ? 'down' : ''}">${e.margin.toFixed(1)}%</td><td><small class="muted">${esc(e.note)}</small></td></tr>`).join('') || '<tr><td colspan="10" class="empty">없습니다.</td></tr>'}
       </tbody></table></div>`;
-  else if (pf.tab === 'unmatched') table = `<div class="muted" style="font-size:12px;margin-bottom:6px">거래명세서 품명을 재고 엑셀에서 찾지 못해 이익 계산에서 빠진 품목입니다 (${Y}년, 매출 큰 순).${admin ? ' <b>연결</b>을 눌러 재고 품목을 고르거나 원가를 직접 넣으세요.' : ''}</div>
-      <div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>거래명세서 품명</th><th class="num">건수</th><th class="num">수량</th><th class="num">매출(만원)</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>
-      ${unm.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td>${admin ? `<td><button class="btn sm" data-link="${esc(e.name)}">연결</button></td>` : ''}</tr>`).join('') || '<tr><td colspan="5" class="empty">모두 연결되었습니다.</td></tr>'}
-      </tbody></table></div>${admin ? '<button class="btn sm" id="pfLinks" style="margin-top:8px">연결해 둔 품목 보기·해제</button>' : ''}`;
-  else table = `<div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>${pf.tab === 'cust' ? '거래처' : '품목'}</th><th class="num">건수</th><th class="num">수량(kg)</th><th class="num">매출</th><th class="num">원가</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
+  else table = `<div class="qscroll" style="max-height:560px;overflow:auto"><table class="an-table"><thead><tr><th>${{cust: '매출처', item: '품목', sup: '매입처'}[pf.tab]}</th><th class="num">건수</th><th class="num">수량(kg)</th><th class="num">매출</th><th class="num">매입</th><th class="num">이익</th><th class="num">이익률</th></tr></thead><tbody>
       ${list.map(e => `<tr><td title="${esc(e.name)}">${esc(e.name)}</td><td class="num">${e.count}</td><td class="num">${kg(e.qty)}</td><td class="num">${man(e.rev)}</td><td class="num">${man(e.cost)}</td>
         <td class="num ${e.profit < 0 ? 'down' : ''}"><b>${man(e.profit)}</b></td><td class="num ${e.profit < 0 ? 'down' : ''}">${rate(e.profit, e.rev)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">없습니다.</td></tr>'}
       </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원 · ${Y}년</div>`;
   $('#main').innerHTML = `<div class="card viz">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>
       <select id="pfYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
-      <input id="pfQ" placeholder="거래처 / 품목 검색" value="${esc(pf.q)}" style="max-width:180px">${admin ? '<button class="btn" id="pfSet">⚙</button>' : ''}</div>
-    <div style="margin-bottom:6px"><span class="muted" style="font-size:12px">매출: 거래명세서 공급가액 · 원가: 재고 엑셀</span> ${invMetaLine(d.meta)}</div>
+      <input id="pfQ" placeholder="거래처 / 품목 검색" value="${esc(pf.q)}" style="max-width:180px">${tools}</div>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">매입매출장 기준 · ${m.filename ? `파일 <b>${esc(m.filename)}</b> · ${Y}년 ${esc(m.last || '')}까지 · 올림 ${esc((m.uploaded_at || '').slice(0, 16))} · ${esc(m.by || '')}` : ''}</div>
     ${exNote}
+    <label style="display:inline-flex;gap:6px;align-items:center;margin:-4px 0 10px;font-size:13px"><input type="checkbox" id="pfInc" ${pf.inc ? 'checked' : ''} style="width:auto">제외 거래처(켐코스 등)도 포함해서 보기${st.excluded ? ` <span class="muted">— 지금 빠진 것: ${st.excluded}건, 매출 ${krw(st.excluded_sales)}원, 이익 ${krw(st.excluded_profit)}원</span>` : ''}</label>
     <div class="stats stats4">
-      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월 ` : ''}매출 (원가 확인된 것)</span><b>${krw(ytd('rev'))}원</b></div>
-      <div class="stat" style="cursor:default"><span class="muted">원가</span><b>${krw(ytd('cost'))}원</b></div>
-      <div class="stat" style="cursor:default"><span class="muted">이익 · 전년 같은 기간 ${krw(pytd('profit'))}원</span><b>${krw(ytd('profit'))}원</b><small>${deltaHtml(ytd('profit'), pytd('profit'))}</small></div>
-      <div class="stat" style="cursor:default"><span class="muted">이익률 · 전년 ${rate(pytd('profit'), pytd('rev'))}</span><b>${rate(ytd('profit'), ytd('rev'))}</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월 ` : ''}매출</span><b>${krw(ytd('rev'))}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">매입</span><b>${krw(ytd('cost'))}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">이익${sum(pm.rev) ? ` · 전년 같은 기간 ${krw(pytd('profit'))}원` : ''}</span><b>${krw(ytd('profit'))}원</b>${sum(pm.rev) ? `<small>${deltaHtml(ytd('profit'), pytd('profit'))}</small>` : ''}</div>
+      <div class="stat" style="cursor:default"><span class="muted">이익률${sum(pm.rev) ? ` · 전년 ${rate(pytd('profit'), pytd('rev'))}` : ''}</span><b>${rate(ytd('profit'), ytd('rev'))}</b></div>
     </div>
-    <div class="muted" style="font-size:13px;margin:-4px 0 10px">${Y}년 거래명세서 매출 ${krw(st.rev_all)}원 중 <b style="color:${cover < 80 ? '#b45309' : 'inherit'}">${cover.toFixed(0)}%</b>(${st.matched}/${st.lines}건)의 원가를 찾았습니다.${d.unmatched.length ? ` <a href="#" id="pfGoUnm">원가 못 찾은 품목 ${d.unmatched.length}개 보기</a>` : ''}</div>
-    <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b></div>
+    <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b>${d.monthly[P] && !sum(pm.rev) ? `<span class="muted" style="font-size:12px">${P}년 매입매출장을 올리면 전년과 비교됩니다</span>` : ''}</div>
     <div id="pfChart"></div>
-    <div class="tabs" style="margin-top:12px"><button data-t="cust">거래처별</button><button data-t="item">품목별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button><button data-t="unmatched">🔗 원가 못 찾은 품목 (${d.unmatched.length})</button></div>
+    <div class="tabs" style="margin-top:12px"><button data-t="month">월별</button><button data-t="cust">매출처별</button><button data-t="item">품목별</button><button data-t="sup">매입처별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button></div>
     ${table}
     <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.7">
-      계산: 이익 = 거래명세서 공급가액 − 수량 × 원가(원화/kg). 재고 엑셀의 납품가는 쓰지 않습니다.
-      <br>· 원가 찾는 순서: ① 재고 엑셀 출고 기록과 날짜(±3일)·거래처·수량이 맞는 로트의 원가 (${st.by_lot}건) ② 판매일 전에 통관된 가장 최근 로트의 원가 (${st.by_date}건)${st.manual ? ` ③ 직접 입력한 원가 (${st.manual}건)` : ''}
-      <br>· 품명은 띄어쓰기·기호·끝에 붙은 제품코드(예: 937450)를 무시하고 맞춥니다. 못 찾은 품목은 계산에서 빠집니다.
-      <br>· 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
+      계산: 매입매출장의 줄마다 총 매출액 − 총 매입액(= 총 손익), 부가세 별도. 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
+      <br>· 품목은 포장 표시(예: "(25kg *4)_식")를 빼고 묶었습니다. 매출처 이름은 매출분석의 "같은 회사 이름 합치기"와 (주)·띄어쓰기 차이를 같이 맞춥니다.
     </div>
   </div>`;
   const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
   $('#pfChart').dataset.cum = '1';
   lineChart($('#pfChart'), months, [
     {name: `${Y}년`, color: 'var(--series-1)', values: cum(cm.profit, upto), monthly: cm.profit},
-    {name: `${P}년`, color: 'var(--series-2)', values: cum(pm.profit, 12), monthly: pm.profit}]);
+    ...(sum(pm.rev) ? [{name: `${P}년`, color: 'var(--series-2)', values: cum(pm.profit, 12), monthly: pm.profit}] : [])]);
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.t === pf.tab); b.onclick = () => { pf.tab = b.dataset.t; renderProfit(); }; });
   $('#pfYear').onchange = e => { pf.year = +e.target.value; renderProfit(); };
+  $('#pfInc').onchange = e => { pf.inc = e.target.checked; renderProfit(); };
   if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
-  if ($('#pfSet')) $('#pfSet').onclick = openInvSettings;
-  if ($('#pfGoUnm')) $('#pfGoUnm').onclick = e => { e.preventDefault(); pf.tab = 'unmatched'; renderProfit(); };
-  if ($('#pfLinks')) $('#pfLinks').onclick = openCostLinks;
-  $$('[data-link]').forEach(b => b.onclick = () => openCostLink(b.dataset.link));
+  if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
   let timer;
   $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   bindExcludeEdit();
-}
-
-// 거래명세서 품명 → 재고 품목 연결 (또는 원가 직접 입력)
-async function openCostLink(name) {
-  const m = await api('/api/inventory/cost-map');
-  const cur = m.map[name] || {};
-  const words = name.toLowerCase().replace(/\b[a-z]{0,3}\d{5,}\b/g, ' ').split(/[^0-9a-z가-힣]+/).filter(w => w.length > 2);
-  const guess = m.items.filter(it => words.some(w => it.toLowerCase().includes(w))).slice(0, 8);
-  openModal(`<h2>🔗 원가 연결</h2>
-    <div>거래명세서 품명: <b>${esc(name)}</b></div>
-    <label>재고 엑셀의 같은 품목</label>
-    <input id="clItem" list="clItems" placeholder="품목 이름 일부를 입력해 고르세요" value="${esc(cur.item || '')}">
-    <datalist id="clItems">${m.items.map(it => `<option value="${esc(it)}">`).join('')}</datalist>
-    ${guess.length ? `<div class="row" style="margin-top:6px;gap:6px">${guess.map(g => `<button type="button" class="btn sm" data-g="${esc(g)}">${esc(g)}</button>`).join('')}</div>` : ''}
-    <label>또는 원가 직접 입력 (원/kg) — 재고 엑셀에 없는 품목일 때</label>
-    <input id="clCost" inputmode="decimal" value="${cur.cost || ''}">
-    <div class="err"></div>
-    <div class="actions">${cur.item || cur.cost ? '<button class="btn danger" id="clDel">연결 해제</button><span class="spacer"></span>' : ''}<button class="btn" data-close>취소</button><button class="btn primary" id="clSave">저장</button></div>`, (bg, close) => {
-    $$('[data-g]', bg).forEach(b => b.onclick = () => { $('#clItem', bg).value = b.dataset.g; });
-    const put = async body => { await api('/api/inventory/cost-map', {method: 'PUT', body: {name, ...body}}); close(); toast('저장했습니다.'); renderProfit(); };
-    $('#clSave', bg).onclick = async () => {
-      const item = $('#clItem', bg).value.trim(), cost = numVal($('#clCost', bg).value);
-      if (item && !m.items.includes(item)) { $('.err', bg).textContent = '목록에 있는 품목을 고르세요.'; return; }
-      if (!item && !(cost > 0)) { $('.err', bg).textContent = '품목을 고르거나 원가를 입력하세요.'; return; }
-      try { await put(item ? {item} : {cost}); } catch (err) { $('.err', bg).textContent = err.message; }
-    };
-    if ($('#clDel', bg)) $('#clDel', bg).onclick = () => put({});
-  });
-}
-
-async function openCostLinks() {
-  const m = await api('/api/inventory/cost-map');
-  const rows = Object.entries(m.map);
-  openModal(`<h2>연결해 둔 품목 (${rows.length})</h2>
-    ${rows.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래명세서 품명</th><th>연결</th><th></th></tr></thead><tbody>
-      ${rows.map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v.item ? esc(v.item) : `원가 ${won(v.cost)}원/kg`}</td><td><button class="btn sm" data-edit="${esc(n)}">수정</button></td></tr>`).join('')}
-    </tbody></table></div>` : '<div class="empty">없습니다.</div>'}
-    <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
-    $$('[data-edit]', bg).forEach(b => b.onclick = () => { close(); openCostLink(b.dataset.edit); });
-  });
 }
 
 // ===================================================== 매출(납품) 분석
