@@ -4,3 +4,4 @@ uvicorn[standard]
 python-multipart
 python-dotenv
 cryptography
+qrcode>=7.4

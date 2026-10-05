@@ -17,7 +17,7 @@
 ```bash
 pip install -r requirements.txt
 cp .env.example .env          # ANTHROPIC_API_KEY, DATA_KEY 입력
-python manage.py add-planner kim "김설계"    # 설계사 계정 생성 (비밀번호 입력)
+python manage.py add-planner kim "김설계"    # 설계사 계정 생성 (비밀번호 입력, 첫 로그인 때 OTP 등록)
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 - API 키 없이 화면만 보려면 `.env` 에 `ANALYZER_MOCK=1`, 로컬 http 테스트는 `SECURE_COOKIE=0`
@@ -32,6 +32,61 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | `analysis.py` | 보장 합산·체크 포인트 규칙. **`BENCHMARKS` 기준 금액은 회사 기준에 맞게 수정** |
 | `store.py` | 암호화 저장 (SQLite) |
 | `manage.py` | 설계사 계정 관리 |
+
+## 보안
+### 앱에 들어 있는 보호 장치
+| 위협 | 대응 |
+|---|---|
+| 비밀번호 유출 | **2단계 인증(OTP 앱) 필수** — 첫 로그인 때 QR 등록, 같은 코드 재사용 불가 |
+| 비밀번호 무차별 대입 | 5회 실패 시 15분 잠금 (IP·아이디 각각), 없는 아이디도 같은 응답 시간 |
+| 자리 비운 사이 노출 | 30분 미사용 시 자동 로그아웃, 최대 8시간 |
+| 다른 사이트에서 몰래 요청(CSRF) | SameSite 쿠키 + Origin 검사, 차단 시 기록 |
+| 화면 끼워넣기·스크립트 삽입 | CSP, X-Frame-Options, 모든 출력 이스케이프 |
+| 브라우저·프록시에 고객정보 캐시 | Cache-Control: no-store |
+| 위조 파일 업로드 | 확장자가 아니라 파일 내용으로 PDF/이미지 판별, 크기 제한 |
+| DB 파일 유출 | 고객·계약·상담 내용 암호화(DATA_KEY), DB 파일 권한 600, 삭제 시 덮어쓰기 |
+| 다른 설계사 고객 열람 | 모든 조회에 설계사 범위 제한 |
+| 내부자 오남용·사고 추적 | 로그인·조회·수정·삭제 **접속 기록** (내 계정 화면, `manage.py audit`) |
+| API 문서 노출 | /docs, /openapi.json 비활성화 |
+| 특정 장소에서만 사용 | `ALLOWED_IPS` 로 사무실 IP만 허용 가능 |
+
+관리 명령: `python manage.py reset-2fa <아이디>` (휴대폰 분실), `python manage.py audit 200` (전체 기록)
+
+### 서버에 올릴 때 반드시 할 것
+앱만으로는 부족하고 서버 설정이 함께 되어야 합니다.
+1. **HTTPS 필수** — nginx + Let's Encrypt 인증서. `SECURE_COOKIE=1`, `TRUST_PROXY=1`
+2. **방화벽** — 80/443 외 모두 차단, SSH는 키 인증만 + 접속 IP 제한
+3. **앱은 root 가 아닌 전용 계정으로 실행**, `.env`·DB 파일은 그 계정만 읽기 (`chmod 600`)
+4. **DATA_KEY 는 DB 와 분리 보관** — DB 백업과 같은 곳에 두지 말 것
+5. **백업은 암호화**해서 다른 장소에 보관, 복구 테스트
+6. **OS·패키지 자동 보안 업데이트** (`unattended-upgrades`), `pip install -U -r requirements.txt` 정기 실행
+7. (선택) Cloudflare 등 WAF/DDoS 방어 앞단에 두기
+
+nginx 예시:
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name example.com;
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    client_max_body_size 35m;
+    limit_req zone=app burst=20 nodelay;     # http 블록에: limit_req_zone $binary_remote_addr zone=app:10m rate=5r/s;
+    server_tokens off;
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 300s;             # 증권 분석 대기
+    }
+}
+server { listen 80; server_name example.com; return 301 https://$host$request_uri; }
+```
+앱은 `uvicorn app:app --host 127.0.0.1 --port 8000` 으로 **외부에 직접 노출하지 않고** nginx 뒤에서만 실행하세요.
+
+### 한계
+- 로그인 세션·잠금 정보는 서버 메모리에 있어 재시작하면 모두 로그아웃됩니다 (서버 1대 기준 설계).
+- 설계사 PC·휴대폰이 악성코드에 감염되면 앱 보안으로는 막을 수 없습니다. 기기 백신·잠금 화면 필수.
+- 개인정보보호법상 안전성 확보조치(접속기록 보관 기간, 내부관리계획 등)는 운영 주체가 별도로 갖춰야 합니다.
 
 ## 비용
 증권 분석 1회마다 Claude API 요금이 듭니다 (증권 장수에 비례). 판매 가격 책정 전에 실제 증권 몇 건으로 사용량을 확인하세요.

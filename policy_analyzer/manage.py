@@ -3,6 +3,8 @@
   python manage.py add-planner <아이디> <이름>     # 비밀번호는 입력창에서
   python manage.py set-password <아이디>
   python manage.py list
+  python manage.py reset-2fa <아이디>               # 휴대폰 분실 시 2단계 인증 초기화
+  python manage.py audit [건수]                      # 전체 접속·작업 기록 보기
 """
 
 import sys
@@ -31,6 +33,12 @@ def main() -> None:
         print(f"설계사 계정 생성: {args[1]}")
     elif len(args) == 2 and args[0] == "set-password":
         print("변경 완료" if store.set_password(args[1], ask_pw()) else "해당 아이디가 없습니다.")
+    elif len(args) == 2 and args[0] == "reset-2fa":
+        print("초기화 완료. 다음 로그인 때 다시 설정합니다." if store.reset_totp(args[1]) else "해당 아이디가 없습니다.")
+    elif args and args[0] == "audit":
+        from datetime import datetime
+        for r in reversed(store.list_audit(None, int(args[1]) if len(args) > 1 else 100)):
+            print(datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H:%M:%S"), r["username"] or "-", r["ip"], r["action"], r["target"] or "")
     elif args == ["list"]:
         for p in store.list_planners():
             print(p["id"], p["username"], p["name"])

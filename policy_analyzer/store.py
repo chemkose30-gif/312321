@@ -61,6 +61,15 @@ def init_db() -> None:
             source TEXT,                     -- 올린 파일명
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            planner_id INTEGER,              -- 로그인 실패 등은 NULL 가능
+            ts INTEGER NOT NULL,
+            ip TEXT,
+            action TEXT NOT NULL,            -- login / view_customer / upload / delete ...
+            target TEXT                      -- 고객·계약 번호 등 (개인정보 내용은 남기지 않음)
+        );
+        CREATE INDEX IF NOT EXISTS audit_planner_ts ON audit_log (planner_id, ts);
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -68,6 +77,14 @@ def init_db() -> None:
             created_at INTEGER NOT NULL
         );
         """)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(planners)")}
+        for col, ddl in (("totp_enc", "BLOB"), ("totp_last", "INTEGER DEFAULT -1"), ("pw_changed_at", "INTEGER")):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE planners ADD COLUMN {col} {ddl}")
+    try:
+        os.chmod(DB_PATH, 0o600)  # DB 파일은 소유자만 읽기·쓰기
+    except OSError:
+        pass
 
 
 # ── 설계사 계정 ───────────────────────────────────────────────────────────────
@@ -94,10 +111,61 @@ def set_password(username: str, pw: str) -> bool:
         return conn.execute("UPDATE planners SET pw_hash = ? WHERE username = ?", (hash_pw(pw), username)).rowcount > 0
 
 
+_DUMMY_HASH = hash_pw(secrets.token_hex(8))
+
+
 def authenticate(username: str, pw: str):
     with closing(db()) as conn:
         row = conn.execute("SELECT * FROM planners WHERE username = ?", (username,)).fetchone()
-    return row if row and check_pw(pw, row["pw_hash"]) else None
+    if not row:
+        check_pw(pw, _DUMMY_HASH)  # 없는 아이디도 같은 시간이 걸리게 (아이디 추측 방지)
+        return None
+    return row if check_pw(pw, row["pw_hash"]) else None
+
+
+def change_password(planner_id: int, new_pw: str) -> None:
+    with closing(db()) as conn, conn:
+        conn.execute("UPDATE planners SET pw_hash = ?, pw_changed_at = ? WHERE id = ?",
+                     (hash_pw(new_pw), int(time.time()), planner_id))
+
+
+def get_totp(planner_id: int) -> tuple[str | None, int]:
+    with closing(db()) as conn:
+        r = conn.execute("SELECT totp_enc, totp_last FROM planners WHERE id = ?", (planner_id,)).fetchone()
+    return (dec(r["totp_enc"]) if r and r["totp_enc"] else None), (r["totp_last"] if r and r["totp_last"] is not None else -1)
+
+
+def set_totp(planner_id: int, secret: str | None, last: int = -1) -> None:
+    with closing(db()) as conn, conn:
+        conn.execute("UPDATE planners SET totp_enc = ?, totp_last = ? WHERE id = ?",
+                     (enc(secret) if secret else None, last, planner_id))
+
+
+def set_totp_last(planner_id: int, last: int) -> None:
+    with closing(db()) as conn, conn:
+        conn.execute("UPDATE planners SET totp_last = ? WHERE id = ?", (last, planner_id))
+
+
+def reset_totp(username: str) -> bool:
+    with closing(db()) as conn, conn:
+        return conn.execute("UPDATE planners SET totp_enc = NULL, totp_last = -1 WHERE username = ?",
+                            (username,)).rowcount > 0
+
+
+# ── 접속 기록 (개인정보 안전성 확보조치 기준: 접속기록 보관) ─────────────────
+def audit(planner_id: int | None, ip: str, action: str, target: str = "") -> None:
+    with closing(db()) as conn, conn:
+        conn.execute("INSERT INTO audit_log (planner_id, ts, ip, action, target) VALUES (?, ?, ?, ?, ?)",
+                     (planner_id, int(time.time()), ip, action, target[:100]))
+
+
+def list_audit(planner_id: int | None = None, limit: int = 200):
+    with closing(db()) as conn:
+        if planner_id is None:
+            return conn.execute("""SELECT a.*, p.username FROM audit_log a LEFT JOIN planners p ON p.id = a.planner_id
+                                   ORDER BY a.id DESC LIMIT ?""", (limit,)).fetchall()
+        return conn.execute("SELECT * FROM audit_log WHERE planner_id = ? ORDER BY id DESC LIMIT ?",
+                            (planner_id, limit)).fetchall()
 
 
 def get_planner(pid: int):
