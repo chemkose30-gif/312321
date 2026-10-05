@@ -101,6 +101,12 @@ select, input[type=date] { padding:9px 10px; border:1px solid var(--line); borde
 .thumb { position:relative; display:inline-block; }
 .thumb img { width:92px; height:92px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block; }
 .thumb-x { position:absolute; top:-7px; right:-7px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:0; font-size:15px; line-height:1; cursor:pointer; padding:0; }
+.thumb-box { display:flex; flex-direction:column; gap:5px; align-items:center; }
+.rep-toggle { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); cursor:pointer; font-weight:400; margin:0; }
+.rep-toggle.on { color:var(--accent); font-weight:600; }
+.report-photos { display:flex; flex-wrap:wrap; gap:10px; }
+.report-img { max-width:260px; width:100%; border:1px solid var(--line); border-radius:8px; }
+@media print { .report-img { max-width:46%; } }
 .tag { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
 .overdue { color:var(--warn); font-weight:600; }
 .tag.warn-tag { background:var(--warn-bg); color:var(--warn); font-weight:600; }
@@ -707,10 +713,12 @@ def edit_note_form(request: Request, nid: int):
     n = store.get_note(pid, nid)
     if not n:
         raise HTTPException(404)
-    imgs = store.note_image_ids(pid, nid)
-    thumbs = "".join(f"""<span class="thumb"><img src="/note-images/{i}" alt="첨부 사진">
-<form method="post" action="/note-images/{i}/delete" onsubmit="return confirm('이 사진을 삭제할까요?')"><button class="thumb-x" title="삭제">×</button></form></span>""" for i in imgs)
-    cur = f'<div class="card"><h2>첨부된 사진 ({len(imgs)})</h2><div class="thumbs">{thumbs}</div></div>' if imgs else ""
+    imgs = store.note_images(pid, nid)
+    thumbs = "".join(f"""<div class="thumb-box"><span class="thumb"><img src="/note-images/{im['id']}" alt="첨부 사진">
+<form method="post" action="/note-images/{im['id']}/delete" onsubmit="return confirm('이 사진을 삭제할까요?')"><button class="thumb-x" title="삭제">×</button></form></span>
+<form method="post" action="/note-images/{im['id']}/report"><label class="rep-toggle {'on' if im['in_report'] else ''}">
+<input type="checkbox" name="on" value="1" {'checked' if im['in_report'] else ''} onchange="this.form.submit()"> 리포트에 표시</label></form></div>""" for im in imgs)
+    cur = f'<div class="card"><h2>첨부된 사진 ({len(imgs)})</h2><p class="muted" style="margin-top:-4px">"리포트에 표시"를 켠 사진만 고객용 리포트에 나옵니다.</p><div class="thumbs">{thumbs}</div></div>' if imgs else ""
     return page("상담 기록 수정", f"""<p><a href="/customers/{n['customer_id']}">← 돌아가기</a></p>
 {take_flash(request)}
 <div class="card"><h1>상담 기록 수정</h1>{note_form(f"/notes/{nid}/edit", n, "저장")}</div>{cur}""")
@@ -750,6 +758,15 @@ def delete_note_image(request: Request, img_id: int):
         raise HTTPException(404)
     log(request, pid, "delete_note_image", f"기록#{nid}")
     flash(request, "사진을 삭제했습니다.")
+    return RedirectResponse(f"/notes/{nid}/edit", status_code=303)
+
+
+@app.post("/note-images/{img_id}/report")
+def toggle_image_report(request: Request, img_id: int, on: str = Form("")):
+    pid = planner_id(request)
+    nid = store.set_image_report(pid, img_id, on == "1")
+    if nid is None:
+        raise HTTPException(404)
     return RedirectResponse(f"/notes/{nid}/edit", status_code=303)
 
 
@@ -813,7 +830,16 @@ def report(request: Request, cid: int):
 <span class="muted">작성일 {datetime.now():%Y.%m.%d} · 담당 {e(me['name'])}</span></p></div>
 {analysis_html(c, policies)}
 <h2>가입 계약 상세</h2>{''.join(policy_html(p, False) for p in policies)}
+{report_photos(pid, cid)}
 <p class="muted">이 리포트는 증권 내용을 정리한 참고 자료이며, 정확한 보장 내용은 각 보험사 약관을 따릅니다.</p>""")
+
+
+def report_photos(pid: int, cid: int) -> str:
+    ids = store.report_image_ids(pid, cid)
+    if not ids:
+        return ""
+    imgs = "".join(f'<img src="/note-images/{i}" alt="첨부 사진" class="report-img">' for i in ids)
+    return f'<div class="card"><h2>첨부 사진</h2><div class="report-photos">{imgs}</div></div>'
 
 
 @app.post("/customers/{cid}/info")

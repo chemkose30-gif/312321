@@ -89,6 +89,9 @@ def init_db() -> None:
         for col, ddl in (("totp_enc", "BLOB"), ("totp_last", "INTEGER DEFAULT -1"), ("pw_changed_at", "INTEGER")):
             if col not in cols:
                 conn.execute(f"ALTER TABLE planners ADD COLUMN {col} {ddl}")
+        icols = {r["name"] for r in conn.execute("PRAGMA table_info(note_images)")}
+        if "in_report" not in icols:  # 고객용 리포트에 넣을지 여부 (기본: 안 넣음)
+            conn.execute("ALTER TABLE note_images ADD COLUMN in_report INTEGER DEFAULT 0")
     try:
         os.chmod(DB_PATH, 0o600)  # DB 파일은 소유자만 읽기·쓰기
     except OSError:
@@ -349,12 +352,38 @@ def add_note_image(planner_id: int, nid: int, mime: str, data: bytes) -> bool:
     return True
 
 
+def note_images(planner_id: int, nid: int) -> list[dict]:
+    with closing(db()) as conn:
+        rows = conn.execute("""SELECT i.id, i.in_report FROM note_images i JOIN notes n ON n.id = i.note_id
+                               JOIN customers c ON c.id = n.customer_id
+                               WHERE i.note_id = ? AND c.planner_id = ? ORDER BY i.id""", (nid, planner_id)).fetchall()
+    return [{"id": r["id"], "in_report": bool(r["in_report"])} for r in rows]
+
+
 def note_image_ids(planner_id: int, nid: int) -> list[int]:
+    return [i["id"] for i in note_images(planner_id, nid)]
+
+
+def report_image_ids(planner_id: int, cid: int) -> list[int]:
+    """고객용 리포트에 넣기로 표시된 사진 (상담일 순)"""
     with closing(db()) as conn:
         rows = conn.execute("""SELECT i.id FROM note_images i JOIN notes n ON n.id = i.note_id
                                JOIN customers c ON c.id = n.customer_id
-                               WHERE i.note_id = ? AND c.planner_id = ? ORDER BY i.id""", (nid, planner_id)).fetchall()
+                               WHERE n.customer_id = ? AND c.planner_id = ? AND i.in_report = 1
+                               ORDER BY n.id, i.id""", (cid, planner_id)).fetchall()
     return [r["id"] for r in rows]
+
+
+def set_image_report(planner_id: int, img_id: int, on: bool) -> int | None:
+    """이미지의 리포트 표시 여부 변경. 속한 note_id 반환."""
+    with closing(db()) as conn, conn:
+        r = conn.execute("""SELECT i.id, i.note_id FROM note_images i JOIN notes n ON n.id = i.note_id
+                            JOIN customers c ON c.id = n.customer_id
+                            WHERE i.id = ? AND c.planner_id = ?""", (img_id, planner_id)).fetchone()
+        if not r:
+            return None
+        conn.execute("UPDATE note_images SET in_report = ? WHERE id = ?", (1 if on else 0, img_id))
+    return r["note_id"]
 
 
 def count_note_images(planner_id: int, nid: int) -> int:
