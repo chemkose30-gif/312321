@@ -3939,7 +3939,10 @@ def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
             raise RuntimeError("서버에 PST 변환 프로그램(readpst)이 없습니다. 서버 업데이트(update.sh)를 다시 실행하세요.")
         out = workdir / "pst"
         out.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["readpst", "-e", "-q", "-b", "-o", str(out), str(path)], capture_output=True, timeout=3600)
+        # 첨부파일은 빼고(-a 로 없는 확장자만 남김 = 모두 버림) 메일만(-te) 꺼낸다 → 큰 PST 도 디스크를 적게 씀
+        big = path.stat().st_size > 2 * 1024 ** 3
+        r = subprocess.run(["readpst", "-e", "-q", "-b", "-te", "-a", ".teamhub-none", "-o", str(out), str(path)],
+                           capture_output=True, timeout=12 * 3600 if big else 3600)
         if r.returncode != 0:
             msg = ((r.stderr or b"") + (r.stdout or b"")).decode(errors="replace").strip()[-300:]
             raise RuntimeError("PST 파일을 읽지 못했습니다. Outlook 에서 내보낸 .pst 파일이 맞는지, 비밀번호가 걸려 있지 않은지"
@@ -4009,7 +4012,13 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
         _set_import(uid, read=total, added=added, duplicates=dup, skipped_old=old)
 
     try:
+        if path.name.lower().endswith((".pst", ".ost")):
+            _set_import(uid, stage="PST 파일 푸는 중 (큰 파일은 몇십 분~몇 시간 걸립니다)")
+        first = True
         for raw in _iter_mailbox(path, workdir, password):
+            if first:
+                _set_import(uid, stage="메일 읽는 중")
+                first = False
             total += 1
             try:
                 d = parsedate_to_datetime(BytesHeaderParser().parsebytes(raw[:20000])["date"])
@@ -4066,6 +4075,70 @@ async def mailin_import(file: UploadFile = File(...), months: int = 3, password:
                 duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="")
     # 비밀번호는 저장하지 않고 이번 가져오기에만 쓴다
     threading.Thread(target=run_mail_import, args=(path, user["id"], months, password), daemon=True).start()
+    return {"ok": True}
+
+
+# ---- 큰 메일함 파일(수십 GB): 32MB씩 나눠 올리고, 끊기면 이어서 올린다
+def _chunk_path(uid: int, upload_id: str, name: str) -> Path:
+    uid_s = re.sub(r"[^0-9a-f]", "", upload_id.lower())[:40]
+    if not uid_s:
+        raise HTTPException(400, "잘못된 업로드 번호입니다.")
+    name = Path(name or "mail.pst").name
+    if not name.lower().endswith((".pst", ".ost", ".mbox", ".mbx", ".zip", ".eml")):
+        raise HTTPException(400, "pst, mbox, zip, eml 파일만 올릴 수 있습니다.")
+    d = MAIL_IMPORT_DIR / f"up-{uid}-{uid_s}"
+    return d / name
+
+
+@app.get("/api/mailin/import/chunk")
+def mailin_chunk_status(upload_id: str, name: str, total: int, user: dict = Depends(current_user)):
+    """이어 올리기: 지금까지 받은 크기 + 서버 여유 공간 확인"""
+    import shutil
+    path = _chunk_path(user["id"], upload_id, name)
+    MAIL_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    for d in MAIL_IMPORT_DIR.glob("up-*"):      # 3일 넘게 손대지 않은 올리다 만 파일은 지움
+        if d != path.parent and time.time() - d.stat().st_mtime > 3 * 86400:
+            shutil.rmtree(d, ignore_errors=True)
+    got = path.stat().st_size if path.exists() else 0
+    free = shutil.disk_usage(MAIL_IMPORT_DIR).free
+    need = (total - got) + max(2 * 1024 ** 3, int(total * 0.15))      # 남은 파일 + 메일을 풀어 놓을 공간
+    if free < need:
+        raise HTTPException(400, f"서버 여유 공간이 부족합니다: 남은 공간 {free / 1024 ** 3:.1f}GB, 필요 약 {need / 1024 ** 3:.1f}GB. "
+                                 "기간을 줄여 내보낸 파일을 올리거나 서버 디스크를 늘려 주세요.")
+    with db() as c:
+        st = json.loads(get_setting(c, f"mail_import:{user['id']}", "{}") or "{}")
+    if st.get("status") == "running" and not got:
+        raise HTTPException(400, "이미 가져오는 중입니다. 끝난 뒤 다시 올려 주세요.")
+    return {"received": got, "free": free}
+
+
+@app.post("/api/mailin/import/chunk")
+async def mailin_chunk(request: Request, upload_id: str, name: str, offset: int, total: int,
+                       user: dict = Depends(current_user)):
+    path = _chunk_path(user["id"], upload_id, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    got = path.stat().st_size if path.exists() else 0
+    if offset != got:                    # 순서가 어긋나면 지금 받은 곳부터 다시 보내게
+        return {"received": got, "retry": True}
+    data = await request.body()
+    if got + len(data) > total:
+        raise HTTPException(400, "파일 크기가 맞지 않습니다.")
+    with open(path, "ab") as out:
+        out.write(data)
+    return {"received": got + len(data)}
+
+
+@app.post("/api/mailin/import/finish")
+def mailin_chunk_finish(body: dict, user: dict = Depends(current_user)):
+    path = _chunk_path(user["id"], str(body.get("upload_id", "")), str(body.get("name", "")))
+    total = int(body.get("total") or 0)
+    if not path.exists() or path.stat().st_size != total:
+        raise HTTPException(400, "파일이 다 올라오지 않았습니다. 다시 골라서 이어 올리세요.")
+    months = max(0, min(int(body.get("months") or 0), 240))
+    _set_import(user["id"], status="running", file=path.name, size=total, months=months, read=0, added=0,
+                duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="", stage="")
+    threading.Thread(target=run_mail_import, args=(path, user["id"], months, str(body.get("password") or "")),
+                     daemon=True).start()
     return {"ok": True}
 
 

@@ -747,19 +747,53 @@ async function openMailinUpload() {
     let timer = null;
     const show = s => {
       if (!s || !s.status) { $('#miProg', bg).innerHTML = ''; return; }
-      const mb = s.size ? ` (${(s.size / 1048576).toFixed(1)}MB)` : '';
+      const mb = s.size ? ` (${s.size > 1073741824 ? (s.size / 1073741824).toFixed(1) + 'GB' : (s.size / 1048576).toFixed(1) + 'MB'})` : '';
       const line = `읽은 메일 ${s.read || 0}통 · 저장 ${s.added || 0}통${s.duplicates ? ` · 중복 제외 ${s.duplicates}통` : ''}${s.skipped_old ? ` · 기간 밖 ${s.skipped_old}통` : ''}`;
       $('#miProg', bg).innerHTML = s.status === 'running'
-        ? `<div class="ec-box">⏳ <b>${esc(s.file)}</b>${mb} 가져오는 중… 창을 닫아도 계속됩니다. 끝나면 🔔 알림이 옵니다.<br><small class="muted">${line}</small></div>`
+        ? `<div class="ec-box">⏳ <b>${esc(s.file)}</b>${mb} ${esc(s.stage || '가져오는 중')}… 창을 닫아도 계속됩니다. 끝나면 🔔 알림이 옵니다.<br><small class="muted">${line}</small></div>`
         : s.status === 'done' ? `<div class="ec-box">✅ <b>${esc(s.file)}</b> 완료 · 확인할 일정 ${s.threads || 0}건<br><small class="muted">${line}</small></div>`
         : `<div class="ec-box" style="color:var(--danger)">❌ ${esc(s.file || '')} 실패: ${esc(s.error)}</div>`;
       if (s.status === 'running') { clearTimeout(timer); timer = setTimeout(async () => { if (document.body.contains(bg)) show(await api('/api/mailin/import/status')); }, 2000); }
       else if (state.view === 'mailin') renderMailin();
     };
     show(st);
+    // 200MB 넘는 파일: 32MB씩 나눠 올림 — 끊기면 같은 파일을 다시 고르면 받은 곳부터 이어서
+    const chunked = async f => {
+      const id = Array.from(new TextEncoder().encode(`${f.name}|${f.size}|${f.lastModified}|${state.me.id}`)).reduce((h, b) => (h * 31 + b) >>> 0, 7).toString(16) + f.size.toString(16);
+      const q = new URLSearchParams({upload_id: id, name: f.name, total: f.size});
+      let got = (await api('/api/mailin/import/chunk?' + q)).received;
+      const CH = 32 * 1048576, t0 = Date.now(), start = got;
+      const gb = v => (v / 1073741824).toFixed(1) + 'GB';
+      $('#miProg', bg).innerHTML = `<div class="ec-box">⬆ 올리는 중… <b id="miPct"></b><br><small class="muted" id="miEta"></small><br><small class="muted">끊겨도 괜찮습니다. 같은 파일을 다시 고르고 '가져오기'를 누르면 이어서 올립니다. PC가 잠들지 않게 해 주세요.</small></div>`;
+      while (got < f.size) {
+        let tries = 0, r;
+        for (;;) {
+          try {
+            const res = await fetch(`/api/mailin/import/chunk?${q}&offset=${got}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token, 'Content-Type': 'application/octet-stream'}, body: f.slice(got, Math.min(got + CH, f.size))});
+            r = await res.json();
+            if (!res.ok) throw new Error(r.detail || '올리기 실패');
+            break;
+          } catch (err) {
+            if (++tries > 8) throw new Error('연결이 계속 끊깁니다. 잠시 뒤 같은 파일을 다시 골라 이어 올리세요. (' + err.message + ')');
+            await new Promise(ok => setTimeout(ok, Math.min(30000, 1000 * 2 ** tries)));
+          }
+        }
+        got = r.received;
+        const sec = (Date.now() - t0) / 1000, speed = (got - start) / Math.max(sec, 1);
+        if ($('#miPct', bg)) $('#miPct', bg).textContent = `${(got / f.size * 100).toFixed(1)}% (${gb(got)} / ${gb(f.size)})`;
+        if ($('#miEta', bg)) $('#miEta', bg).textContent = `속도 ${(speed / 1048576).toFixed(1)}MB/s · 남은 시간 약 ${Math.round((f.size - got) / Math.max(speed, 1) / 60)}분`;
+      }
+      await api('/api/mailin/import/finish', {method: 'POST', body: {upload_id: id, name: f.name, total: f.size, months: $('#miMonths', bg).value, password: $('#miPw', bg).value}});
+      show(await api('/api/mailin/import/status'));
+    };
     $('#miGo', bg).onclick = async () => {
       const f = $('#miFile', bg).files[0]; if (!f) { $('.err', bg).textContent = '파일을 고르세요.'; return; }
       $('.err', bg).textContent = ''; $('#miGo', bg).disabled = true;
+      if (f.size > 200 * 1048576) {
+        try { await chunked(f); } catch (err) { $('.err', bg).textContent = err.message; }
+        $('#miGo', bg).disabled = false;
+        return;
+      }
       $('#miProg', bg).innerHTML = `<div class="ec-box">⬆ 올리는 중… <b id="miPct">0%</b> <small class="muted">(${(f.size / 1048576).toFixed(1)}MB — 큰 파일은 몇 분 걸립니다. 이 창을 닫지 마세요)</small></div>`;
       const fd = new FormData(); fd.append('file', f); fd.append('password', $('#miPw', bg).value);
       const xhr = new XMLHttpRequest();   // 진행률 표시를 위해 XHR 사용
