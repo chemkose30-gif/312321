@@ -301,6 +301,19 @@ def init_db():
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_mail_items_owner ON mail_items(owner_id, status, sent_at);
+            CREATE TABLE IF NOT EXISTS bank_tx (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uniq TEXT UNIQUE NOT NULL,
+                tx_at TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                memo TEXT NOT NULL DEFAULT '',
+                amount_in REAL NOT NULL DEFAULT 0,
+                amount_out REAL NOT NULL DEFAULT 0,
+                balance REAL,
+                account TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_bank_tx_at ON bank_tx(tx_at);
             CREATE TABLE IF NOT EXISTS bl_watch (
                 number TEXT PRIMARY KEY,
                 kind TEXT NOT NULL DEFAULT '',
@@ -2461,7 +2474,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir", "inbound_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -2470,7 +2483,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
 def inv_settings(c) -> dict:
     return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1",
             "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", ""),
-            "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서")}
+            "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서"), "bank_dir": get_setting(c, "bank_dir", "")}
 
 
 @app.get("/api/inventory")
@@ -4663,6 +4676,366 @@ def icon(size: int):
         raise HTTPException(404)
     return FileResponse(BASE_DIR / "static" / f"icon-{size}.png", media_type="image/png",
                         headers={"Cache-Control": "max-age=86400"})
+
+
+# ---------------------------------------------------------------- 💳 입금: 거래명세서 → 월별 입금 예정, 은행 거래내역 → 실제 입금
+BANK_COLS = {
+    "date": ("거래일시", "거래일자", "거래일", "일자", "날짜", "거래날짜", "입금일", "거래시간"),
+    "time": ("시간", "거래시각"),
+    "in": ("입금액", "입금", "맡기신금액", "입금금액", "받은금액", "입금액(원)", "입금(원)", "들어온금액"),
+    "out": ("출금액", "출금", "찾으신금액", "출금금액", "지급액", "출금액(원)", "출금(원)"),
+    "name": ("입금자명", "입금자", "보낸분", "보낸사람", "의뢰인", "기재내용", "받는분/보낸분", "보낸분/받는분", "거래내용", "내용"),
+    "memo": ("적요", "거래구분", "메모", "비고", "거래점", "취급점"),
+    "balance": ("잔액", "거래후잔액", "잔고", "거래후잔고"),
+}
+
+
+def _bank_date(v) -> str:
+    """'2026.10.01 14:22:11' / '2026-10-01' / '20261001' / 엑셀 날짜숫자 → 'YYYY-MM-DD HH:MM:SS'"""
+    s = str(v or "").strip()
+    m = re.match(r"^(\d{4})[.\-/년\s]*(\d{1,2})[.\-/월\s]*(\d{1,2})일?(?:\D+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", s)
+    if m:
+        try:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4] or 0), int(m[5] or 0),
+                            int(m[6] or 0)).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return ""
+    m = re.match(r"^(20\d{2})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$", s)
+    if m:
+        try:
+            return datetime(*[int(x or 0) for x in m.groups()]).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return ""
+    if re.match(r"^\d{5}(\.\d+)?$", s) and 30000 < float(s) < 60000:
+        return (datetime(1899, 12, 30) + timedelta(days=float(s))).strftime("%Y-%m-%d %H:%M:%S")
+    return ""
+
+
+def _html_tables(data: bytes) -> list:
+    """은행 '엑셀' 중 실제로는 HTML 표인 파일 → 행 목록"""
+    from html.parser import HTMLParser
+    for enc in ("utf-8", "cp949", "euc-kr"):
+        try:
+            text = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = data.decode("utf-8", errors="ignore")
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.rows, self.row, self.cell, self.in_cell = [], None, "", False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "tr":
+                self.row = []
+            elif tag in ("td", "th"):
+                self.in_cell, self.cell = True, ""
+            elif tag == "br" and self.in_cell:
+                self.cell += " "
+
+        def handle_endtag(self, tag):
+            if tag in ("td", "th") and self.row is not None:
+                self.row.append(re.sub(r"\s+", " ", self.cell).strip())
+                self.in_cell = False
+            elif tag == "tr" and self.row is not None:
+                self.rows.append(self.row)
+                self.row = None
+
+        def handle_data(self, d):
+            if self.in_cell:
+                self.cell += d
+    p = P()
+    p.feed(text)
+    return p.rows
+
+
+def bank_sheets(data: bytes, filename: str) -> list:
+    """은행 거래내역 파일(xlsx / xls / HTML로 된 xls / csv) → [행 목록, …]"""
+    name = (filename or "").lower()
+    if data[:2] == b"PK":
+        return [read_xlsx_values(data, n) for n in xlsx_sheet_names(data)]
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return list(read_xls_sheets(data).values())
+    head = data[:2000].lower()
+    if b"<table" in head or b"<html" in head or b"<tr" in data[:20000].lower():
+        return [_html_tables(data)]
+    if name.endswith((".csv", ".txt")) or b"," in head:
+        import csv
+        import io
+        for enc in ("utf-8-sig", "cp949"):
+            try:
+                return [list(csv.reader(io.StringIO(data.decode(enc))))]
+            except UnicodeDecodeError:
+                continue
+    raise HTTPException(400, "은행 거래내역 파일 형식을 알 수 없습니다 (엑셀·CSV).")
+
+
+def parse_bank(data: bytes, filename: str) -> list:
+    """머리글(거래일시·입금액·출금액·잔액·내용…)을 찾아 거래 줄만 읽는다."""
+    out = []
+    for rows in bank_sheets(data, filename):
+        hi = None
+        for i, r in enumerate(rows[:40]):
+            h = [_inv_h(x) for x in r]
+            if any(x in h for x in map(_inv_h, BANK_COLS["date"])) and any(x in h for x in map(_inv_h, BANK_COLS["in"])):
+                hi = i
+                break
+        if hi is None:
+            continue
+        hdr = [_inv_h(x) for x in rows[hi]]
+        col = {f: next((hdr.index(_inv_h(k)) for k in keys if _inv_h(k) in hdr), None) for f, keys in BANK_COLS.items()}
+        account = ""
+        for r in rows[:hi]:              # 머리글 위의 계좌번호
+            m = re.search(r"\d{2,6}-\d{2,6}-\d{2,8}(?:-\d+)?", " ".join(map(str, r)))
+            if m:
+                account = m[0]
+                break
+        g = lambda r, f: (str(r[col[f]]).strip() if col.get(f) is not None and col[f] < len(r) else "")
+        for r in rows[hi + 1:]:
+            when = _bank_date(g(r, "date") + (" " + g(r, "time") if g(r, "time") and ":" not in g(r, "date") else ""))
+            if not when:
+                continue
+            ain, aout = _numn(g(r, "in")) or 0, _numn(g(r, "out")) or 0
+            if not ain and not aout:
+                continue
+            bal = _numn(g(r, "balance"))
+            name, memo = g(r, "name"), g(r, "memo")
+            if not name:
+                name = memo
+            out.append({"tx_at": when, "name": name[:100], "memo": memo[:100], "amount_in": ain, "amount_out": aout,
+                        "balance": bal, "account": account,
+                        "uniq": hashlib.sha1(f"{account}|{when}|{ain}|{aout}|{bal}|{name}".encode()).hexdigest()})
+    return out
+
+
+@app.post("/api/bank/upload")
+async def bank_upload(file: UploadFile = File(...), dry_run: bool = False, user: dict = Depends(upload_user),
+                      x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    rows = parse_bank(data, filename)
+    if not rows:
+        raise HTTPException(400, "거래내역(거래일시·입금액 머리글)을 찾지 못했습니다. 은행에서 내려받은 거래내역 엑셀을 그대로 올려 주세요.")
+    first, last = min(r["tx_at"] for r in rows), max(r["tx_at"] for r in rows)
+    summary = {"rows": len(rows), "from": first[:10], "to": last[:10], "in_total": sum(r["amount_in"] for r in rows),
+               "in_count": sum(1 for r in rows if r["amount_in"])}
+    if dry_run:
+        return summary
+    added = 0
+    with db() as c:
+        for r in rows:
+            added += c.execute("INSERT OR IGNORE INTO bank_tx (uniq, tx_at, name, memo, amount_in, amount_out, balance, account,"
+                               " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               (r["uniq"], r["tx_at"], r["name"], r["memo"], r["amount_in"], r["amount_out"], r["balance"],
+                                r["account"], now())).rowcount
+        set_setting(c, "bank_meta", json.dumps({"filename": filename, "uploaded_at": now(), "by": user["name"]},
+                                               ensure_ascii=False))
+    return {**summary, "added": added, "duplicates": len(rows) - added}
+
+
+# 결제 조건: 'next_end' 익월 말 / 'this_end' 당월 말 / 'next2_end' 익익월 말 / 'days:N' 명세서일 + N일 / 'next:N' 익월 N일 / 'now' 즉시
+PAY_TERMS = {"now": "즉시(선결제·현금)", "this_end": "당월 말", "next_end": "익월 말", "next2_end": "익익월 말"}
+
+
+def parse_term(text: str) -> str:
+    t = re.sub(r"\s", "", str(text or ""))
+    if not t:
+        return ""
+    if re.search(r"익익월|2개월|60일|두달", t):
+        return "next2_end"
+    m = re.search(r"익월(\d{1,2})일", t)
+    if m:
+        return f"next:{int(m[1])}"
+    if re.search(r"익월|다음달|30일|월말마감", t):
+        return "next_end"
+    if re.search(r"당월|이번달", t):
+        return "this_end"
+    m = re.search(r"(\d{1,3})일", t)
+    if m:
+        return f"days:{int(m[1])}"
+    if re.search(r"선결제|선입금|현금|즉시|입금후|t/?t", t, re.I):
+        return "now"
+    return ""
+
+
+def term_label(code: str) -> str:
+    if code.startswith("days:"):
+        return f"명세서일 + {code[5:]}일"
+    if code.startswith("next:"):
+        return f"익월 {code[5:]}일"
+    return PAY_TERMS.get(code, code)
+
+
+def due_date(d: str, code: str) -> str:
+    base = date.fromisoformat(d[:10])
+    month_end = lambda y, m: (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1))
+    shift = lambda k: (base.year + (base.month - 1 + k) // 12, (base.month - 1 + k) % 12 + 1)
+    if code == "now":
+        r = base
+    elif code == "this_end":
+        r = month_end(base.year, base.month)
+    elif code == "next2_end":
+        r = month_end(*shift(2))
+    elif code.startswith("days:"):
+        r = base + timedelta(days=int(code[5:]))
+    elif code.startswith("next:"):
+        y, m = shift(1)
+        r = date(y, m, min(int(code[5:]), month_end(y, m).day))
+    else:
+        r = month_end(*shift(1))
+    return r.isoformat()
+
+
+def bank_matcher(c, customers: list):
+    """은행 입금자명 → 거래처. 직접 연결한 것 → 이름 키가 같음 → 한쪽이 다른 쪽 앞부분(은행은 이름을 잘라서 보냄)."""
+    try:
+        alias = json.loads(get_setting(c, "bank_alias", "{}") or "{}")
+    except ValueError:
+        alias = {}
+    keys = {}
+    for cu in customers:
+        k = _company_key(cu)
+        if k:
+            keys.setdefault(k, cu)
+
+    def fn(name: str):
+        if name in alias:
+            return alias[name] or None      # '' = 거래처 아님
+        k = _company_key(re.sub(r"^\(?(주|유|합)\)?|\(?(주|유)\)?$", "", name or ""))
+        if not k or len(k) < 2:
+            return None
+        if k in keys:
+            return keys[k]
+        cands = [cu for kk, cu in keys.items() if len(min(k, kk, key=len)) >= 3 and (kk.startswith(k) or k.startswith(kk))]
+        return cands[0] if len(set(cands)) == 1 else None
+    return fn, alias
+
+
+@app.get("/api/collections")
+def collections(year: int = 0, user: dict = Depends(current_user)):
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "볼 수 있는 권한이 없습니다.")
+        canon, is_ex = canon_fn(c), exclude_matcher(c)
+        stm = [dict(r) for r in c.execute(
+            "SELECT quote_date, customer_name, grand_total, payment_terms FROM quotes"
+            " WHERE doc_type = 'statement' AND status != 'draft' ORDER BY quote_date")]
+        try:
+            terms_set = json.loads(get_setting(c, "pay_terms", "{}") or "{}")
+        except ValueError:
+            terms_set = {}
+        txs = [dict(r) for r in c.execute("SELECT * FROM bank_tx WHERE amount_in > 0 ORDER BY tx_at")]
+        meta = json.loads(get_setting(c, "bank_meta", "{}") or "{}")
+        customers = sorted({canon(s["customer_name"]) for s in stm})
+        match, alias = bank_matcher(c, customers)
+    # 거래처별 결제 조건: 직접 정한 것 → 명세서에 적힌 결제 조건(가장 최근) → 익월 말
+    from_doc = {}
+    for s in stm:
+        t = parse_term(s["payment_terms"])
+        if t:
+            from_doc[canon(s["customer_name"])] = t
+    term = lambda cu: terms_set.get(cu) or from_doc.get(cu) or "next_end"
+    today = date.today().isoformat()
+    y = year or date.today().year
+    yms = [f"{y}-{m:02d}" for m in range(1, 13)]
+    month = {ym: {"sales": 0, "expected": 0, "received": 0, "other_in": 0} for ym in yms}
+    cust = {}
+    bank_from = txs[0]["tx_at"][:10] if txs else ""
+    for s in stm:
+        cu = canon(s["customer_name"])
+        if is_ex(cu):
+            continue
+        amt = s["grand_total"] or 0
+        due = due_date(s["quote_date"], term(cu))
+        if s["quote_date"][:7] in month:
+            month[s["quote_date"][:7]]["sales"] += amt
+        if due[:7] in month:
+            month[due[:7]]["expected"] += amt
+        e = cust.setdefault(cu, {"name": cu, "term": term(cu), "term_set": cu in terms_set, "term_doc": from_doc.get(cu, ""),
+                                 "expected_due": 0, "received": 0, "next_due": 0, "next_due_date": "",
+                                 "oldest_unpaid": "", "last_paid": "", "dues": []})
+        if bank_from and bank_from <= due <= today:
+            e["expected_due"] += amt
+            e["dues"].append((due, amt))
+        elif due > today:
+            e["next_due"] += amt
+            e["next_due_date"] = min(e["next_due_date"] or due, due)
+    unmatched = {}
+    for t in txs:
+        cu = match(t["name"])
+        ym = t["tx_at"][:7]
+        if cu and not is_ex(cu):
+            if ym in month:
+                month[ym]["received"] += t["amount_in"]
+            e = cust.setdefault(cu, {"name": cu, "term": term(cu), "term_set": cu in terms_set, "term_doc": from_doc.get(cu, ""),
+                                     "expected_due": 0, "received": 0, "next_due": 0, "next_due_date": "",
+                                     "oldest_unpaid": "", "last_paid": "", "dues": []})
+            if t["tx_at"][:10] <= today:
+                e["received"] += t["amount_in"]
+            e["last_paid"] = max(e["last_paid"], t["tx_at"][:10])
+        else:
+            if ym in month:
+                month[ym]["other_in"] += t["amount_in"]
+            if t["name"] not in alias:
+                u = unmatched.setdefault(t["name"], {"name": t["name"], "count": 0, "amount": 0, "last": ""})
+                u["count"] += 1
+                u["amount"] += t["amount_in"]
+                u["last"] = max(u["last"], t["tx_at"][:10])
+    rows = []
+    for e in cust.values():
+        e["unpaid"] = round(e["expected_due"] - e["received"])
+        if e["unpaid"] > 0:              # 가장 오래 안 들어온 예정일 (먼저 들어온 돈이 오래된 것부터 갚았다고 봄)
+            paid = e["received"]
+            for due, amt in sorted(e["dues"]):
+                if paid >= amt:
+                    paid -= amt
+                    continue
+                e["oldest_unpaid"] = due
+                break
+        e["late_days"] = (date.today() - date.fromisoformat(e["oldest_unpaid"])).days if e["oldest_unpaid"] else 0
+        e["term_label"] = term_label(e["term"])
+        e.pop("dues")
+        if e["expected_due"] or e["received"] or e["next_due"]:
+            rows.append(e)
+    rows.sort(key=lambda e: (-(e["unpaid"] > 0), -e["late_days"], -e["unpaid"]))
+    years = sorted({int(s["quote_date"][:4]) for s in stm if s["quote_date"][:4].isdigit()} |
+                   {int(t["tx_at"][:4]) for t in txs} | {date.today().year})
+    return {"year": y, "years": years, "months": [{"ym": ym, **month[ym]} for ym in yms], "customers": rows,
+            "unmatched": sorted(unmatched.values(), key=lambda u: -u["amount"])[:60], "bank_from": bank_from,
+            "bank_to": txs[-1]["tx_at"][:10] if txs else "", "bank_meta": meta, "terms": PAY_TERMS,
+            "customer_names": customers, "today": today}
+
+
+@app.put("/api/collections/term")
+def put_pay_term(body: dict, _: dict = Depends(admin_user)):
+    cu, code = str(body.get("customer", "")).strip(), str(body.get("term", "")).strip()
+    if code and not (code in PAY_TERMS or re.match(r"^(days|next):\d{1,3}$", code)):
+        raise HTTPException(400, "잘못된 결제 조건입니다.")
+    with db() as c:
+        terms = json.loads(get_setting(c, "pay_terms", "{}") or "{}")
+        if code:
+            terms[cu] = code
+        else:
+            terms.pop(cu, None)
+        set_setting(c, "pay_terms", json.dumps(terms, ensure_ascii=False))
+    return {"ok": True}
+
+
+@app.put("/api/bank/alias")
+def put_bank_alias(body: dict, _: dict = Depends(admin_user)):
+    """은행 입금자명 → 거래처 직접 연결 (customer 가 '' 이면 '거래처 입금 아님', remove 면 연결 해제)"""
+    name = str(body.get("name", "")).strip()
+    with db() as c:
+        alias = json.loads(get_setting(c, "bank_alias", "{}") or "{}")
+        if body.get("remove"):
+            alias.pop(name, None)
+        else:
+            alias[name] = str(body.get("customer", "")).strip()
+        set_setting(c, "bank_alias", json.dumps(alias, ensure_ascii=False))
+    return {"ok": True}
 
 
 @app.get("/")
