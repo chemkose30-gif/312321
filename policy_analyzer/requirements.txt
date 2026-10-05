@@ -1,7 +1,16 @@
-anthropic>=1.11
+# 공통
 fastapi
 uvicorn[standard]
 python-multipart
 python-dotenv
 cryptography
 qrcode>=7.4
+
+# 로컬 OCR 백엔드 (EXTRACT_BACKEND=local, 기본값) — 데이터를 외부로 보내지 않음
+#   추가로 시스템 패키지 필요: tesseract-ocr, tesseract-ocr-kor
+#   (Ubuntu/Debian:  sudo apt-get install -y tesseract-ocr tesseract-ocr-kor)
+pytesseract
+pymupdf
+
+# Claude API 백엔드 (EXTRACT_BACKEND=claude) — 정확도 높으나 데이터가 해외 서버로 전송됨. 안 쓰면 설치 불필요
+# anthropic>=1.11

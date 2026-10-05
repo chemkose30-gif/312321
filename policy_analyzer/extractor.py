@@ -1,4 +1,11 @@
-"""보험증권(PDF/이미지) -> 구조화 데이터 추출 (Claude API)"""
+"""
+보험증권(PDF/이미지) -> 구조화 데이터 추출.
+
+백엔드를 환경변수 EXTRACT_BACKEND 로 선택:
+  local  : 서버 안에서 OCR 처리 (해외 전송 없음). 기본값.
+  claude : Claude API 사용 (정확도 높음, 데이터가 해외 서버로 전송됨).
+  mock   : 가짜 결과 (화면 시험용).
+"""
 
 import base64
 import copy
@@ -6,9 +13,8 @@ import json
 import os
 import re
 
-import anthropic
-
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+BACKEND = os.environ.get("EXTRACT_BACKEND", "mock" if os.environ.get("ANALYZER_MOCK") == "1" else "local")
 
 CATEGORIES = [
     "일반암", "특정암", "유사암·소액암", "암치료비", "암통원", "뇌혈관질환", "뇌졸중·뇌출혈", "허혈성심장질환", "급성심근경색",
@@ -110,9 +116,30 @@ def build_content(files: list[tuple[str, str, bytes]]) -> list[dict]:
 
 
 def extract(files: list[tuple[str, str, bytes]]) -> dict:
-    if os.environ.get("ANALYZER_MOCK") == "1":
+    backend = "mock" if os.environ.get("ANALYZER_MOCK") == "1" else os.environ.get("EXTRACT_BACKEND", BACKEND)
+    if backend == "mock":
         return copy.deepcopy(MOCK_RESULT)
+    if backend == "local":
+        return _extract_local(files)
+    return _extract_claude(files)
 
+
+def _extract_local(files: list[tuple[str, str, bytes]]) -> dict:
+    """서버 안에서 OCR 처리 — 데이터를 외부로 보내지 않음."""
+    try:
+        import localocr
+    except ImportError as e:
+        raise ExtractError("로컬 OCR 모듈을 불러오지 못했습니다. pytesseract·pymupdf 설치와 tesseract-ocr(-kor)를 확인하세요.") from e
+    try:
+        return mask_rrn(localocr.extract(files))
+    except ExtractError:
+        raise
+    except Exception as e:  # OCR 엔진 미설치 등
+        raise ExtractError(f"OCR 처리 중 오류가 발생했습니다. tesseract-ocr, tesseract-ocr-kor 설치를 확인하세요. ({type(e).__name__})") from e
+
+
+def _extract_claude(files: list[tuple[str, str, bytes]]) -> dict:
+    import anthropic
     client = anthropic.Anthropic()
     try:
         with client.beta.messages.stream(

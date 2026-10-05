@@ -27,6 +27,12 @@ import security  # noqa: E402
 import store  # noqa: E402
 
 SECURE_COOKIE = os.environ.get("SECURE_COOKIE", "1") == "1"
+_BACKEND = "mock" if os.environ.get("ANALYZER_MOCK") == "1" else os.environ.get("EXTRACT_BACKEND", "local")
+BACKEND_NOTE = {
+    "local": "증권은 <b>서버 안에서만</b> 분석되며 외부로 전송되지 않습니다. OCR 자동인식이라 금액·담보가 틀릴 수 있으니 결과를 꼭 확인·수정하세요.",
+    "claude": "⚠ 증권이 분석을 위해 <b>해외 서버(Claude)</b>로 전송됩니다. 소속사 규정을 확인하세요.",
+    "mock": "(시험 모드: 실제 분석 없이 샘플 데이터가 들어갑니다.)",
+}.get(_BACKEND, "")
 REQUIRE_2FA = os.environ.get("REQUIRE_2FA", "1") == "1"
 MAX_FILES = 20
 MAX_TOTAL_BYTES = 30 * 1024 * 1024
@@ -342,7 +348,7 @@ onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='�
 <div class="row"><input type="file" name="files" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple required>
 <button>분석하기</button></div>
 <p class="muted">PDF·JPG·PNG, 한 번에 {MAX_FILES}개 / 합계 30MB까지. 한 고객의 증권만 함께 올려 주세요.
-{"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다."}</p></form>"""
+{"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다. "}{BACKEND_NOTE}</p></form>"""
 
 
 def find_customer(pid: int, insured: dict) -> int | None:
