@@ -1,0 +1,25 @@
+# Render(render.com) 자동 배포 설정.
+# 저장소를 연결하면 이 파일을 읽어 그대로 배포합니다.
+services:
+  - type: web
+    name: insurance-analyzer
+    runtime: docker
+    plan: starter            # 무료 체험은 free 로 바꿀 수 있음(정지/저장공간 제한 있음)
+    healthCheckPath: /login
+    disk:
+      name: data             # 고객 DB를 영구 보관할 디스크
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DB_PATH
+        value: /data/app.db  # 재배포해도 데이터가 유지되도록 디스크에 저장
+      - key: DATA_KEY
+        generateValue: true  # 암호화 키 자동 생성(한 번 생성되면 유지)
+      - key: EXTRACT_BACKEND
+        value: mock          # 처음엔 샘플 모드. 실제 분석하려면 local 로 변경
+      - key: REQUIRE_2FA
+        value: "1"
+      - key: SECURE_COOKIE
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"

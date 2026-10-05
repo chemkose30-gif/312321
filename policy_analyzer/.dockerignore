@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.db
+demo.key
+.env
+.env.demo
