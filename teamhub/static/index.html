@@ -787,7 +787,7 @@ async function openMailinUpload() {
       · <b>Outlook / Hotmail</b>: 내보내기 파일 <code>.pst</code> (Outlook PC: 파일 → 열기 및 내보내기 → 가져오기/내보내기 → 파일로 내보내기 → Outlook 데이터 파일(.pst))<br>
       · <b>Gmail</b>: Google 테이크아웃에서 받은 <code>.zip</code> 또는 <code>.mbox</code><br>
       · 메일 한 통씩 저장한 <code>.eml</code> 도 됩니다.</div>
-    <label>파일</label><input type="file" id="miFile" accept=".pst,.ost,.mbox,.mbx,.zip,.eml">
+    <label>파일 <small class="muted">— 200MB 넘는 파일은 32MB씩 나눠 올리고, 끊기면 이어서 올립니다 (수십 GB 가능)</small></label><input type="file" id="miFile" accept=".pst,.ost,.mbox,.mbx,.zip,.eml">
     <label style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:10px"><input type="checkbox" id="miArch" style="width:auto" checked><b>🗄 모든 메일을 보관함에 저장</b> <small class="muted">(기간과 상관없이 전부 — 나중에 검색해서 볼 수 있음. 첨부파일은 빼고 본문만)</small></label>
     <label>일정 찾을 기간 <small class="muted">(이 기간 메일만 '확인할 것'·입고예정 자동 등록에 씀)</small></label>
     <select id="miMonths"><option value="1">최근 1개월</option><option value="3" selected>최근 3개월</option><option value="6">최근 6개월</option><option value="12">최근 1년</option><option value="0">전체</option></select>
