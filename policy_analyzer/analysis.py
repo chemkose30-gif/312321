@@ -102,7 +102,7 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
     active = [p for p in policies if is_active(p, today)]
 
     totals: dict[str, int] = {}
-    sources: dict[str, list[str]] = {}
+    cat_items: dict[str, list[dict]] = {}   # 분류별 개별 담보 전체
     renewable_items = []
     for p in active:
         for c in p.get("coverages") or []:
@@ -112,8 +112,12 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
                 totals[cat] = max(totals.get(cat, 0), amt)
             else:
                 totals[cat] = totals.get(cat, 0) + amt
-            sources.setdefault(cat, []).append(f"{p.get('company') or '?'} {c.get('name')}")
-            if c.get("renewable") or (c.get("renewable") is None and p.get("is_renewable")):
+            renew = bool(c.get("renewable") or (c.get("renewable") is None and p.get("is_renewable")))
+            cat_items.setdefault(cat, []).append({
+                "name": c.get("name") or "", "company": p.get("company") or "?",
+                "amount": c.get("amount"), "renewable": renew,
+            })
+            if renew:
                 renewable_items.append(f"{p.get('company') or '?'} · {c.get('name')}")
 
     checks = []  # (level, 제목, 설명)  level: warn / info / ok
@@ -186,8 +190,10 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
             checks.append(("info", "계약자≠피보험자", f"{p.get('company')} {p.get('product_name')}: 계약자 {c}, 피보험자 {i}"))
 
     premium = sum(p.get("monthly_premium") or 0 for p in active)
-    summary = [{"category": cat, "amount": totals[cat], "sources": sources.get(cat, []),
-                "benchmark": BENCHMARKS.get(cat)} for cat in SUMMARY_ORDER if cat in totals]
+    # 증권에 있는 모든 담보를 분류별로 다 보여준다 (정해진 순서 먼저, 그 외는 뒤에)
+    ordered = [c for c in SUMMARY_ORDER if c in cat_items] + [c for c in cat_items if c not in SUMMARY_ORDER]
+    summary = [{"category": cat, "amount": totals.get(cat, 0), "items": cat_items[cat],
+                "benchmark": BENCHMARKS.get(cat)} for cat in ordered]
 
     return {
         "age": age_on(birth, today),
