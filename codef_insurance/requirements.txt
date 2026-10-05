@@ -1,2 +1,8 @@
 requests
 pycryptodome
+httpx
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+cryptography
