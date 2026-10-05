@@ -54,9 +54,46 @@ def age_on(birth: date | None, on: date) -> int | None:
     return on.year - birth.year - ((on.month, on.day) < (birth.month, birth.day))
 
 
+PAY_STATUSES = ["정상", "미납", "실효", "해지"]
+OWNERS = {"": "확인 전", "mine": "내 계약", "other_planner": "다른 설계사 계약", "other_company": "타사 계약"}
+ALERT_DAYS = 90  # 만기·갱신 알림 기간
+
+
+def manage(p: dict) -> dict:
+    return p.get("manage") or {}
+
+
 def is_active(p: dict, today: date) -> bool:
+    """보장이 살아 있는 계약 (만기 전이고 실효·해지가 아님)"""
+    if manage(p).get("pay_status") in ("실효", "해지"):
+        return False
     end = parse_date(p.get("maturity_date"))
     return end is None or end >= today
+
+
+def policy_alerts(p: dict, today: date | None = None) -> list[tuple[str, str, str]]:
+    """계약 1건의 알림 [(날짜 YYYY-MM-DD, level, 내용)]  level: warn / info"""
+    today = today or date.today()
+    m = manage(p)
+    label = f"{p.get('company') or '?'} {p.get('product_name') or ''}".strip()
+    out = []
+    status = m.get("pay_status")
+    if status == "미납":
+        out.append((m.get("checked_at") or today.isoformat(), "warn", f"보험료 미납 · {label} — 실효 전에 납입 안내 필요"))
+    elif status == "실효":
+        out.append((m.get("checked_at") or today.isoformat(), "warn", f"계약 실효 · {label} — 보장 중단 상태, 부활 가능 여부 확인"))
+    if status in ("실효", "해지"):
+        return out
+    limit = today.toordinal() + ALERT_DAYS
+    end = parse_date(p.get("maturity_date"))
+    if end and today <= end and end.toordinal() <= limit:
+        out.append((end.isoformat(), "info", f"계약 만기 예정 · {label}"))
+    renew = sorted({d for c in p.get("coverages") or []
+                    if c.get("renewable") and (d := parse_date(c.get("end_date"))) and today <= d and d.toordinal() <= limit})
+    if renew:
+        n = sum(1 for c in p.get("coverages") or [] if c.get("renewable") and parse_date(c.get("end_date")) == renew[0])
+        out.append((renew[0].isoformat(), "info", f"갱신 예정 (담보 {n}개, 보험료 인상 가능) · {label}"))
+    return out
 
 
 def analyze(insured: dict, policies: list[dict], today: date | None = None) -> dict:
@@ -132,6 +169,15 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
             checks.append(("info", "해지 시 환급금 없음·적음",
                            f"{p.get('company')} {name}: 납입기간 중 해지하면 낸 보험료를 거의 돌려받지 못합니다. "
                            "보장 변경이 필요하면 해지보다 부족한 보장을 추가하는 쪽을 먼저 검토하세요."))
+
+    # 납입 상태
+    for p in policies:
+        st = manage(p).get("pay_status")
+        if st in ("미납", "실효"):
+            checks.append(("warn", f"보험료 {st}" if st == "미납" else "계약 실효",
+                           f"{p.get('company')} {p.get('product_name')}: "
+                           + ("납입최고기간이 지나면 실효됩니다. 납입 안내가 필요합니다." if st == "미납"
+                              else "보장이 중단된 상태로 보장 합산에서 제외했습니다. 부활 가능 기간인지 확인하세요.")))
 
     # 계약자와 피보험자가 다른 경우
     for p in active:

@@ -151,6 +151,13 @@ def list_policies(planner_id: int, cid: int) -> list[dict]:
     return [{"id": r["id"], "source": r["source"], "created_at": r["created_at"], **dec(r["data_enc"])} for r in rows]
 
 
+def all_policies(planner_id: int) -> list[dict]:
+    with closing(db()) as conn:
+        rows = conn.execute("""SELECT p.* FROM policies p JOIN customers c ON c.id = p.customer_id
+                               WHERE c.planner_id = ?""", (planner_id,)).fetchall()
+    return [{"id": r["id"], "customer_id": r["customer_id"], **dec(r["data_enc"])} for r in rows]
+
+
 def get_policy(planner_id: int, pid: int) -> dict | None:
     with closing(db()) as conn:
         r = conn.execute("""SELECT p.* FROM policies p JOIN customers c ON c.id = p.customer_id
@@ -160,7 +167,7 @@ def get_policy(planner_id: int, pid: int) -> dict | None:
 
 def add_policies(planner_id: int, cid: int, policies: list[dict], source: str) -> tuple[int, int]:
     """같은 보험사+증권번호가 이미 있으면 새 내용으로 교체. (추가, 교체) 건수 반환"""
-    existing = {(p.get("company"), p.get("policy_no")): p["id"]
+    existing = {(p.get("company"), p.get("policy_no")): p
                 for p in list_policies(planner_id, cid) if p.get("policy_no")}
     added = replaced = 0
     now = int(time.time())
@@ -168,8 +175,11 @@ def add_policies(planner_id: int, cid: int, policies: list[dict], source: str) -
         for p in policies:
             key = (p.get("company"), p.get("policy_no"))
             if p.get("policy_no") and key in existing:
+                old = existing[key]
+                if old.get("manage"):  # 설계사가 입력한 납입·관리 정보는 유지
+                    p = {**p, "manage": old["manage"]}
                 conn.execute("UPDATE policies SET data_enc = ?, source = ?, created_at = ? WHERE id = ?",
-                             (enc(p), source, now, existing[key]))
+                             (enc(p), source, now, old["id"]))
                 replaced += 1
             else:
                 conn.execute("INSERT INTO policies (customer_id, data_enc, source, created_at) VALUES (?, ?, ?, ?)",

@@ -58,9 +58,12 @@ textarea.note { font-family:inherit; font-size:15px; min-height:110px; }
 select, input[type=date] { padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; }
 .note-item { border-top:1px solid var(--line); padding:12px 0; } .note-item:first-of-type { border-top:0; }
 .note-body { white-space:pre-wrap; margin:6px 0; }
-.tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
-.overdue { color:var(--warn); font-weight:600; } .done { text-decoration:line-through; color:var(--muted); }
-button, .btn { display:inline-block; padding:9px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff;
+.tag { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
+.overdue { color:var(--warn); font-weight:600; }
+.tag.warn-tag { background:var(--warn-bg); color:var(--warn); font-weight:600; }
+.tag.ok-tag { background:#dcfce7; color:#166534; }
+.manage { margin-top:10px; border-top:1px dashed var(--line); padding-top:10px; } .done { text-decoration:line-through; color:var(--muted); }
+button, .btn { display:inline-block; white-space:nowrap; padding:9px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff;
   font-size:14px; cursor:pointer; text-decoration:none; }
 .btn-ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
 .btn-danger { background:var(--danger); } .btn-sm { padding:5px 10px; font-size:13px; }
@@ -243,11 +246,18 @@ def home(request: Request, q: str = ""):
     me = store.get_planner(pid)
     customers = store.list_customers(pid)
     notes = store.all_notes(pid)
+    all_pol = store.all_policies(pid)
+    names = {c["id"]: c.get("name") or "이름 미확인" for c in customers}
+    bad = {}
+    for p in all_pol:
+        st = analysis.manage(p).get("pay_status")
+        if st in ("미납", "실효"):
+            bad.setdefault(p["customer_id"], set()).add(st)
     if q:
         note_hit = {n["customer_id"] for n in notes if q in (n.get("content") or "") or q in (n.get("next_action") or "")}
         customers = [c for c in customers if c["id"] in note_hit or q in (c.get("name") or "")
                      or q in (c.get("phone") or "") or q in (c.get("memo") or "")]
-    rows = "".join(f"""<tr><td><a href="/customers/{c['id']}">{customer_title(c)}</a></td>
+    rows = "".join(f"""<tr><td><a href="/customers/{c['id']}">{customer_title(c)}</a>{''.join(f' <span class="tag warn-tag">{x}</span>' for x in sorted(bad.get(c['id'], ())))}</td>
 <td>{ymd(c.get('birth_date'))}</td><td>{e(c.get('phone') or '-')}</td><td class="num">{c['n']}건</td>
 <td class="muted">{ts(c['updated_at'])}</td></tr>""" for c in customers)
     table = (f'<div class="tbl-wrap"><table><tr><th>고객</th><th>생년월일</th><th>연락처</th><th>계약</th><th>최근 수정</th></tr>{rows}</table></div>'
@@ -256,7 +266,7 @@ def home(request: Request, q: str = ""):
 <div class="row between"><h1>보험증권 보장분석</h1>
 <form method="post" action="/logout" class="row"><span class="muted">{e(me['name'])}</span><button class="btn-ghost btn-sm">로그아웃</button></form></div>
 {take_flash(request)}
-{followups_html(pid, notes)}
+{todo_html(pid, notes, all_pol, names)}
 <div class="card"><h2>새 고객 증권 분석</h2>{upload_form()}</div>
 <div class="card"><div class="row between"><h2>고객 ({len(customers)})</h2>
 <div class="row"><a class="btn btn-sm" href="/customers/new">+ 고객 직접 등록</a>
@@ -264,20 +274,27 @@ def home(request: Request, q: str = ""):
 {table}</div>""")
 
 
-def followups_html(pid: int, notes: list[dict]) -> str:
-    """완료 안 된 '다음 연락일' 중 지난 것 + 7일 이내"""
+def todo_html(pid: int, notes: list[dict], policies: list[dict], names: dict[int, str]) -> str:
+    """연락 예정(지난 것 + 7일 이내) + 계약 알림(미납·실효, 90일 이내 만기·갱신)"""
     today = date.today()
-    soon = (today + timedelta(days=7)).strftime("%Y-%m-%d")
-    items = sorted((n for n in notes if n.get("next_date") and not n.get("done") and n["next_date"] <= soon),
-                   key=lambda n: n["next_date"])
+    soon = (today + timedelta(days=7)).isoformat()
+    items = []  # (날짜, 고객id, 구분, 내용, 버튼)
+    for n in notes:
+        if n.get("next_date") and not n.get("done") and n["next_date"] <= soon:
+            btn = f"""<form method="post" action="/notes/{n['id']}/done"><input type="hidden" name="back" value="/"><button class="btn-ghost btn-sm">완료</button></form>"""
+            items.append((n["next_date"], n["customer_id"], '<span class="tag">연락</span>', e(n.get("next_action") or ""), btn))
+    for p in policies:
+        for d, lvl, text in analysis.policy_alerts(p, today):
+            tag = '<span class="tag warn-tag">경고</span>' if lvl == "warn" else '<span class="tag">계약</span>'
+            items.append((d, p["customer_id"], tag, e(text), ""))
     if not items:
         return ""
-    names = {c["id"]: c.get("name") or "이름 미확인" for c in store.list_customers(pid)}
-    rows = "".join(f"""<tr><td class="{'overdue' if n['next_date'] < today.isoformat() else ''}">{e(n['next_date'])}</td>
-<td><a href="/customers/{n['customer_id']}">{e(names.get(n['customer_id'], ''))}</a></td><td>{e(n.get('next_action') or '')}</td>
-<td><form method="post" action="/notes/{n['id']}/done"><input type="hidden" name="back" value="/"><button class="btn-ghost btn-sm">완료</button></form></td></tr>""" for n in items)
-    return f"""<div class="card"><h2>연락 예정 ({len(items)})</h2><p class="muted">지난 일정과 7일 이내 일정입니다.</p>
-<div class="tbl-wrap"><table><tr><th>날짜</th><th>고객</th><th>할 일</th><th></th></tr>{rows}</table></div></div>"""
+    items.sort(key=lambda x: x[0])
+    rows = "".join(f"""<tr><td class="nowrap {'overdue' if d < today.isoformat() else ''}">{e(d)}</td><td>{tag}</td>
+<td class="nowrap"><a href="/customers/{cid}">{e(names.get(cid, ''))}</a></td><td>{text}</td><td>{btn}</td></tr>""" for d, cid, tag, text, btn in items)
+    return f"""<div class="card"><h2>할 일·알림 ({len(items)})</h2>
+<p class="muted">연락 예정(지난 일정·7일 이내), 미납·실효 계약, {analysis.ALERT_DAYS}일 이내 만기·갱신 계약입니다.</p>
+<div class="tbl-wrap"><table><tr><th>날짜</th><th>구분</th><th>고객</th><th>내용</th><th></th></tr>{rows}</table></div></div>"""
 
 
 # ── 고객 상세 / 리포트 ────────────────────────────────────────────────────────
@@ -334,12 +351,37 @@ def policy_html(p: dict, editable: bool) -> str:
     actions = f"""<div class="row no-print"><a class="btn btn-ghost btn-sm" href="/policies/{p['id']}/edit">수정</a>
 <form method="post" action="/policies/{p['id']}/delete" onsubmit="return confirm('이 계약을 삭제할까요?')"><button class="btn-danger btn-sm">삭제</button></form></div>""" if editable else ""
     excl = f'<p class="under">부담보·인수조건: {e(" / ".join(p["exclusions"]))}</p>' if p.get("exclusions") else ""
-    return f"""<div class="card"><div class="row between"><h3>{e(p.get('company') or '?')} · {e(p.get('product_name') or '')}</h3>{actions}</div>
+    m = analysis.manage(p)
+    badges = ""
+    if editable:
+        st = m.get("pay_status")
+        cls = "warn-tag" if st in ("미납", "실효") else ("ok-tag" if st == "정상" else "")
+        badges = f""" <span class="tag">{e(analysis.OWNERS.get(m.get('owner', ''), '확인 전'))}</span>""" + \
+                 (f' <span class="tag {cls}">{e(st)}</span>' if st else "")
+    manage_html = manage_form(p) if editable else ""
+    return f"""<div class="card"><div class="row between"><h3>{e(p.get('company') or '?')} · {e(p.get('product_name') or '')}{badges}</h3>{actions}</div>
 <p class="muted">증권번호 {e(p.get('policy_no') or '-')} · 계약자 {e(p.get('contractor_name') or '-')} · 피보험자 {e(p.get('insured_name') or '-')}<br>
 계약일 {ymd(p.get('contract_date'))} · 만기 {ymd(p.get('maturity_date'))} · {e(p.get('payment_period') or '-')} {e(p.get('payment_cycle') or '')}
 · 월 {won(p.get('monthly_premium'))}{' · 갱신형' if p.get('is_renewable') else ''}</p>{excl}
 <div class="tbl-wrap"><table><tr><th>담보</th><th>분류</th><th>가입금액</th><th>갱신</th><th>보장 종료</th></tr>{covs}</table></div>
-{f'<p class="muted no-print">원본 파일: {e(p["source"])}</p>' if editable and p.get("source") else ''}</div>"""
+{f'<p class="muted no-print">원본 파일: {e(p["source"])}</p>' if editable and p.get("source") else ''}{manage_html}</div>"""
+
+
+def manage_form(p: dict) -> str:
+    m = analysis.manage(p)
+    owner_opts = "".join(f'<option value="{k}" {"selected" if m.get("owner", "") == k else ""}>{v}</option>' for k, v in analysis.OWNERS.items())
+    st_opts = '<option value="">확인 전</option>' + "".join(
+        f'<option {"selected" if m.get("pay_status") == s else ""}>{s}</option>' for s in analysis.PAY_STATUSES)
+    summary = f"납입 상태 {e(m.get('pay_status') or '확인 전')}" + (f" · 매월 {e(str(m['pay_day']))}일 이체" if m.get("pay_day") else "") \
+        + (f" · 확인일 {e(m['checked_at'])}" if m.get("checked_at") else "") + (f" · {e(m['memo'])}" if m.get("memo") else "")
+    return f"""<details class="manage no-print"><summary>관리 정보 — {summary}</summary>
+<form method="post" action="/policies/{p['id']}/manage" class="row" style="margin-top:8px">
+<label style="margin:0">구분</label><select name="owner">{owner_opts}</select>
+<label style="margin:0">납입 상태</label><select name="pay_status">{st_opts}</select>
+<label style="margin:0">이체일</label><input type="text" name="pay_day" value="{e(str(m.get('pay_day') or ''))}" placeholder="25" style="width:60px">
+<label style="margin:0">확인일</label><input type="date" name="checked_at" value="{e(m.get('checked_at') or date.today().isoformat())}">
+<input type="text" name="memo" value="{e(m.get('memo') or '')}" placeholder="메모 (예: 고객 앱 캡처로 확인)" style="flex:1;min-width:180px">
+<button class="btn-sm">저장</button></form></details>"""
 
 
 def info_form(c: dict, action: str, title: str, button: str) -> str:
@@ -555,6 +597,27 @@ def edit_policy(request: Request, pid_: int, data: str = Form(...)):
         return RedirectResponse(f"/policies/{pid_}/edit?error={quote('JSON 형식이 올바르지 않습니다.')}", status_code=303)
     store.update_policy(pid, pid_, extractor.mask_rrn(obj))
     flash(request, "계약 정보를 수정했습니다.")
+    return RedirectResponse(f"/customers/{p['customer_id']}", status_code=303)
+
+
+@app.post("/policies/{pid_}/manage")
+def save_manage(request: Request, pid_: int, owner: str = Form(""), pay_status: str = Form(""), pay_day: str = Form(""),
+                checked_at: str = Form(""), memo: str = Form("")):
+    pid = planner_id(request)
+    p = store.get_policy(pid, pid_)
+    if not p:
+        raise HTTPException(404)
+    day = "".join(ch for ch in pay_day if ch.isdigit())
+    data = {k: v for k, v in p.items() if k not in ("id", "customer_id")}
+    data["manage"] = {
+        "owner": owner if owner in analysis.OWNERS else "",
+        "pay_status": pay_status if pay_status in analysis.PAY_STATUSES else "",
+        "pay_day": int(day) if day and 1 <= int(day) <= 31 else None,
+        "checked_at": checked_at or None,
+        "memo": memo.strip()[:200],
+    }
+    store.update_policy(pid, pid_, data)
+    flash(request, "관리 정보를 저장했습니다.")
     return RedirectResponse(f"/customers/{p['customer_id']}", status_code=303)
 
 
