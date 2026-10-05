@@ -5,6 +5,7 @@
   python manage.py list
   python manage.py reset-2fa <아이디>               # 휴대폰 분실 시 2단계 인증 초기화
   python manage.py audit [건수]                      # 전체 접속·작업 기록 보기
+  python manage.py seed-demo                         # (로컬 테스트용) 계정이 없으면 demo 계정 생성
 """
 
 import sys
@@ -39,6 +40,13 @@ def main() -> None:
         from datetime import datetime
         for r in reversed(store.list_audit(None, int(args[1]) if len(args) > 1 else 100)):
             print(datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H:%M:%S"), r["username"] or "-", r["ip"], r["action"], r["target"] or "")
+    elif args == ["seed-demo"]:
+        # 로컬 테스트 전용: 계정이 하나도 없을 때만 demo 계정을 만든다.
+        if store.list_planners():
+            print("이미 계정이 있어 건너뜁니다.")
+        else:
+            store.add_planner("demo", "데모 설계사", "demo-local-1234")
+            print("데모 계정 생성 → 아이디: demo / 비밀번호: demo-local-1234")
     elif args == ["list"]:
         for p in store.list_planners():
             print(p["id"], p["username"], p["name"])
