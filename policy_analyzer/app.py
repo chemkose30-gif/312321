@@ -303,6 +303,7 @@ ACTION_NAMES = {
     "edit_customer": "고객 정보 수정", "delete_customer": "고객 삭제", "upload": "증권 업로드",
     "edit_policy": "계약 수정", "manage_policy": "계약 관리정보 수정", "delete_policy": "계약 삭제",
     "add_note": "상담 기록 작성", "edit_note": "상담 기록 수정", "delete_note": "상담 기록 삭제",
+    "edit_notepad": "자유 메모 수정",
     "blocked_cross_origin": "외부 사이트 요청 차단",
 }
 
@@ -572,6 +573,14 @@ def manage_form(p: dict) -> str:
 <button class="btn-sm">저장</button></form></details>"""
 
 
+def notepad_card(cid: int, text: str) -> str:
+    return f"""<form method="post" action="/customers/{cid}/notepad" class="card no-print" id="notepad">
+<div class="row between"><h2 style="margin:0">자유 메모장</h2><button class="btn-sm">저장</button></div>
+<p class="muted" style="margin:4px 0 8px">대화 내용, 특이사항 등을 자유롭게 적어 두세요. 날짜별 상담 기록은 아래에 따로 있습니다.</p>
+<textarea name="notepad" class="note" style="min-height:220px" placeholder="예) 배우자도 보험 점검 원함. 형이 암 병력 있어 암 보장 민감. 다음 달 이직 예정 - 단체보험 종료 확인.">{e(text)}</textarea>
+</form>"""
+
+
 def info_form(c: dict, action: str, title: str, button: str) -> str:
     v = lambda k: e(c.get(k) or "")  # noqa: E731
     return f"""<form method="post" action="{action}" class="card no-print"><h2>{title}</h2>
@@ -718,6 +727,7 @@ def customer_page(request: Request, cid: int):
 <button class="btn-danger btn-sm">고객 삭제</button></form></div></div>
 {take_flash(request)}
 {info}
+{notepad_card(cid, c.get("notepad", ""))}
 {notes_html(cid, store.list_notes(pid, cid))}
 <div class="card no-print"><h2>증권 추가</h2>{upload_form(cid)}</div>
 {analysis_html(c, policies) if policies else ''}
@@ -746,11 +756,25 @@ def report(request: Request, cid: int):
 def save_info(request: Request, cid: int, name: str = Form(""), birth_date: str = Form(""), gender: str = Form(""),
               phone: str = Form(""), address: str = Form(""), memo: str = Form("")):
     pid = planner_id(request)
-    get_customer_or_404(pid, cid)
-    store.save_customer(pid, customer_fields(name, birth_date, gender, phone, address, memo), cid)
+    c = get_customer_or_404(pid, cid)
+    fields = customer_fields(name, birth_date, gender, phone, address, memo)
+    fields["notepad"] = c.get("notepad", "")  # 자유 메모는 이 폼에서 건드리지 않음
+    store.save_customer(pid, fields, cid)
     log(request, pid, "edit_customer", f"고객#{cid}")
     flash(request, "고객 정보를 저장했습니다.")
     return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
+@app.post("/customers/{cid}/notepad")
+def save_notepad(request: Request, cid: int, notepad: str = Form("")):
+    pid = planner_id(request)
+    c = get_customer_or_404(pid, cid)
+    c["notepad"] = notepad.strip()[:20000]
+    store.save_customer(pid, {k: c.get(k) for k in
+                              ("name", "birth_date", "gender", "phone", "address", "memo", "notepad")}, cid)
+    log(request, pid, "edit_notepad", f"고객#{cid}")
+    flash(request, "메모를 저장했습니다.")
+    return RedirectResponse(f"/customers/{cid}#notepad", status_code=303)
 
 
 @app.post("/customers/{cid}/delete")
