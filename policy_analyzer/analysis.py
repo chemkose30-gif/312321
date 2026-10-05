@@ -12,11 +12,14 @@ BENCHMARKS = {
     "질병후유장해": 50_000_000,
 }
 
+# 기준 판단 시 함께 인정하는 담보 (일반사망은 질병으로 사망해도 지급)
+ALSO_COUNTS = {"질병사망": ("일반사망",)}
+
 # 보장 범위가 좁은 담보 -> 넓은 담보 (넓은 담보가 없으면 안내)
 NARROW = {"뇌졸중·뇌출혈": "뇌혈관질환", "급성심근경색": "허혈성심장질환"}
 
 SUMMARY_ORDER = [
-    "일반암", "유사암·소액암", "뇌혈관질환", "뇌졸중·뇌출혈", "허혈성심장질환", "급성심근경색",
+    "일반암", "특정암", "유사암·소액암", "암치료비", "암통원", "뇌혈관질환", "뇌졸중·뇌출혈", "허혈성심장질환", "급성심근경색",
     "실손의료비", "질병수술비", "상해수술비", "입원일당", "일반사망", "질병사망", "상해사망",
     "질병후유장해", "상해후유장해", "치매·간병", "운전자", "배상책임", "치아", "기타",
 ]
@@ -89,7 +92,7 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
 
     # 기준 대비 부족
     for cat, need in BENCHMARKS.items():
-        have = totals.get(cat, 0)
+        have = totals.get(cat, 0) + sum(totals.get(c, 0) for c in ALSO_COUNTS.get(cat, ()))
         if have < need:
             narrow = [k for k, v in NARROW.items() if v == cat and totals.get(k)]
             extra = f" (좁은 범위 담보 '{narrow[0]}' {won(totals[narrow[0]])}만 있음)" if narrow else ""
@@ -122,6 +125,14 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
             checks.append(("info", "부담보·인수조건 있음",
                            f"{p.get('company')} {p.get('product_name')}: " + " / ".join(p["exclusions"])))
 
+    # 해약환급금이 없거나 적은 상품
+    for p in active:
+        name = p.get("product_name") or ""
+        if any(k in name for k in ("해약환급금 미지급", "해약환급금미지급", "무해지", "해약환급금 일부지급", "저해지")):
+            checks.append(("info", "해지 시 환급금 없음·적음",
+                           f"{p.get('company')} {name}: 납입기간 중 해지하면 낸 보험료를 거의 돌려받지 못합니다. "
+                           "보장 변경이 필요하면 해지보다 부족한 보장을 추가하는 쪽을 먼저 검토하세요."))
+
     # 계약자와 피보험자가 다른 경우
     for p in active:
         c, i = p.get("contractor_name"), p.get("insured_name")
@@ -138,6 +149,7 @@ def analyze(insured: dict, policies: list[dict], today: date | None = None) -> d
         "expired_count": len(policies) - len(active),
         "monthly_premium": premium,
         "summary": summary,
-        "missing_benchmarks": [cat for cat in BENCHMARKS if cat not in totals],
+        "missing_benchmarks": [cat for cat in BENCHMARKS
+                               if cat not in totals and not any(c in totals for c in ALSO_COUNTS.get(cat, ()))],
         "checks": checks,
     }

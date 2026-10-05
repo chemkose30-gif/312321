@@ -74,6 +74,7 @@ button, .btn { display:inline-block; padding:9px 14px; border:0; border-radius:8
 table { width:100%; border-collapse:collapse; font-size:14px; }
 th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
 th { color:var(--muted); font-weight:600; white-space:nowrap; }
+td.nowrap, th.nowrap { white-space:nowrap; } td.small { font-size:13px; }
 td.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .check { border-radius:8px; padding:10px 12px; margin-bottom:8px; }
 .check.warn { background:var(--warn-bg); color:var(--warn); } .check.info { background:var(--info-bg); color:var(--info); }
@@ -287,6 +288,14 @@ def get_customer_or_404(pid: int, cid: int) -> dict:
     return c
 
 
+SUMMARY_NOTES = {
+    "실손의료비": "중복 보상 안 됨 · 최대값",
+    "암치료비": "치료별 최대 지급액 합계",
+    "암통원": "통원 1회당 금액 합계",
+    "입원일당": "1일당 금액 합계",
+}
+
+
 def analysis_html(c: dict, policies: list[dict]) -> str:
     a = analysis.analyze(c, policies)
     stats = f"""<div class="grid">
@@ -297,13 +306,16 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 
     rows = []
     for s in a["summary"]:
+        if not s["amount"]:
+            continue
         bm = s["benchmark"]
         state = "" if not bm else (f'<span class="enough">충분</span>' if s["amount"] >= bm else f'<span class="under">부족 ({won(bm)} 기준)</span>')
-        note = " <span class='muted'>(중복 보상 안 됨, 최대값)</span>" if s["category"] == "실손의료비" else ""
-        rows.append(f"""<tr><td>{e(s['category'])}{note}</td><td class="num">{won(s['amount'])}</td><td>{state}</td>
-<td class="muted">{e(', '.join(s['sources']))}</td></tr>""")
+        note = SUMMARY_NOTES.get(s["category"], "")
+        note = f"<br><span class='muted'>{note}</span>" if note else ""
+        rows.append(f"""<tr><td class="nowrap">{e(s['category'])}{note}</td><td class="num">{won(s['amount'])}</td><td class="nowrap">{state}</td>
+<td class="muted small">{e(', '.join(s['sources']))}</td></tr>""")
     for cat in a["missing_benchmarks"]:
-        rows.append(f'<tr><td>{e(cat)}</td><td class="num under">없음</td><td><span class="under">미가입 ({won(analysis.BENCHMARKS[cat])} 기준)</span></td><td></td></tr>')
+        rows.append(f'<tr><td class="nowrap">{e(cat)}</td><td class="num under">없음</td><td class="nowrap"><span class="under">미가입 ({won(analysis.BENCHMARKS[cat])} 기준)</span></td><td></td></tr>')
     summary = f'<div class="tbl-wrap"><table><tr><th>보장</th><th>합계</th><th>판단</th><th>가입 내역</th></tr>{"".join(rows)}</table></div>'
 
     checks = "".join(f'<div class="check {lvl}"><b>{e(t)}</b><span>{e(d)}</span></div>' for lvl, t, d in a["checks"]) \
