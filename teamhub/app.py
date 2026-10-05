@@ -1,4 +1,5 @@
 """TeamHub - 사내 캘린더 & 업무지시 시스템 (FastAPI + SQLite)."""
+import email
 import hashlib
 import re
 import json
@@ -301,6 +302,23 @@ def init_db():
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_mail_items_owner ON mail_items(owner_id, status, sent_at);
+            CREATE TABLE IF NOT EXISTS mail_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER,
+                uniq TEXT UNIQUE NOT NULL,
+                folder TEXT NOT NULL DEFAULT '',
+                from_name TEXT NOT NULL DEFAULT '',
+                from_addr TEXT NOT NULL DEFAULT '',
+                to_addr TEXT NOT NULL DEFAULT '',
+                cc TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                sent_at TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                attach TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mail_archive_sent ON mail_archive(sent_at);
             CREATE TABLE IF NOT EXISTS bank_tx (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 uniq TEXT UNIQUE NOT NULL,
@@ -416,6 +434,15 @@ def init_db():
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
         c.execute("PRAGMA journal_mode = WAL")
+        # 메일 보관함 검색 색인 (글자 3개 단위 → '에프앤' 처럼 이름 가운데도 찾음)
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name = 'mail_archive_fts'").fetchone():
+            for tok in ("trigram", "unicode61"):
+                try:
+                    c.execute(f"CREATE VIRTUAL TABLE mail_archive_fts USING fts5(subject, body, people, content='',"
+                              f" tokenize='{tok}')")
+                    break
+                except sqlite3.OperationalError:
+                    continue
         # 예전에 비고에 적던 '이카운트에서 가져옴' 표시 → 따로 표시(imported)하고 비고는 비움
         c.execute("UPDATE quotes SET imported = 1, note = '' WHERE note = '이카운트에서 가져옴'")
         # 엑셀로 가져왔는데 건명이 비어 있는 문서 → 품목으로 건명 채우기
@@ -3949,10 +3976,12 @@ def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
                                " 확인하세요." + (f" ({msg})" if msg else ""))
         for f in sorted(out.rglob("*")):
             if f.is_file() and not f.name.startswith("."):
-                yield f.read_bytes()
+                folder = "/".join(f.relative_to(out).parts[:-1][-3:])
+                yield f.read_bytes(), folder
+                f.unlink(missing_ok=True)        # 읽은 것은 바로 지워 디스크를 아낌
     elif name.endswith(".mbox") or name.endswith(".mbx"):
         for msg in mailbox.mbox(str(path), create=False):
-            yield msg.as_bytes()
+            yield msg.as_bytes(), path.stem
     elif name.endswith(".zip"):
         with zipfile.ZipFile(path) as z:
             pwd = password.encode() if password else None
@@ -3972,12 +4001,12 @@ def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
                     raise RuntimeError("이 압축 파일은 AES 방식 암호라 서버에서 풀 수 없습니다. PC에서 압축을 푼 뒤 안의"
                                        " .pst/.mbox 파일을 올려 주세요.") from e
                 if low.endswith(".eml"):
-                    yield target.read_bytes()
+                    yield target.read_bytes(), str(Path(info.filename).parent).strip(".")
                 else:
                     yield from _iter_mailbox(target, workdir / f"z{info.header_offset}", password)
                 target.unlink(missing_ok=True)
     else:
-        yield path.read_bytes()
+        yield path.read_bytes(), ""
 
 
 def _set_import(uid: int, **kw):
@@ -3987,15 +4016,15 @@ def _set_import(uid: int, **kw):
         set_setting(c, f"mail_import:{uid}", json.dumps(st, ensure_ascii=False))
 
 
-def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
+def run_mail_import(path: Path, uid: int, months: int, password: str = "", archive: bool = True):
     """백그라운드: 메일함 파일을 읽어 최근 N개월 메일만 저장 → 앞으로의 일정이 있는 쓰레드만 AI 분석 → 알림 한 번."""
     import shutil
     from email.parser import BytesHeaderParser
     from email.utils import parsedate_to_datetime
     workdir = path.parent
     since = datetime.now() - timedelta(days=31 * months) if months else datetime.min
-    total = added = dup = old = 0
-    heads, batch = set(), []
+    total = added = dup = old = archived = 0
+    heads, batch, abatch = set(), [], []
 
     def flush():
         nonlocal added, dup
@@ -4009,17 +4038,32 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
                 dup += r["duplicates"]
                 heads.update(r["heads"])
         batch.clear()
-        _set_import(uid, read=total, added=added, duplicates=dup, skipped_old=old)
+        _set_import(uid, read=total, added=added, duplicates=dup, skipped_old=old, archived=archived)
+
+    def aflush():
+        nonlocal archived
+        with db() as c:
+            for raw, folder in abatch:
+                try:
+                    archived += archive_mail(c, uid, raw, folder)
+                except Exception:
+                    continue
+        abatch.clear()
+        _set_import(uid, read=total, archived=archived)
 
     try:
         if path.name.lower().endswith((".pst", ".ost")):
             _set_import(uid, stage="PST 파일 푸는 중 (큰 파일은 몇십 분~몇 시간 걸립니다)")
         first = True
-        for raw in _iter_mailbox(path, workdir, password):
+        for raw, folder in _iter_mailbox(path, workdir, password):
             if first:
-                _set_import(uid, stage="메일 읽는 중")
+                _set_import(uid, stage="메일 읽는 중" + (" · 보관함에 저장" if archive else ""))
                 first = False
             total += 1
+            if archive:
+                abatch.append((raw, folder))
+                if len(abatch) >= 200:
+                    aflush()
             try:
                 d = parsedate_to_datetime(BytesHeaderParser().parsebytes(raw[:20000])["date"])
                 if d.tzinfo:
@@ -4033,6 +4077,8 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
             if len(batch) >= 100:
                 flush()
         flush()
+        if archive:
+            aflush()
         with db() as c:
             live = [r["id"] for r in c.execute(
                 f"SELECT id FROM mail_items WHERE id IN ({','.join('?' * len(heads)) or 'NULL'}) AND status = 'new'"
@@ -4040,10 +4086,10 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
             ai_ids = live[:150] if ai_mail.enabled() else []
             for i in ai_ids:
                 c.execute("UPDATE mail_items SET ai_status = 'pending' WHERE id = ?", (i,))
-            notify(c, uid, f"📥 메일함 가져오기 완료: {added}통 저장 · 확인할 일정 {len(live)}건"
-                           + (f" (중복 {dup}통 제외)" if dup else ""))
+            notify(c, uid, f"📥 메일함 가져오기 완료: 일정 메일 {added}통 · 확인할 일정 {len(live)}건"
+                           + (f" · 🗄 보관함 {archived}통" if archive else "") + (f" (중복 {dup}통 제외)" if dup else ""))
         _set_import(uid, status="done", read=total, added=added, duplicates=dup, skipped_old=old, threads=len(live),
-                    finished_at=now())
+                    archived=archived, finished_at=now())
         bl_watch_soon()
         if ai_ids:
             run_ai_queue(ai_ids, quiet=True)      # 알림은 위에서 한 번만
@@ -4054,7 +4100,7 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = ""):
 
 
 @app.post("/api/mailin/import")
-async def mailin_import(file: UploadFile = File(...), months: int = 3, password: str = Form(""),
+async def mailin_import(file: UploadFile = File(...), months: int = 3, password: str = Form(""), archive: bool = True,
                        user: dict = Depends(current_user)):
     """내 메일함 파일(.pst/.mbox/.zip/.eml)을 올리면 백그라운드에서 가져온다."""
     import shutil
@@ -4074,7 +4120,7 @@ async def mailin_import(file: UploadFile = File(...), months: int = 3, password:
     _set_import(user["id"], status="running", file=name, size=path.stat().st_size, months=months, read=0, added=0,
                 duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="")
     # 비밀번호는 저장하지 않고 이번 가져오기에만 쓴다
-    threading.Thread(target=run_mail_import, args=(path, user["id"], months, password), daemon=True).start()
+    threading.Thread(target=run_mail_import, args=(path, user["id"], months, password, archive), daemon=True).start()
     return {"ok": True}
 
 
@@ -4101,7 +4147,7 @@ def mailin_chunk_status(upload_id: str, name: str, total: int, user: dict = Depe
             shutil.rmtree(d, ignore_errors=True)
     got = path.stat().st_size if path.exists() else 0
     free = shutil.disk_usage(MAIL_IMPORT_DIR).free
-    need = (total - got) + max(2 * 1024 ** 3, int(total * 0.15))      # 남은 파일 + 메일을 풀어 놓을 공간
+    need = (total - got) + max(2 * 1024 ** 3, int(total * 0.3))       # 남은 파일 + 메일을 풀어 놓을 공간 + 보관함
     if free < need:
         raise HTTPException(400, f"서버 여유 공간이 부족합니다: 남은 공간 {free / 1024 ** 3:.1f}GB, 필요 약 {need / 1024 ** 3:.1f}GB. "
                                  "기간을 줄여 내보낸 파일을 올리거나 서버 디스크를 늘려 주세요.")
@@ -4136,10 +4182,122 @@ def mailin_chunk_finish(body: dict, user: dict = Depends(current_user)):
         raise HTTPException(400, "파일이 다 올라오지 않았습니다. 다시 골라서 이어 올리세요.")
     months = max(0, min(int(body.get("months") or 0), 240))
     _set_import(user["id"], status="running", file=path.name, size=total, months=months, read=0, added=0,
-                duplicates=0, skipped_old=0, threads=0, error="", started_at=now(), finished_at="", stage="")
-    threading.Thread(target=run_mail_import, args=(path, user["id"], months, str(body.get("password") or "")),
-                     daemon=True).start()
+                duplicates=0, skipped_old=0, threads=0, archived=0, error="", started_at=now(), finished_at="", stage="")
+    threading.Thread(target=run_mail_import, args=(path, user["id"], months, str(body.get("password") or ""),
+                                                   body.get("archive", True) is not False), daemon=True).start()
     return {"ok": True}
+
+
+# ---- 🗄 메일 보관함: 메일함 파일의 메일을 모두(본문 글자) 보관하고 검색
+def archive_mail(c, uid: int, raw: bytes, folder: str = "") -> int:
+    from email import policy
+    from email.utils import getaddresses, parseaddr
+    msg = email.message_from_bytes(raw, policy=policy.default)
+    subject = str(msg.get("subject", "") or "")[:500]
+    name, addr = parseaddr(str(msg.get("from", "") or ""))
+    try:
+        sent = mailin._sent_at(msg).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        sent = ""
+    mid = str(msg.get("message-id", "") or "").strip()
+    uniq = mid or hashlib.sha1(f"{addr}|{subject}|{sent}".encode()).hexdigest()
+    body = mailin.message_text(msg)[:100000]
+    atts = []
+    for part in msg.walk():
+        fn = part.get_filename()
+        if fn:
+            atts.append(str(fn)[:120])
+    tos = ", ".join(f"{n} <{a}>" if n else a for n, a in getaddresses([str(msg.get("to", "") or "")]))[:2000]
+    ccs = ", ".join(f"{n} <{a}>" if n else a for n, a in getaddresses([str(msg.get("cc", "") or "")]))[:2000]
+    cur = c.execute("INSERT OR IGNORE INTO mail_archive (owner_id, uniq, folder, from_name, from_addr, to_addr, cc, subject,"
+                    " sent_at, body, attach, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (uid, uniq[:300], folder[:200], (name or addr)[:200], (addr or "").lower()[:200], tos, ccs, subject, sent,
+                     body, " / ".join(atts)[:1000], len(raw), now()))
+    if not cur.rowcount:
+        return 0
+    try:
+        c.execute("INSERT INTO mail_archive_fts (rowid, subject, body, people) VALUES (?, ?, ?, ?)",
+                  (cur.lastrowid, subject, body, f"{name} {addr} {tos} {ccs} {folder}"))
+    except sqlite3.OperationalError:
+        pass
+    return 1
+
+
+def archive_visible(c, user: dict):
+    if user["role"] == "admin" or get_setting(c, "mail_share_all", "1") == "1":
+        return "1 = 1", []
+    return "a.owner_id = ?", [user["id"]]
+
+
+@app.get("/api/mail-archive")
+def mail_archive_list(q: str = "", folder: str = "", date_from: str = "", date_to: str = "", page: int = 0,
+                      user: dict = Depends(current_user)):
+    with db() as c:
+        vis, params = archive_visible(c, user)
+        where, args = [vis], list(params)
+        q = q.strip()
+        if q:
+            terms = [t for t in re.split(r"\s+", q) if t]
+            fts_terms = [t for t in terms if len(t) >= 3]
+            short = [t for t in terms if len(t) < 3]
+            if fts_terms:
+                where.append("a.id IN (SELECT rowid FROM mail_archive_fts WHERE mail_archive_fts MATCH ?)")
+                args.append(" AND ".join('"' + t.replace('"', '""') + '"' for t in fts_terms))
+            for t in short:              # 두 글자 이하는 제목·보낸 사람에서만 찾음
+                where.append("(a.subject LIKE ? OR a.from_name LIKE ? OR a.from_addr LIKE ? OR a.to_addr LIKE ?)")
+                args += [f"%{t}%"] * 4
+        if folder:
+            where.append("a.folder = ?")
+            args.append(folder)
+        if date_from:
+            where.append("a.sent_at >= ?")
+            args.append(date_from)
+        if date_to:
+            where.append("a.sent_at <= ?")
+            args.append(date_to + " 23:59")
+        w = " AND ".join(where)
+        try:
+            total = c.execute(f"SELECT COUNT(*) FROM mail_archive a WHERE {w}", args).fetchone()[0]
+            rows = [dict(r) for r in c.execute(
+                f"SELECT a.id, a.folder, a.from_name, a.from_addr, a.subject, a.sent_at, a.attach, substr(a.body, 1, 160) AS snippet"
+                f" FROM mail_archive a WHERE {w} ORDER BY a.sent_at DESC LIMIT 50 OFFSET ?", args + [max(page, 0) * 50])]
+        except sqlite3.OperationalError:
+            raise HTTPException(400, "검색어를 확인하세요.")
+        stats = c.execute(f"SELECT COUNT(*), MIN(sent_at), MAX(sent_at), SUM(size) FROM mail_archive a WHERE {vis}", params).fetchone()
+        folders = [{"name": r[0], "count": r[1]} for r in c.execute(
+            f"SELECT folder, COUNT(*) FROM mail_archive a WHERE {vis} GROUP BY folder ORDER BY 2 DESC LIMIT 100", params)]
+    for r in rows:
+        r["snippet"] = re.sub(r"\s+", " ", r["snippet"] or "")
+    return {"total": total, "rows": rows, "page": page, "count": stats[0], "first": stats[1] or "", "last": stats[2] or "",
+            "folders": folders}
+
+
+@app.get("/api/mail-archive/{aid}")
+def mail_archive_get(aid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        vis, params = archive_visible(c, user)
+        r = c.execute(f"SELECT * FROM mail_archive a WHERE a.id = ? AND {vis}", [aid] + params).fetchone()
+    if not r:
+        raise HTTPException(404, "메일을 찾을 수 없습니다.")
+    return dict(r)
+
+
+@app.post("/api/mail-archive/{aid}/translate")
+def mail_archive_translate(aid: int, user: dict = Depends(current_user)):
+    m = mail_archive_get(aid, user)
+    with db() as c:
+        return {"translation": google_translate(c, mailin.own_text(m["body"]) or m["body"])}
+
+
+@app.delete("/api/mail-archive")
+def mail_archive_clear(_: dict = Depends(admin_user)):
+    with db() as c:
+        n = c.execute("DELETE FROM mail_archive").rowcount
+        try:
+            c.execute("INSERT INTO mail_archive_fts(mail_archive_fts) VALUES('delete-all')")
+        except sqlite3.OperationalError:
+            pass
+    return {"deleted": n}
 
 
 @app.get("/api/mailin/import/status")

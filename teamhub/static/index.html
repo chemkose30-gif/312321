@@ -586,7 +586,7 @@ async function renderMailin() {
   const total = Object.values(d.counts).reduce((a, b) => a + b, 0);
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">📥 메일 일정</h3><span class="spacer"></span>
-      <button class="btn" id="miHow">⚙ 메일 연결 방법</button><button class="btn primary" id="miUp">📦 메일함 파일 올리기</button></div>
+      <button class="btn" id="miArchBtn">🗄 보관함</button><button class="btn" id="miHow">⚙ 메일 연결 방법</button><button class="btn primary" id="miUp">📦 메일함 파일 올리기</button></div>
     <div class="muted" style="font-size:13px;margin-bottom:8px">info@erc-chem.com 으로 전달한 메일에서 <b>입고(ETA)·미팅·납기</b> 날짜를 찾아 둡니다. 같은 대화로 오간 메일은 한 묶음(쓰레드)으로 읽어 <b>최신 일정</b>만 보여 주고, 중복 메일은 뺍니다. 날짜 버튼을 누르면 내용이 채워진 등록 화면이 열립니다.${d.ai ? ' 해외 메일은 AI가 한국어로 번역합니다 (제품명은 원문 그대로).' : ''}</div>
     <div class="tabs"><button data-s="new">확인할 것 (${n('new')})</button><button data-s="done">등록함 (${n('done')})</button><button data-s="ignored">무시 (${n('ignored')})</button><button data-s="none">일정 못 찾은 메일 (${n('none')})</button></div>
     <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">
@@ -626,6 +626,7 @@ async function renderMailin() {
   };
   if ($('#miShare')) $('#miShare').onchange = async e => { await api('/api/mailin/share', {method: 'PUT', body: {all: e.target.checked}}); toast(e.target.checked ? '모든 직원이 전체 메일을 봅니다.' : '본인 메일 + 담당 업무 메일만 봅니다.'); renderMailin(); };
   $('#miHow').onclick = openMailinHelp;
+  $('#miArchBtn').onclick = () => { state.view = 'mailin'; renderMailArchive(); };
   $('#miUp').onclick = openMailinUpload;
   let timer;
   $('#miQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { mi.q = e.target.value; renderMailin().then(() => { const i = $('#miQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -663,6 +664,57 @@ async function openMailWatch() {
     $('#wSave', bg).onclick = async () => {
       try { await api('/api/mailin/watch', {method: 'PUT', body: {rules: read()}}); close(); toast('저장했습니다. 기존 메일에도 적용했습니다.'); renderMailin(); }
       catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
+
+// ---- 🗄 메일 보관함: 올린 메일함 파일의 메일 전체 검색
+async function renderMailArchive() {
+  const ar = state.ar ||= {q: '', folder: '', from: '', to: '', page: 0};
+  const qs = new URLSearchParams({q: ar.q, folder: ar.folder, date_from: ar.from, date_to: ar.to, page: ar.page});
+  const d = await api('/api/mail-archive?' + qs);
+  const pages = Math.ceil(d.total / 50);
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:6px"><button class="btn sm" id="arBack">← 메일 일정</button><h3 style="margin:0">🗄 메일 보관함</h3><span class="spacer"></span>
+      <button class="btn primary" id="arUp">📦 메일함 파일 올리기</button></div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">${d.count ? `보관된 메일 <b>${d.count.toLocaleString()}</b>통 · ${esc(d.first.slice(0, 10))} ~ ${esc(d.last.slice(0, 10))}` : '아직 보관된 메일이 없습니다. 📦 메일함 파일 올리기에서 "모든 메일을 보관함에 저장"을 켜고 올리세요.'} · 첨부파일은 이름만 남고 파일은 보관하지 않습니다.</div>
+    <div class="row" style="gap:6px;margin-bottom:10px;flex-wrap:wrap">
+      <input id="arQ" placeholder="🔍 제목·본문·보낸/받는 사람 검색 (띄어 쓰면 모두 포함)" value="${esc(ar.q)}" style="flex:1;min-width:220px;font-size:15px;padding:10px 12px">
+      <select id="arFolder" style="width:auto;max-width:220px"><option value="">모든 폴더</option>${d.folders.map(f => `<option value="${esc(f.name)}" ${f.name === ar.folder ? 'selected' : ''}>${esc(f.name || '(폴더 없음)')} (${f.count})</option>`).join('')}</select>
+      <input type="date" id="arFrom" value="${esc(ar.from)}" style="width:auto"><span class="muted">~</span><input type="date" id="arTo" value="${esc(ar.to)}" style="width:auto">
+      <button class="btn" id="arGo">검색</button></div>
+    <div class="muted" style="font-size:12px;margin-bottom:4px">${d.total.toLocaleString()}통${pages > 1 ? ` · ${ar.page + 1} / ${pages} 쪽` : ''}</div>
+    ${d.rows.map(m => `<div class="list-item" data-ar="${m.id}" style="display:block;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer">
+        <div class="row" style="gap:6px"><b style="flex:1;min-width:0">${esc(m.subject || '(제목 없음)')}</b><small class="muted">${esc(m.sent_at)}</small></div>
+        <small class="muted">보낸 사람 <b style="color:var(--text)">${esc(m.from_name || m.from_addr)}</b>${m.folder ? ` · 📁 ${esc(m.folder)}` : ''}${m.attach ? ' · 📎' : ''}</small>
+        <div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.snippet)}</div></div>`).join('') || '<div class="empty">찾은 메일이 없습니다.</div>'}
+    ${pages > 1 ? `<div class="row" style="justify-content:center;margin-top:10px;gap:6px"><button class="btn sm" id="arPrev" ${ar.page ? '' : 'disabled'}>← 이전</button><button class="btn sm" id="arNext" ${ar.page + 1 < pages ? '' : 'disabled'}>다음 →</button></div>` : ''}
+  </div>`;
+  const go = () => { ar.q = $('#arQ').value.trim(); ar.folder = $('#arFolder').value; ar.from = $('#arFrom').value; ar.to = $('#arTo').value; ar.page = 0; renderMailArchive(); };
+  $('#arGo').onclick = go;
+  $('#arQ').onkeydown = e => { if (e.key === 'Enter') go(); };
+  $('#arFolder').onchange = go;
+  $('#arBack').onclick = () => renderMailin();
+  $('#arUp').onclick = openMailinUpload;
+  if ($('#arPrev')) $('#arPrev').onclick = () => { ar.page--; renderMailArchive(); };
+  if ($('#arNext')) $('#arNext').onclick = () => { ar.page++; renderMailArchive(); };
+  $$('[data-ar]').forEach(el => el.onclick = () => openArchived(+el.dataset.ar));
+}
+
+async function openArchived(id) {
+  const m = await api(`/api/mail-archive/${id}`);
+  openModal(`<h2 style="word-break:break-all">${esc(m.subject || '(제목 없음)')}</h2>
+    <div class="muted">보낸 사람 <b style="color:var(--text)">${esc(m.from_name)}</b> &lt;${esc(m.from_addr)}&gt; · ${esc(m.sent_at)}</div>
+    <div class="muted" style="font-size:12px">받는 사람 ${esc(m.to_addr)}${m.cc ? ` · 참조 ${esc(m.cc)}` : ''}${m.folder ? ` · 📁 ${esc(m.folder)}` : ''}</div>
+    ${m.attach ? `<div class="muted" style="font-size:12px;margin-top:4px">📎 ${esc(m.attach)} <small>(첨부파일은 보관하지 않음 — 원본 메일함에서 확인)</small></div>` : ''}
+    <div class="row" style="gap:6px;margin:8px 0"><button class="btn sm" id="arTr">🌐 한국어로 번역</button><span class="muted" style="font-size:12px" id="arTrN"></span></div>
+    <pre id="arBody" style="white-space:pre-wrap;font-family:inherit;font-size:13px;background:var(--bg);padding:10px;border-radius:8px;max-height:60vh;overflow:auto">${esc(m.body)}</pre>
+    <div class="actions"><span class="spacer"></span><button class="btn primary" data-close>닫기</button></div>`, bg => {
+    bg.firstElementChild.classList.add('wide');
+    $('#arTr', bg).onclick = async () => {
+      $('#arTr', bg).disabled = true; $('#arTrN', bg).textContent = '번역 중…';
+      try { const r = await api(`/api/mail-archive/${id}/translate`, {method: 'POST'}); $('#arBody', bg).textContent = r.translation; $('#arTrN', bg).textContent = '구글 번역'; }
+      catch (err) { $('#arTrN', bg).textContent = err.message; $('#arTr', bg).disabled = false; }
     };
   });
 }
@@ -736,7 +788,8 @@ async function openMailinUpload() {
       · <b>Gmail</b>: Google 테이크아웃에서 받은 <code>.zip</code> 또는 <code>.mbox</code><br>
       · 메일 한 통씩 저장한 <code>.eml</code> 도 됩니다.</div>
     <label>파일</label><input type="file" id="miFile" accept=".pst,.ost,.mbox,.mbx,.zip,.eml">
-    <label>가져올 기간</label>
+    <label style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:10px"><input type="checkbox" id="miArch" style="width:auto" checked><b>🗄 모든 메일을 보관함에 저장</b> <small class="muted">(기간과 상관없이 전부 — 나중에 검색해서 볼 수 있음. 첨부파일은 빼고 본문만)</small></label>
+    <label>일정 찾을 기간 <small class="muted">(이 기간 메일만 '확인할 것'·입고예정 자동 등록에 씀)</small></label>
     <select id="miMonths"><option value="1">최근 1개월</option><option value="3" selected>최근 3개월</option><option value="6">최근 6개월</option><option value="12">최근 1년</option><option value="0">전체</option></select>
     <label>압축 파일 비밀번호 <small class="muted">(비밀번호 걸린 .zip 일 때만 — 저장되지 않습니다)</small></label>
     <input type="password" id="miPw" autocomplete="off">
@@ -748,7 +801,7 @@ async function openMailinUpload() {
     const show = s => {
       if (!s || !s.status) { $('#miProg', bg).innerHTML = ''; return; }
       const mb = s.size ? ` (${s.size > 1073741824 ? (s.size / 1073741824).toFixed(1) + 'GB' : (s.size / 1048576).toFixed(1) + 'MB'})` : '';
-      const line = `읽은 메일 ${s.read || 0}통 · 저장 ${s.added || 0}통${s.duplicates ? ` · 중복 제외 ${s.duplicates}통` : ''}${s.skipped_old ? ` · 기간 밖 ${s.skipped_old}통` : ''}`;
+      const line = `읽은 메일 ${s.read || 0}통${s.archived ? ` · 🗄 보관 ${s.archived}통` : ''} · 일정 메일 저장 ${s.added || 0}통${s.duplicates ? ` · 중복 제외 ${s.duplicates}통` : ''}${s.skipped_old ? ` · 기간 밖 ${s.skipped_old}통` : ''}`;
       $('#miProg', bg).innerHTML = s.status === 'running'
         ? `<div class="ec-box">⏳ <b>${esc(s.file)}</b>${mb} ${esc(s.stage || '가져오는 중')}… 창을 닫아도 계속됩니다. 끝나면 🔔 알림이 옵니다.<br><small class="muted">${line}</small></div>`
         : s.status === 'done' ? `<div class="ec-box">✅ <b>${esc(s.file)}</b> 완료 · 확인할 일정 ${s.threads || 0}건<br><small class="muted">${line}</small></div>`
@@ -783,7 +836,7 @@ async function openMailinUpload() {
         if ($('#miPct', bg)) $('#miPct', bg).textContent = `${(got / f.size * 100).toFixed(1)}% (${gb(got)} / ${gb(f.size)})`;
         if ($('#miEta', bg)) $('#miEta', bg).textContent = `속도 ${(speed / 1048576).toFixed(1)}MB/s · 남은 시간 약 ${Math.round((f.size - got) / Math.max(speed, 1) / 60)}분`;
       }
-      await api('/api/mailin/import/finish', {method: 'POST', body: {upload_id: id, name: f.name, total: f.size, months: $('#miMonths', bg).value, password: $('#miPw', bg).value}});
+      await api('/api/mailin/import/finish', {method: 'POST', body: {upload_id: id, name: f.name, total: f.size, months: $('#miMonths', bg).value, password: $('#miPw', bg).value, archive: $('#miArch', bg).checked}});
       show(await api('/api/mailin/import/status'));
     };
     $('#miGo', bg).onclick = async () => {
@@ -797,7 +850,7 @@ async function openMailinUpload() {
       $('#miProg', bg).innerHTML = `<div class="ec-box">⬆ 올리는 중… <b id="miPct">0%</b> <small class="muted">(${(f.size / 1048576).toFixed(1)}MB — 큰 파일은 몇 분 걸립니다. 이 창을 닫지 마세요)</small></div>`;
       const fd = new FormData(); fd.append('file', f); fd.append('password', $('#miPw', bg).value);
       const xhr = new XMLHttpRequest();   // 진행률 표시를 위해 XHR 사용
-      xhr.open('POST', `/api/mailin/import?months=${$('#miMonths', bg).value}`);
+      xhr.open('POST', `/api/mailin/import?months=${$('#miMonths', bg).value}&archive=${$('#miArch', bg).checked}`);
       xhr.setRequestHeader('Authorization', 'Bearer ' + state.token);
       xhr.upload.onprogress = e => { if (e.lengthComputable && $('#miPct', bg)) $('#miPct', bg).textContent = Math.round(e.loaded / e.total * 100) + '%'; };
       xhr.onload = async () => {
