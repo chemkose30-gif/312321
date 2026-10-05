@@ -1,4 +1,0 @@
-.env
-*.db
-insurance_result.json
-__pycache__/
