@@ -1,0 +1,6 @@
+anthropic>=1.11
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+cryptography

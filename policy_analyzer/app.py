@@ -1,0 +1,412 @@
+"""
+보험증권 보장분석 - 설계사용 웹 서비스
+
+  설계사가 고객 증권(PDF/사진)을 올리면 Claude 가 읽어서
+  고객 정보 · 가입 현황 · 보장 합산 · 체크 포인트를 정리하고 고객별로 저장한다.
+
+실행: uvicorn app:app --host 0.0.0.0 --port 8000
+"""
+
+import html
+import json
+import os
+import secrets
+import time
+from datetime import datetime
+from urllib.parse import quote
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+load_dotenv()
+import analysis  # noqa: E402
+import extractor  # noqa: E402
+import store  # noqa: E402
+
+SECURE_COOKIE = os.environ.get("SECURE_COOKIE", "1") == "1"
+MAX_FILES = 20
+MAX_TOTAL_BYTES = 30 * 1024 * 1024
+SESSION_TTL = 12 * 3600
+
+store.init_db()
+app = FastAPI(title="보험증권 보장분석")
+sessions: dict[str, tuple[int, float]] = {}   # sid -> (planner_id, 만료시각)
+flashes: dict[str, list[str]] = {}            # sid -> 다음 화면에 보여줄 메시지
+
+e = html.escape
+
+
+# ── 공통 ──────────────────────────────────────────────────────────────────────
+STYLE = """
+:root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb;
+        --danger:#dc2626; --warn-bg:#fef2f2; --warn:#b91c1c; --info-bg:#eff6ff; --info:#1d4ed8; --ok:#15803d; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1b1e24; --text:#e8eaed; --muted:#9aa0a6; --line:#2d3139;
+        --accent:#5b8def; --danger:#f06262; --warn-bg:#3a1d1d; --warn:#fca5a5; --info-bg:#1b2a44; --info:#93b4f5; --ok:#4ade80; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
+a { color:var(--accent); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+h1 { font-size:22px; margin:0 0 12px; } h2 { font-size:17px; margin:0 0 12px; } h3 { font-size:15px; margin:0 0 6px; }
+label { display:block; margin:10px 0 4px; font-weight:600; font-size:14px; }
+input[type=text], input[type=password], textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+  background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; }
+textarea { font-family:ui-monospace, monospace; font-size:13px; min-height:420px; }
+button, .btn { display:inline-block; padding:9px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff;
+  font-size:14px; cursor:pointer; text-decoration:none; }
+.btn-ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+.btn-danger { background:var(--danger); } .btn-sm { padding:5px 10px; font-size:13px; }
+.muted { color:var(--muted); font-size:13px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.between { justify-content:space-between; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; }
+.stat { border:1px solid var(--line); border-radius:10px; padding:12px; }
+.stat b { display:block; font-size:20px; }
+.tbl-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:600; white-space:nowrap; }
+td.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.check { border-radius:8px; padding:10px 12px; margin-bottom:8px; }
+.check.warn { background:var(--warn-bg); color:var(--warn); } .check.info { background:var(--info-bg); color:var(--info); }
+.check b { display:block; } .check span { color:var(--text); font-size:14px; }
+.flash { background:var(--info-bg); color:var(--info); border-radius:8px; padding:10px 12px; margin-bottom:16px; }
+.under { color:var(--warn); } .enough { color:var(--ok); }
+.drop { border:2px dashed var(--line); border-radius:10px; padding:16px; }
+details summary { cursor:pointer; }
+@media print { .no-print { display:none !important; } body { background:#fff; color:#000; } .card { border:0; padding:0 0 12px; }
+  main { max-width:none; } .check { border:1px solid #ccc; } }
+"""
+
+
+def page(title: str, body: str, status: int = 200) -> HTMLResponse:
+    return HTMLResponse(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>{e(title)}</title><style>{STYLE}</style></head><body><main>{body}</main></body></html>""", status_code=status)
+
+
+won = analysis.won
+
+
+def ymd(s) -> str:
+    d = analysis.parse_date(s)
+    return d.strftime("%Y.%m.%d") if d else (e(str(s)) if s else "-")
+
+
+def ts(t) -> str:
+    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else "-"
+
+
+def customer_title(c: dict) -> str:
+    age = analysis.age_on(analysis.parse_date(c.get("birth_date")), datetime.now().date())
+    bits = [x for x in (f"{age}세" if age is not None else "", c.get("gender") or "") if x]
+    return f"{e(c.get('name') or '이름 미확인')} <span class='muted'>{e(' · '.join(bits))}</span>"
+
+
+# ── 로그인 ────────────────────────────────────────────────────────────────────
+def planner_id(request: Request) -> int:
+    s = sessions.get(request.cookies.get("sid", ""))
+    if not s or s[1] < time.time():
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
+    return s[0]
+
+
+def flash(request: Request, msg: str) -> None:
+    flashes.setdefault(request.cookies.get("sid", ""), []).append(msg)
+
+
+def take_flash(request: Request) -> str:
+    msgs = flashes.pop(request.cookies.get("sid", ""), [])
+    return "".join(f'<div class="flash">{e(m)}</div>' for m in msgs)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(error: str = ""):
+    msg = '<p class="under">아이디 또는 비밀번호가 올바르지 않습니다.</p>' if error else ""
+    return page("로그인", f"""<div class="card" style="max-width:420px;margin:40px auto"><h1>보험증권 보장분석</h1>{msg}
+<form method="post" action="/login"><label>아이디</label><input type="text" name="username" required autofocus>
+<label>비밀번호</label><input type="password" name="password" required><p><button>로그인</button></p></form></div>""")
+
+
+@app.post("/login")
+def login(username: str = Form(...), password: str = Form(...)):
+    p = store.authenticate(username.strip(), password)
+    if not p:
+        time.sleep(1)
+        return RedirectResponse("/login?error=1", status_code=303)
+    sid = secrets.token_urlsafe(32)
+    sessions[sid] = (p["id"], time.time() + SESSION_TTL)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie("sid", sid, httponly=True, samesite="strict", secure=SECURE_COOKIE, max_age=SESSION_TTL)
+    return resp
+
+
+@app.post("/logout")
+def logout(request: Request):
+    sessions.pop(request.cookies.get("sid", ""), None)
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie("sid")
+    return resp
+
+
+# ── 업로드 & 분석 ─────────────────────────────────────────────────────────────
+def upload_form(customer_id: int | None = None) -> str:
+    hidden = f'<input type="hidden" name="customer_id" value="{customer_id}">' if customer_id else ""
+    return f"""<form method="post" action="/upload" enctype="multipart/form-data" class="drop no-print"
+onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='증권 분석 중... (1~2분)'">{hidden}
+<div class="row"><input type="file" name="files" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple required>
+<button>분석하기</button></div>
+<p class="muted">PDF·JPG·PNG, 한 번에 {MAX_FILES}개 / 합계 30MB까지. 한 고객의 증권만 함께 올려 주세요.
+{"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다."}</p></form>"""
+
+
+def find_customer(pid: int, insured: dict) -> int | None:
+    name, birth = insured.get("name"), insured.get("birth_date")
+    if not (name and birth):
+        return None
+    for c in store.list_customers(pid):
+        if c.get("name") == name and c.get("birth_date") == birth:
+            return c["id"]
+    return None
+
+
+@app.post("/upload")
+async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None)):
+    pid = planner_id(request)
+    back = f"/customers/{customer_id}" if customer_id else "/"
+    if customer_id and not store.get_customer(pid, customer_id):
+        raise HTTPException(404)
+    if len(files) > MAX_FILES:
+        flash(request, f"파일은 한 번에 {MAX_FILES}개까지 올릴 수 있습니다.")
+        return RedirectResponse(back, status_code=303)
+
+    payload, total = [], 0
+    for f in files:
+        data = await f.read()
+        total += len(data)
+        mime = f.content_type or ""
+        if mime == "image/jpg":
+            mime = "image/jpeg"
+        if mime not in extractor.IMAGE_TYPES and mime != extractor.PDF_TYPE:
+            flash(request, f"지원하지 않는 파일 형식입니다: {f.filename} (PDF, JPG, PNG, WEBP 가능. 아이폰 HEIC 사진은 JPG로 변환해 주세요)")
+            return RedirectResponse(back, status_code=303)
+        payload.append((f.filename or "file", mime, data))
+    if total > MAX_TOTAL_BYTES:
+        flash(request, "파일 합계가 30MB를 넘습니다. 나눠서 올려 주세요.")
+        return RedirectResponse(back, status_code=303)
+
+    try:
+        result = await run_in_threadpool(extractor.extract, payload)
+    except extractor.ExtractError as ex:
+        flash(request, str(ex))
+        return RedirectResponse(back, status_code=303)
+
+    insured = result.get("insured") or {}
+    policies = result.get("policies") or []
+    if not policies:
+        flash(request, "증권에서 계약 정보를 찾지 못했습니다. 글씨가 잘 보이는 파일인지 확인해 주세요.")
+        return RedirectResponse(back, status_code=303)
+
+    cid = customer_id or find_customer(pid, insured)
+    if cid:
+        c = store.get_customer(pid, cid)
+        merged = {k: c.get(k) for k in ("name", "birth_date", "gender", "address", "phone", "memo")}
+        for k in ("name", "birth_date", "gender", "address", "phone"):
+            if not merged.get(k) and insured.get(k):
+                merged[k] = insured[k]
+        store.save_customer(pid, merged, cid)
+    else:
+        cid = store.save_customer(pid, {**{k: insured.get(k) for k in ("name", "birth_date", "gender", "address", "phone")}, "memo": ""})
+
+    added, replaced = store.add_policies(pid, cid, policies, ", ".join(n for n, _, _ in payload)[:300])
+    flash(request, f"계약 {added}건 추가" + (f", {replaced}건 갱신(같은 증권번호)" if replaced else "") + " 완료. 추출 내용이 맞는지 확인해 주세요.")
+    for w in result.get("warnings") or []:
+        flash(request, f"⚠ {w}")
+    if customer_id and insured.get("name") and store.get_customer(pid, cid).get("name") not in (None, insured.get("name")):
+        flash(request, f"⚠ 증권의 피보험자({insured.get('name')})가 이 고객과 다릅니다. 확인해 주세요.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
+# ── 고객 목록 ─────────────────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request, q: str = ""):
+    pid = planner_id(request)
+    me = store.get_planner(pid)
+    customers = store.list_customers(pid)
+    if q:
+        customers = [c for c in customers if q in (c.get("name") or "") or q in (c.get("phone") or "") or q in (c.get("memo") or "")]
+    rows = "".join(f"""<tr><td><a href="/customers/{c['id']}">{customer_title(c)}</a></td>
+<td>{ymd(c.get('birth_date'))}</td><td>{e(c.get('phone') or '-')}</td><td class="num">{c['n']}건</td>
+<td class="muted">{ts(c['updated_at'])}</td></tr>""" for c in customers)
+    table = (f'<div class="tbl-wrap"><table><tr><th>고객</th><th>생년월일</th><th>연락처</th><th>계약</th><th>최근 수정</th></tr>{rows}</table></div>'
+             if rows else '<p class="muted">고객이 없습니다. 증권을 올리면 자동으로 고객이 만들어집니다.</p>')
+    return page("고객 목록", f"""
+<div class="row between"><h1>보험증권 보장분석</h1>
+<form method="post" action="/logout" class="row"><span class="muted">{e(me['name'])}</span><button class="btn-ghost btn-sm">로그아웃</button></form></div>
+{take_flash(request)}
+<div class="card"><h2>새 고객 증권 분석</h2>{upload_form()}</div>
+<div class="card"><div class="row between"><h2>고객 ({len(customers)})</h2>
+<form class="row" method="get"><input type="text" name="q" value="{e(q)}" placeholder="이름·연락처·메모 검색" style="width:220px"><button class="btn-ghost btn-sm">검색</button></form></div>
+{table}</div>""")
+
+
+# ── 고객 상세 / 리포트 ────────────────────────────────────────────────────────
+def get_customer_or_404(pid: int, cid: int) -> dict:
+    c = store.get_customer(pid, cid)
+    if not c:
+        raise HTTPException(404)
+    return c
+
+
+def analysis_html(c: dict, policies: list[dict]) -> str:
+    a = analysis.analyze(c, policies)
+    stats = f"""<div class="grid">
+<div class="stat"><span class="muted">유지 중인 계약</span><b>{a['active_count']}건</b></div>
+<div class="stat"><span class="muted">월 보험료 합계</span><b>{won(a['monthly_premium'])}</b></div>
+<div class="stat"><span class="muted">만기 지난 계약</span><b>{a['expired_count']}건</b></div>
+<div class="stat"><span class="muted">확인할 항목</span><b>{sum(1 for x in a['checks'] if x[0] == 'warn')}개 경고 · {sum(1 for x in a['checks'] if x[0] == 'info')}개 참고</b></div></div>"""
+
+    rows = []
+    for s in a["summary"]:
+        bm = s["benchmark"]
+        state = "" if not bm else (f'<span class="enough">충분</span>' if s["amount"] >= bm else f'<span class="under">부족 ({won(bm)} 기준)</span>')
+        note = " <span class='muted'>(중복 보상 안 됨, 최대값)</span>" if s["category"] == "실손의료비" else ""
+        rows.append(f"""<tr><td>{e(s['category'])}{note}</td><td class="num">{won(s['amount'])}</td><td>{state}</td>
+<td class="muted">{e(', '.join(s['sources']))}</td></tr>""")
+    for cat in a["missing_benchmarks"]:
+        rows.append(f'<tr><td>{e(cat)}</td><td class="num under">없음</td><td><span class="under">미가입 ({won(analysis.BENCHMARKS[cat])} 기준)</span></td><td></td></tr>')
+    summary = f'<div class="tbl-wrap"><table><tr><th>보장</th><th>합계</th><th>판단</th><th>가입 내역</th></tr>{"".join(rows)}</table></div>'
+
+    checks = "".join(f'<div class="check {lvl}"><b>{e(t)}</b><span>{e(d)}</span></div>' for lvl, t, d in a["checks"]) \
+        or '<p class="enough">특별히 확인할 항목이 없습니다.</p>'
+
+    return f"""<div class="card"><h2>요약</h2>{stats}</div>
+<div class="card"><h2>체크 포인트</h2>{checks}</div>
+<div class="card"><h2>보장 합산</h2>{summary}
+<p class="muted">판단 기준은 상담용 참고값입니다. 고객의 소득·가족력·기존 계획에 따라 달라질 수 있습니다.</p></div>"""
+
+
+def policy_html(p: dict, editable: bool) -> str:
+    covs = "".join(f"""<tr><td>{e(c.get('name') or '')}</td><td class="muted">{e(c.get('category') or '')}</td>
+<td class="num">{won(c.get('amount'))}</td><td>{'갱신형' if c.get('renewable') else ('비갱신' if c.get('renewable') is False else '-')}</td>
+<td>{ymd(c.get('end_date'))}</td></tr>""" for c in p.get("coverages") or [])
+    actions = f"""<div class="row no-print"><a class="btn btn-ghost btn-sm" href="/policies/{p['id']}/edit">수정</a>
+<form method="post" action="/policies/{p['id']}/delete" onsubmit="return confirm('이 계약을 삭제할까요?')"><button class="btn-danger btn-sm">삭제</button></form></div>""" if editable else ""
+    excl = f'<p class="under">부담보·인수조건: {e(" / ".join(p["exclusions"]))}</p>' if p.get("exclusions") else ""
+    return f"""<div class="card"><div class="row between"><h3>{e(p.get('company') or '?')} · {e(p.get('product_name') or '')}</h3>{actions}</div>
+<p class="muted">증권번호 {e(p.get('policy_no') or '-')} · 계약자 {e(p.get('contractor_name') or '-')} · 피보험자 {e(p.get('insured_name') or '-')}<br>
+계약일 {ymd(p.get('contract_date'))} · 만기 {ymd(p.get('maturity_date'))} · {e(p.get('payment_period') or '-')} {e(p.get('payment_cycle') or '')}
+· 월 {won(p.get('monthly_premium'))}{' · 갱신형' if p.get('is_renewable') else ''}</p>{excl}
+<div class="tbl-wrap"><table><tr><th>담보</th><th>분류</th><th>가입금액</th><th>갱신</th><th>보장 종료</th></tr>{covs}</table></div>
+{f'<p class="muted no-print">원본 파일: {e(p["source"])}</p>' if editable and p.get("source") else ''}</div>"""
+
+
+@app.get("/customers/{cid}", response_class=HTMLResponse)
+def customer_page(request: Request, cid: int):
+    pid = planner_id(request)
+    c = get_customer_or_404(pid, cid)
+    policies = store.list_policies(pid, cid)
+    v = lambda k: e(c.get(k) or "")  # noqa: E731
+    info = f"""<form method="post" action="/customers/{cid}/info" class="card no-print"><h2>고객 정보</h2>
+<div class="grid"><div><label>이름</label><input type="text" name="name" value="{v('name')}"></div>
+<div><label>생년월일 (YYYYMMDD)</label><input type="text" name="birth_date" value="{v('birth_date')}"></div>
+<div><label>성별</label><input type="text" name="gender" value="{v('gender')}" placeholder="남/여"></div>
+<div><label>연락처</label><input type="text" name="phone" value="{v('phone')}"></div></div>
+<label>주소</label><input type="text" name="address" value="{v('address')}">
+<label>메모</label><input type="text" name="memo" value="{v('memo')}">
+<p class="row"><button class="btn-sm">저장</button></p></form>"""
+    plist = "".join(policy_html(p, True) for p in policies) or '<p class="muted">계약이 없습니다.</p>'
+    return page(c.get("name") or "고객", f"""
+<p class="no-print"><a href="/">← 고객 목록</a></p>
+<div class="row between"><h1>{customer_title(c)}</h1>
+<div class="row no-print"><a class="btn" href="/customers/{cid}/report" target="_blank">고객용 리포트</a>
+<form method="post" action="/customers/{cid}/delete" onsubmit="return confirm('이 고객과 모든 계약 정보를 삭제할까요? 되돌릴 수 없습니다.')">
+<button class="btn-danger btn-sm">고객 삭제</button></form></div></div>
+{take_flash(request)}
+{info}
+<div class="card no-print"><h2>증권 추가</h2>{upload_form(cid)}</div>
+{analysis_html(c, policies) if policies else ''}
+<h2 style="margin-top:24px">가입 계약 ({len(policies)})</h2>{plist}""")
+
+
+@app.get("/customers/{cid}/report", response_class=HTMLResponse)
+def report(request: Request, cid: int):
+    pid = planner_id(request)
+    c = get_customer_or_404(pid, cid)
+    me = store.get_planner(pid)
+    policies = store.list_policies(pid, cid)
+    return page(f"{c.get('name') or '고객'} 보장분석", f"""
+<div class="row between no-print" style="margin-bottom:12px"><span class="muted">인쇄 → 'PDF로 저장'을 선택하면 파일로 받을 수 있습니다.</span>
+<button onclick="print()">인쇄 / PDF 저장</button></div>
+<div class="card"><h1>보장분석 리포트</h1>
+<p><b>{e(c.get('name') or '')}</b> 님 · {ymd(c.get('birth_date'))} · {e(c.get('gender') or '')}<br>
+<span class="muted">작성일 {datetime.now():%Y.%m.%d} · 담당 {e(me['name'])}</span></p></div>
+{analysis_html(c, policies)}
+<h2>가입 계약 상세</h2>{''.join(policy_html(p, False) for p in policies)}
+<p class="muted">이 리포트는 증권 내용을 정리한 참고 자료이며, 정확한 보장 내용은 각 보험사 약관을 따릅니다.</p>""")
+
+
+@app.post("/customers/{cid}/info")
+def save_info(request: Request, cid: int, name: str = Form(""), birth_date: str = Form(""), gender: str = Form(""),
+              phone: str = Form(""), address: str = Form(""), memo: str = Form("")):
+    pid = planner_id(request)
+    get_customer_or_404(pid, cid)
+    store.save_customer(pid, {"name": name.strip(), "birth_date": "".join(ch for ch in birth_date if ch.isdigit()),
+                              "gender": gender.strip(), "phone": phone.strip(), "address": address.strip(),
+                              "memo": memo.strip()}, cid)
+    flash(request, "고객 정보를 저장했습니다.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
+@app.post("/customers/{cid}/delete")
+def delete_customer(request: Request, cid: int):
+    pid = planner_id(request)
+    store.delete_customer(pid, cid)
+    flash(request, "고객 정보를 삭제했습니다.")
+    return RedirectResponse("/", status_code=303)
+
+
+# ── 계약 수정/삭제 ────────────────────────────────────────────────────────────
+@app.get("/policies/{pid_}/edit", response_class=HTMLResponse)
+def edit_policy_form(request: Request, pid_: int, error: str = ""):
+    pid = planner_id(request)
+    p = store.get_policy(pid, pid_)
+    if not p:
+        raise HTTPException(404)
+    data = {k: v for k, v in p.items() if k not in ("id", "customer_id")}
+    err = f'<p class="under">{e(error)}</p>' if error else ""
+    return page("계약 수정", f"""<p><a href="/customers/{p['customer_id']}">← 돌아가기</a></p>
+<form method="post" action="/policies/{pid_}/edit" class="card"><h1>계약 수정</h1>{err}
+<p class="muted">잘못 읽힌 값을 고쳐 주세요. 금액은 원 단위 숫자, 날짜는 YYYYMMDD,
+category 는 다음 중 하나: {e(', '.join(extractor.CATEGORIES))}</p>
+<textarea name="data">{e(json.dumps(data, ensure_ascii=False, indent=2))}</textarea>
+<p><button>저장</button></p></form>""")
+
+
+@app.post("/policies/{pid_}/edit")
+def edit_policy(request: Request, pid_: int, data: str = Form(...)):
+    pid = planner_id(request)
+    p = store.get_policy(pid, pid_)
+    if not p:
+        raise HTTPException(404)
+    try:
+        obj = json.loads(data)
+        if not isinstance(obj, dict) or not isinstance(obj.get("coverages", []), list):
+            raise ValueError
+    except ValueError:
+        return RedirectResponse(f"/policies/{pid_}/edit?error={quote('JSON 형식이 올바르지 않습니다.')}", status_code=303)
+    store.update_policy(pid, pid_, extractor.mask_rrn(obj))
+    flash(request, "계약 정보를 수정했습니다.")
+    return RedirectResponse(f"/customers/{p['customer_id']}", status_code=303)
+
+
+@app.post("/policies/{pid_}/delete")
+def delete_policy(request: Request, pid_: int):
+    pid = planner_id(request)
+    cid = store.delete_policy(pid, pid_)
+    if cid is None:
+        raise HTTPException(404)
+    flash(request, "계약을 삭제했습니다.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
