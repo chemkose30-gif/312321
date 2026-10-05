@@ -12,7 +12,7 @@ import json
 import os
 import secrets
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -54,6 +54,12 @@ label { display:block; margin:10px 0 4px; font-weight:600; font-size:14px; }
 input[type=text], input[type=password], textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
   background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; }
 textarea { font-family:ui-monospace, monospace; font-size:13px; min-height:420px; }
+textarea.note { font-family:inherit; font-size:15px; min-height:110px; }
+select, input[type=date] { padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; }
+.note-item { border-top:1px solid var(--line); padding:12px 0; } .note-item:first-of-type { border-top:0; }
+.note-body { white-space:pre-wrap; margin:6px 0; }
+.tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
+.overdue { color:var(--warn); font-weight:600; } .done { text-decoration:line-through; color:var(--muted); }
 button, .btn { display:inline-block; padding:9px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff;
   font-size:14px; cursor:pointer; text-decoration:none; }
 .btn-ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
@@ -235,8 +241,11 @@ def home(request: Request, q: str = ""):
     pid = planner_id(request)
     me = store.get_planner(pid)
     customers = store.list_customers(pid)
+    notes = store.all_notes(pid)
     if q:
-        customers = [c for c in customers if q in (c.get("name") or "") or q in (c.get("phone") or "") or q in (c.get("memo") or "")]
+        note_hit = {n["customer_id"] for n in notes if q in (n.get("content") or "") or q in (n.get("next_action") or "")}
+        customers = [c for c in customers if c["id"] in note_hit or q in (c.get("name") or "")
+                     or q in (c.get("phone") or "") or q in (c.get("memo") or "")]
     rows = "".join(f"""<tr><td><a href="/customers/{c['id']}">{customer_title(c)}</a></td>
 <td>{ymd(c.get('birth_date'))}</td><td>{e(c.get('phone') or '-')}</td><td class="num">{c['n']}건</td>
 <td class="muted">{ts(c['updated_at'])}</td></tr>""" for c in customers)
@@ -246,10 +255,28 @@ def home(request: Request, q: str = ""):
 <div class="row between"><h1>보험증권 보장분석</h1>
 <form method="post" action="/logout" class="row"><span class="muted">{e(me['name'])}</span><button class="btn-ghost btn-sm">로그아웃</button></form></div>
 {take_flash(request)}
+{followups_html(pid, notes)}
 <div class="card"><h2>새 고객 증권 분석</h2>{upload_form()}</div>
 <div class="card"><div class="row between"><h2>고객 ({len(customers)})</h2>
-<form class="row" method="get"><input type="text" name="q" value="{e(q)}" placeholder="이름·연락처·메모 검색" style="width:220px"><button class="btn-ghost btn-sm">검색</button></form></div>
+<div class="row"><a class="btn btn-sm" href="/customers/new">+ 고객 직접 등록</a>
+<form class="row" method="get"><input type="text" name="q" value="{e(q)}" placeholder="이름·연락처·메모·상담내용 검색" style="width:240px"><button class="btn-ghost btn-sm">검색</button></form></div></div>
 {table}</div>""")
+
+
+def followups_html(pid: int, notes: list[dict]) -> str:
+    """완료 안 된 '다음 연락일' 중 지난 것 + 7일 이내"""
+    today = date.today()
+    soon = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    items = sorted((n for n in notes if n.get("next_date") and not n.get("done") and n["next_date"] <= soon),
+                   key=lambda n: n["next_date"])
+    if not items:
+        return ""
+    names = {c["id"]: c.get("name") or "이름 미확인" for c in store.list_customers(pid)}
+    rows = "".join(f"""<tr><td class="{'overdue' if n['next_date'] < today.isoformat() else ''}">{e(n['next_date'])}</td>
+<td><a href="/customers/{n['customer_id']}">{e(names.get(n['customer_id'], ''))}</a></td><td>{e(n.get('next_action') or '')}</td>
+<td><form method="post" action="/notes/{n['id']}/done"><input type="hidden" name="back" value="/"><button class="btn-ghost btn-sm">완료</button></form></td></tr>""" for n in items)
+    return f"""<div class="card"><h2>연락 예정 ({len(items)})</h2><p class="muted">지난 일정과 7일 이내 일정입니다.</p>
+<div class="tbl-wrap"><table><tr><th>날짜</th><th>고객</th><th>할 일</th><th></th></tr>{rows}</table></div></div>"""
 
 
 # ── 고객 상세 / 리포트 ────────────────────────────────────────────────────────
@@ -303,20 +330,138 @@ def policy_html(p: dict, editable: bool) -> str:
 {f'<p class="muted no-print">원본 파일: {e(p["source"])}</p>' if editable and p.get("source") else ''}</div>"""
 
 
+def info_form(c: dict, action: str, title: str, button: str) -> str:
+    v = lambda k: e(c.get(k) or "")  # noqa: E731
+    return f"""<form method="post" action="{action}" class="card no-print"><h2>{title}</h2>
+<div class="grid"><div><label>이름</label><input type="text" name="name" value="{v('name')}" required></div>
+<div><label>생년월일 (YYYYMMDD)</label><input type="text" name="birth_date" value="{v('birth_date')}"></div>
+<div><label>성별</label><input type="text" name="gender" value="{v('gender')}" placeholder="남/여"></div>
+<div><label>연락처</label><input type="text" name="phone" value="{v('phone')}"></div></div>
+<label>주소</label><input type="text" name="address" value="{v('address')}">
+<label>메모 (직업, 가족관계, 소개자 등)</label><input type="text" name="memo" value="{v('memo')}">
+<p class="row"><button class="btn-sm">{button}</button></p></form>"""
+
+
+def customer_fields(name, birth_date, gender, phone, address, memo) -> dict:
+    return {"name": name.strip(), "birth_date": "".join(ch for ch in birth_date if ch.isdigit()),
+            "gender": gender.strip(), "phone": phone.strip(), "address": address.strip(), "memo": memo.strip()}
+
+
+@app.get("/customers/new", response_class=HTMLResponse)
+def new_customer_form(request: Request):
+    planner_id(request)
+    return page("고객 등록", f"""<p><a href="/">← 고객 목록</a></p>
+{info_form({}, "/customers/new", "고객 직접 등록", "등록")}
+<p class="muted">증권은 등록 후 고객 화면에서 올릴 수 있습니다.</p>""")
+
+
+@app.post("/customers/new")
+def new_customer(request: Request, name: str = Form(...), birth_date: str = Form(""), gender: str = Form(""),
+                 phone: str = Form(""), address: str = Form(""), memo: str = Form("")):
+    pid = planner_id(request)
+    cid = store.save_customer(pid, customer_fields(name, birth_date, gender, phone, address, memo))
+    flash(request, "고객을 등록했습니다.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
+# ── 상담 기록 ─────────────────────────────────────────────────────────────────
+KINDS = ["전화", "방문", "카톡·문자", "기타"]
+
+
+def note_form(action: str, n: dict, button: str) -> str:
+    kind_opts = "".join(f'<option {"selected" if n.get("kind") == k else ""}>{k}</option>' for k in KINDS)
+    return f"""<form method="post" action="{action}">
+<div class="row"><input type="date" name="date" value="{e(n.get('date') or date.today().isoformat())}" required>
+<select name="kind">{kind_opts}</select></div>
+<label>상담 내용</label><textarea class="note" name="content" required placeholder="고객 요청, 관심 상품, 가족 상황, 다음에 말할 것 등">{e(n.get('content') or '')}</textarea>
+<div class="row" style="margin-top:8px"><label style="margin:0">다음 연락일</label><input type="date" name="next_date" value="{e(n.get('next_date') or '')}">
+<input type="text" name="next_action" value="{e(n.get('next_action') or '')}" placeholder="할 일 (예: 암보험 설계안 전달)" style="flex:1;min-width:200px"></div>
+<p><button class="btn-sm">{button}</button></p></form>"""
+
+
+def notes_html(cid: int, notes: list[dict]) -> str:
+    today = date.today().isoformat()
+    items = []
+    for n in notes:
+        follow = ""
+        if n.get("next_date"):
+            cls = "done" if n.get("done") else ("overdue" if n["next_date"] < today else "")
+            toggle = "다시 열기" if n.get("done") else "완료"
+            follow = f"""<div class="row"><span class="{cls}">다음 연락 {e(n['next_date'])} · {e(n.get('next_action') or '')}</span>
+<form method="post" action="/notes/{n['id']}/done"><input type="hidden" name="back" value="/customers/{cid}"><button class="btn-ghost btn-sm">{toggle}</button></form></div>"""
+        items.append(f"""<div class="note-item"><div class="row between"><span><b>{e(n.get('date') or '')}</b> <span class="tag">{e(n.get('kind') or '')}</span></span>
+<div class="row no-print"><a class="btn btn-ghost btn-sm" href="/notes/{n['id']}/edit">수정</a>
+<form method="post" action="/notes/{n['id']}/delete" onsubmit="return confirm('이 상담 기록을 삭제할까요?')"><button class="btn-danger btn-sm">삭제</button></form></div></div>
+<div class="note-body">{e(n.get('content') or '')}</div>{follow}</div>""")
+    listing = "".join(items) or '<p class="muted">아직 상담 기록이 없습니다.</p>'
+    return f"""<div class="card no-print"><h2>상담 기록 ({len(notes)})</h2>
+<details {"open" if not notes else ""}><summary>+ 새 상담 기록 쓰기</summary>{note_form(f"/customers/{cid}/notes", {}, "기록 저장")}</details>
+<div style="margin-top:12px">{listing}</div></div>"""
+
+
+def note_fields(date_: str, kind: str, content: str, next_date: str, next_action: str, done: bool = False) -> dict:
+    return {"date": date_, "kind": kind if kind in KINDS else "기타", "content": content.strip(),
+            "next_date": next_date or None, "next_action": next_action.strip(), "done": done}
+
+
+@app.post("/customers/{cid}/notes")
+def add_note(request: Request, cid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
+             next_date: str = Form(""), next_action: str = Form("")):
+    pid = planner_id(request)
+    get_customer_or_404(pid, cid)
+    store.add_note(pid, cid, note_fields(date, kind, content, next_date, next_action))
+    flash(request, "상담 기록을 저장했습니다.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
+@app.get("/notes/{nid}/edit", response_class=HTMLResponse)
+def edit_note_form(request: Request, nid: int):
+    n = store.get_note(planner_id(request), nid)
+    if not n:
+        raise HTTPException(404)
+    return page("상담 기록 수정", f"""<p><a href="/customers/{n['customer_id']}">← 돌아가기</a></p>
+<div class="card"><h1>상담 기록 수정</h1>{note_form(f"/notes/{nid}/edit", n, "저장")}</div>""")
+
+
+@app.post("/notes/{nid}/edit")
+def edit_note(request: Request, nid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
+              next_date: str = Form(""), next_action: str = Form("")):
+    pid = planner_id(request)
+    n = store.get_note(pid, nid)
+    if not n:
+        raise HTTPException(404)
+    store.update_note(pid, nid, note_fields(date, kind, content, next_date, next_action, n.get("done", False)))
+    flash(request, "상담 기록을 수정했습니다.")
+    return RedirectResponse(f"/customers/{n['customer_id']}", status_code=303)
+
+
+@app.post("/notes/{nid}/done")
+def toggle_note_done(request: Request, nid: int, back: str = Form("/")):
+    pid = planner_id(request)
+    n = store.get_note(pid, nid)
+    if not n:
+        raise HTTPException(404)
+    data = {k: v for k, v in n.items() if k not in ("id", "customer_id", "created_at")}
+    store.update_note(pid, nid, {**data, "done": not n.get("done")})
+    return RedirectResponse(back if back.startswith("/") and not back.startswith("//") else "/", status_code=303)
+
+
+@app.post("/notes/{nid}/delete")
+def delete_note(request: Request, nid: int):
+    pid = planner_id(request)
+    cid = store.delete_note(pid, nid)
+    if cid is None:
+        raise HTTPException(404)
+    flash(request, "상담 기록을 삭제했습니다.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
+
+
 @app.get("/customers/{cid}", response_class=HTMLResponse)
 def customer_page(request: Request, cid: int):
     pid = planner_id(request)
     c = get_customer_or_404(pid, cid)
     policies = store.list_policies(pid, cid)
-    v = lambda k: e(c.get(k) or "")  # noqa: E731
-    info = f"""<form method="post" action="/customers/{cid}/info" class="card no-print"><h2>고객 정보</h2>
-<div class="grid"><div><label>이름</label><input type="text" name="name" value="{v('name')}"></div>
-<div><label>생년월일 (YYYYMMDD)</label><input type="text" name="birth_date" value="{v('birth_date')}"></div>
-<div><label>성별</label><input type="text" name="gender" value="{v('gender')}" placeholder="남/여"></div>
-<div><label>연락처</label><input type="text" name="phone" value="{v('phone')}"></div></div>
-<label>주소</label><input type="text" name="address" value="{v('address')}">
-<label>메모</label><input type="text" name="memo" value="{v('memo')}">
-<p class="row"><button class="btn-sm">저장</button></p></form>"""
+    info = info_form(c, f"/customers/{cid}/info", "고객 정보", "저장")
     plist = "".join(policy_html(p, True) for p in policies) or '<p class="muted">계약이 없습니다.</p>'
     return page(c.get("name") or "고객", f"""
 <p class="no-print"><a href="/">← 고객 목록</a></p>
@@ -326,6 +471,7 @@ def customer_page(request: Request, cid: int):
 <button class="btn-danger btn-sm">고객 삭제</button></form></div></div>
 {take_flash(request)}
 {info}
+{notes_html(cid, store.list_notes(pid, cid))}
 <div class="card no-print"><h2>증권 추가</h2>{upload_form(cid)}</div>
 {analysis_html(c, policies) if policies else ''}
 <h2 style="margin-top:24px">가입 계약 ({len(policies)})</h2>{plist}""")
@@ -353,9 +499,7 @@ def save_info(request: Request, cid: int, name: str = Form(""), birth_date: str 
               phone: str = Form(""), address: str = Form(""), memo: str = Form("")):
     pid = planner_id(request)
     get_customer_or_404(pid, cid)
-    store.save_customer(pid, {"name": name.strip(), "birth_date": "".join(ch for ch in birth_date if ch.isdigit()),
-                              "gender": gender.strip(), "phone": phone.strip(), "address": address.strip(),
-                              "memo": memo.strip()}, cid)
+    store.save_customer(pid, customer_fields(name, birth_date, gender, phone, address, memo), cid)
     flash(request, "고객 정보를 저장했습니다.")
     return RedirectResponse(f"/customers/{cid}", status_code=303)
 

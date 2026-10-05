@@ -61,6 +61,12 @@ def init_db() -> None:
             source TEXT,                     -- 올린 파일명
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            data_enc BLOB NOT NULL,          -- 상담일/방식/내용/다음 연락일/할 일/완료 여부
+            created_at INTEGER NOT NULL
+        );
         """)
 
 
@@ -190,3 +196,57 @@ def delete_policy(planner_id: int, pid: int) -> int | None:
         conn.execute("DELETE FROM policies WHERE id = ?", (pid,))
         touch_customer(conn, p["customer_id"])
     return p["customer_id"]
+
+
+# ── 상담 기록 ─────────────────────────────────────────────────────────────────
+def _note(r) -> dict:
+    return {"id": r["id"], "customer_id": r["customer_id"], "created_at": r["created_at"], **dec(r["data_enc"])}
+
+
+def list_notes(planner_id: int, cid: int) -> list[dict]:
+    with closing(db()) as conn:
+        rows = conn.execute("""SELECT n.* FROM notes n JOIN customers c ON c.id = n.customer_id
+                               WHERE n.customer_id = ? AND c.planner_id = ?""", (cid, planner_id)).fetchall()
+    return sorted((_note(r) for r in rows), key=lambda n: (n.get("date") or "", n["id"]), reverse=True)
+
+
+def all_notes(planner_id: int) -> list[dict]:
+    with closing(db()) as conn:
+        rows = conn.execute("""SELECT n.* FROM notes n JOIN customers c ON c.id = n.customer_id
+                               WHERE c.planner_id = ?""", (planner_id,)).fetchall()
+    return [_note(r) for r in rows]
+
+
+def get_note(planner_id: int, nid: int) -> dict | None:
+    with closing(db()) as conn:
+        r = conn.execute("""SELECT n.* FROM notes n JOIN customers c ON c.id = n.customer_id
+                            WHERE n.id = ? AND c.planner_id = ?""", (nid, planner_id)).fetchone()
+    return _note(r) if r else None
+
+
+def add_note(planner_id: int, cid: int, data: dict) -> None:
+    if not get_customer(planner_id, cid):
+        return
+    with closing(db()) as conn, conn:
+        conn.execute("INSERT INTO notes (customer_id, data_enc, created_at) VALUES (?, ?, ?)",
+                     (cid, enc(data), int(time.time())))
+        touch_customer(conn, cid)
+
+
+def update_note(planner_id: int, nid: int, data: dict) -> int | None:
+    n = get_note(planner_id, nid)
+    if not n:
+        return None
+    with closing(db()) as conn, conn:
+        conn.execute("UPDATE notes SET data_enc = ? WHERE id = ?", (enc(data), nid))
+        touch_customer(conn, n["customer_id"])
+    return n["customer_id"]
+
+
+def delete_note(planner_id: int, nid: int) -> int | None:
+    n = get_note(planner_id, nid)
+    if not n:
+        return None
+    with closing(db()) as conn, conn:
+        conn.execute("DELETE FROM notes WHERE id = ?", (nid,))
+    return n["customer_id"]
