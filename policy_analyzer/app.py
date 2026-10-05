@@ -36,6 +36,8 @@ BACKEND_NOTE = {
 REQUIRE_2FA = os.environ.get("REQUIRE_2FA", "1") == "1"
 MAX_FILES = 20
 MAX_TOTAL_BYTES = 30 * 1024 * 1024
+MAX_NOTE_IMAGES = 8
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 SESSION_IDLE = 30 * 60        # 30분 동안 사용 없으면 로그아웃
 SESSION_MAX = 8 * 3600        # 로그인 후 최대 8시간
 PRE_AUTH_TTL = 5 * 60         # 비밀번호 확인 후 OTP 입력까지 허용 시간
@@ -95,6 +97,10 @@ textarea.note { font-family:inherit; font-size:15px; min-height:110px; }
 select, input[type=date] { padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; }
 .note-item { border-top:1px solid var(--line); padding:12px 0; } .note-item:first-of-type { border-top:0; }
 .note-body { white-space:pre-wrap; margin:6px 0; }
+.thumbs { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0; }
+.thumb { position:relative; display:inline-block; }
+.thumb img { width:92px; height:92px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block; }
+.thumb-x { position:absolute; top:-7px; right:-7px; width:22px; height:22px; border-radius:50%; background:var(--danger); color:#fff; border:0; font-size:15px; line-height:1; cursor:pointer; padding:0; }
 .tag { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
 .overdue { color:var(--warn); font-weight:600; }
 .tag.warn-tag { background:var(--warn-bg); color:var(--warn); font-weight:600; }
@@ -303,7 +309,7 @@ ACTION_NAMES = {
     "edit_customer": "고객 정보 수정", "delete_customer": "고객 삭제", "upload": "증권 업로드",
     "edit_policy": "계약 수정", "manage_policy": "계약 관리정보 수정", "delete_policy": "계약 삭제",
     "add_note": "상담 기록 작성", "edit_note": "상담 기록 수정", "delete_note": "상담 기록 삭제",
-    "edit_notepad": "자유 메모 수정",
+    "edit_notepad": "자유 메모 수정", "delete_note_image": "상담 사진 삭제",
     "blocked_cross_origin": "외부 사이트 요청 차단",
 }
 
@@ -622,16 +628,39 @@ KINDS = ["전화", "방문", "카톡·문자", "기타"]
 
 def note_form(action: str, n: dict, button: str) -> str:
     kind_opts = "".join(f'<option {"selected" if n.get("kind") == k else ""}>{k}</option>' for k in KINDS)
-    return f"""<form method="post" action="{action}">
+    return f"""<form method="post" action="{action}" enctype="multipart/form-data">
 <div class="row"><input type="date" name="date" value="{e(n.get('date') or date.today().isoformat())}" required>
 <select name="kind">{kind_opts}</select></div>
 <label>상담 내용</label><textarea class="note" name="content" required placeholder="고객 요청, 관심 상품, 가족 상황, 다음에 말할 것 등">{e(n.get('content') or '')}</textarea>
 <div class="row" style="margin-top:8px"><label style="margin:0">다음 연락일</label><input type="date" name="next_date" value="{e(n.get('next_date') or '')}">
 <input type="text" name="next_action" value="{e(n.get('next_action') or '')}" placeholder="할 일 (예: 암보험 설계안 전달)" style="flex:1;min-width:200px"></div>
+<label>사진 첨부 (선택, 최대 {MAX_NOTE_IMAGES}장)</label><input type="file" name="images" accept="image/*" multiple>
 <p><button class="btn-sm">{button}</button></p></form>"""
 
 
-def notes_html(cid: int, notes: list[dict]) -> str:
+async def read_note_images(request: Request, files: list[UploadFile], nid: int, pid: int) -> int:
+    """업로드된 이미지들을 검증 후 저장. 저장한 장수 반환."""
+    saved = already = store.count_note_images(pid, nid)
+    for f in files or []:
+        if not (f.filename and (f.filename.strip() or (f.size or 0))):
+            continue
+        if saved >= MAX_NOTE_IMAGES:
+            flash(request, f"사진은 기록당 {MAX_NOTE_IMAGES}장까지입니다. 일부는 저장하지 않았습니다.")
+            break
+        data = await f.read()
+        if len(data) > MAX_IMAGE_BYTES:
+            flash(request, f"사진 한 장이 너무 큽니다(최대 {MAX_IMAGE_BYTES // (1024*1024)}MB): {f.filename}")
+            continue
+        mime = security.sniff_mime(data)
+        if mime not in extractor.IMAGE_TYPES:
+            flash(request, f"이미지 파일만 첨부할 수 있습니다: {f.filename}")
+            continue
+        if store.add_note_image(pid, nid, mime, data):
+            saved += 1
+    return saved - already
+
+
+def notes_html(cid: int, notes: list[dict], pid: int) -> str:
     today = date.today().isoformat()
     items = []
     for n in notes:
@@ -641,10 +670,14 @@ def notes_html(cid: int, notes: list[dict]) -> str:
             toggle = "다시 열기" if n.get("done") else "완료"
             follow = f"""<div class="row"><span class="{cls}">다음 연락 {e(n['next_date'])} · {e(n.get('next_action') or '')}</span>
 <form method="post" action="/notes/{n['id']}/done"><input type="hidden" name="back" value="/customers/{cid}"><button class="btn-ghost btn-sm">{toggle}</button></form></div>"""
-        items.append(f"""<div class="note-item"><div class="row between"><span><b>{e(n.get('date') or '')}</b> <span class="tag">{e(n.get('kind') or '')}</span></span>
+        imgs = store.note_image_ids(pid, n["id"])
+        gallery = ('<div class="thumbs">' + "".join(
+            f'<a href="/note-images/{i}" target="_blank" class="thumb"><img src="/note-images/{i}" alt="첨부 사진"></a>' for i in imgs
+        ) + "</div>") if imgs else ""
+        items.append(f"""<div class="note-item"><div class="row between"><span><b>{e(n.get('date') or '')}</b> <span class="tag">{e(n.get('kind') or '')}</span>{f' <span class="muted small">사진 {len(imgs)}</span>' if imgs else ''}</span>
 <div class="row no-print"><a class="btn btn-ghost btn-sm" href="/notes/{n['id']}/edit">수정</a>
 <form method="post" action="/notes/{n['id']}/delete" onsubmit="return confirm('이 상담 기록을 삭제할까요?')"><button class="btn-danger btn-sm">삭제</button></form></div></div>
-<div class="note-body">{e(n.get('content') or '')}</div>{follow}</div>""")
+<div class="note-body">{e(n.get('content') or '')}</div>{gallery}{follow}</div>""")
     listing = "".join(items) or '<p class="muted">아직 상담 기록이 없습니다.</p>'
     return f"""<div class="card no-print"><h2>상담 기록 ({len(notes)})</h2>
 <details {"open" if not notes else ""}><summary>+ 새 상담 기록 쓰기</summary>{note_form(f"/customers/{cid}/notes", {}, "기록 저장")}</details>
@@ -657,36 +690,67 @@ def note_fields(date_: str, kind: str, content: str, next_date: str, next_action
 
 
 @app.post("/customers/{cid}/notes")
-def add_note(request: Request, cid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
-             next_date: str = Form(""), next_action: str = Form("")):
+async def add_note(request: Request, cid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
+                   next_date: str = Form(""), next_action: str = Form(""), images: list[UploadFile] = File(None)):
     pid = planner_id(request)
     get_customer_or_404(pid, cid)
-    store.add_note(pid, cid, note_fields(date, kind, content, next_date, next_action))
+    nid = store.add_note(pid, cid, note_fields(date, kind, content, next_date, next_action))
+    n = await read_note_images(request, images, nid, pid) if nid else 0
     log(request, pid, "add_note", f"고객#{cid}")
-    flash(request, "상담 기록을 저장했습니다.")
+    flash(request, "상담 기록을 저장했습니다." + (f" 사진 {n}장 첨부." if n else ""))
     return RedirectResponse(f"/customers/{cid}", status_code=303)
 
 
 @app.get("/notes/{nid}/edit", response_class=HTMLResponse)
 def edit_note_form(request: Request, nid: int):
-    n = store.get_note(planner_id(request), nid)
+    pid = planner_id(request)
+    n = store.get_note(pid, nid)
     if not n:
         raise HTTPException(404)
+    imgs = store.note_image_ids(pid, nid)
+    thumbs = "".join(f"""<span class="thumb"><img src="/note-images/{i}" alt="첨부 사진">
+<form method="post" action="/note-images/{i}/delete" onsubmit="return confirm('이 사진을 삭제할까요?')"><button class="thumb-x" title="삭제">×</button></form></span>""" for i in imgs)
+    cur = f'<div class="card"><h2>첨부된 사진 ({len(imgs)})</h2><div class="thumbs">{thumbs}</div></div>' if imgs else ""
     return page("상담 기록 수정", f"""<p><a href="/customers/{n['customer_id']}">← 돌아가기</a></p>
-<div class="card"><h1>상담 기록 수정</h1>{note_form(f"/notes/{nid}/edit", n, "저장")}</div>""")
+{take_flash(request)}
+<div class="card"><h1>상담 기록 수정</h1>{note_form(f"/notes/{nid}/edit", n, "저장")}</div>{cur}""")
 
 
 @app.post("/notes/{nid}/edit")
-def edit_note(request: Request, nid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
-              next_date: str = Form(""), next_action: str = Form("")):
+async def edit_note(request: Request, nid: int, date: str = Form(...), kind: str = Form("기타"), content: str = Form(...),
+                    next_date: str = Form(""), next_action: str = Form(""), images: list[UploadFile] = File(None)):
     pid = planner_id(request)
     n = store.get_note(pid, nid)
     if not n:
         raise HTTPException(404)
     store.update_note(pid, nid, note_fields(date, kind, content, next_date, next_action, n.get("done", False)))
+    added = await read_note_images(request, images, nid, pid)
     log(request, pid, "edit_note", f"기록#{nid}")
-    flash(request, "상담 기록을 수정했습니다.")
+    flash(request, "상담 기록을 수정했습니다." + (f" 사진 {added}장 추가." if added else ""))
     return RedirectResponse(f"/customers/{n['customer_id']}", status_code=303)
+
+
+@app.get("/note-images/{img_id}")
+def serve_note_image(request: Request, img_id: int):
+    pid = planner_id(request)
+    img = store.get_note_image(pid, img_id)
+    if not img:
+        raise HTTPException(404)
+    mime, data = img
+    from fastapi.responses import Response
+    return Response(content=data, media_type=mime,
+                    headers={"Cache-Control": "no-store", "Content-Disposition": "inline"})
+
+
+@app.post("/note-images/{img_id}/delete")
+def delete_note_image(request: Request, img_id: int):
+    pid = planner_id(request)
+    nid = store.delete_note_image(pid, img_id)
+    if nid is None:
+        raise HTTPException(404)
+    log(request, pid, "delete_note_image", f"기록#{nid}")
+    flash(request, "사진을 삭제했습니다.")
+    return RedirectResponse(f"/notes/{nid}/edit", status_code=303)
 
 
 @app.post("/notes/{nid}/done")
@@ -728,7 +792,7 @@ def customer_page(request: Request, cid: int):
 {take_flash(request)}
 {info}
 {notepad_card(cid, c.get("notepad", ""))}
-{notes_html(cid, store.list_notes(pid, cid))}
+{notes_html(cid, store.list_notes(pid, cid), pid)}
 <div class="card no-print"><h2>증권 추가</h2>{upload_form(cid)}</div>
 {analysis_html(c, policies) if policies else ''}
 <h2 style="margin-top:24px">가입 계약 ({len(policies)})</h2>{plist}""")

@@ -76,6 +76,14 @@ def init_db() -> None:
             data_enc BLOB NOT NULL,          -- 상담일/방식/내용/다음 연락일/할 일/완료 여부
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS note_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            mime TEXT NOT NULL,
+            data_enc BLOB NOT NULL,          -- 이미지 바이트 (암호화)
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS note_img_note ON note_images (note_id);
         """)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(planners)")}
         for col, ddl in (("totp_enc", "BLOB"), ("totp_last", "INTEGER DEFAULT -1"), ("pw_changed_at", "INTEGER")):
@@ -302,13 +310,14 @@ def get_note(planner_id: int, nid: int) -> dict | None:
     return _note(r) if r else None
 
 
-def add_note(planner_id: int, cid: int, data: dict) -> None:
+def add_note(planner_id: int, cid: int, data: dict) -> int | None:
     if not get_customer(planner_id, cid):
-        return
+        return None
     with closing(db()) as conn, conn:
-        conn.execute("INSERT INTO notes (customer_id, data_enc, created_at) VALUES (?, ?, ?)",
-                     (cid, enc(data), int(time.time())))
+        nid = conn.execute("INSERT INTO notes (customer_id, data_enc, created_at) VALUES (?, ?, ?)",
+                           (cid, enc(data), int(time.time()))).lastrowid
         touch_customer(conn, cid)
+    return nid
 
 
 def update_note(planner_id: int, nid: int, data: dict) -> int | None:
@@ -326,5 +335,47 @@ def delete_note(planner_id: int, nid: int) -> int | None:
     if not n:
         return None
     with closing(db()) as conn, conn:
-        conn.execute("DELETE FROM notes WHERE id = ?", (nid,))
+        conn.execute("DELETE FROM notes WHERE id = ?", (nid,))  # 이미지는 ON DELETE CASCADE 로 함께 삭제
     return n["customer_id"]
+
+
+# ── 상담 기록 첨부 이미지 (암호화 저장, 담당 설계사만 접근) ────────────────────
+def add_note_image(planner_id: int, nid: int, mime: str, data: bytes) -> bool:
+    if not get_note(planner_id, nid):
+        return False
+    with closing(db()) as conn, conn:
+        conn.execute("INSERT INTO note_images (note_id, mime, data_enc, created_at) VALUES (?, ?, ?, ?)",
+                     (nid, mime, _fernet().encrypt(data), int(time.time())))
+    return True
+
+
+def note_image_ids(planner_id: int, nid: int) -> list[int]:
+    with closing(db()) as conn:
+        rows = conn.execute("""SELECT i.id FROM note_images i JOIN notes n ON n.id = i.note_id
+                               JOIN customers c ON c.id = n.customer_id
+                               WHERE i.note_id = ? AND c.planner_id = ? ORDER BY i.id""", (nid, planner_id)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def count_note_images(planner_id: int, nid: int) -> int:
+    return len(note_image_ids(planner_id, nid))
+
+
+def get_note_image(planner_id: int, img_id: int) -> tuple[str, bytes] | None:
+    with closing(db()) as conn:
+        r = conn.execute("""SELECT i.mime, i.data_enc FROM note_images i JOIN notes n ON n.id = i.note_id
+                            JOIN customers c ON c.id = n.customer_id
+                            WHERE i.id = ? AND c.planner_id = ?""", (img_id, planner_id)).fetchone()
+    return (r["mime"], _fernet().decrypt(r["data_enc"])) if r else None
+
+
+def delete_note_image(planner_id: int, img_id: int) -> int | None:
+    """이미지가 속한 note_id 반환 (권한 확인 포함)"""
+    with closing(db()) as conn, conn:
+        r = conn.execute("""SELECT i.id, i.note_id FROM note_images i JOIN notes n ON n.id = i.note_id
+                            JOIN customers c ON c.id = n.customer_id
+                            WHERE i.id = ? AND c.planner_id = ?""", (img_id, planner_id)).fetchone()
+        if not r:
+            return None
+        conn.execute("DELETE FROM note_images WHERE id = ?", (img_id,))
+    return r["note_id"]
