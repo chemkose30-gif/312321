@@ -89,8 +89,12 @@ def _detail(root) -> dict:
         return next((e for e in events if test(e["kind"].replace(" ", ""))), None)
 
     carry_in = first(lambda k: "반입" in k)
-    cleared = first(lambda k: "수리" in k and ("수입신고" in k or "통관" in k))   # '입항보고 수리'는 제외
-    out = first(lambda k: "반출" in k)
+    cleared = first(lambda k: "수리" in k and ("수입신고" in k or "통관" in k))   # '입항보고 수리'·'보세운송신고 수리'는 제외
+    # 반출: 보세운송으로 다른 보세창고에 옮기는 반출은 통관이 아니므로 뺀다 (수입신고 수리 뒤 반출만)
+    bonded = lambda e: "보세운송" in (e["kind"] + e["memo"]).replace(" ", "")
+    out = next((e for e in events if "반출" in e["kind"].replace(" ", "") and not bonded(e)
+                and (not cleared or e["at"] >= cleared["at"])), None)
+    transit = next((e for e in events if bonded(e)), None)
     return {
         "found": True,
         "cargo_no": _t(info, "cargMtNo"), "mbl_no": _t(info, "mblNo"), "hbl_no": _t(info, "hblNo"),
@@ -103,6 +107,7 @@ def _detail(root) -> dict:
         "shed": carry_in["shed"] if carry_in else "",
         "cleared_at": cleared["at"] if cleared else "",
         "out_at": out["at"] if out else "",
+        "transit_at": transit["at"] if transit else "",
         "events": events,
     }
 

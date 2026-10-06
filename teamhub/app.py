@@ -63,6 +63,17 @@ async def lifespan(_app):
                 except ValueError:
                     ats = []
                 c.execute("UPDATE shipments SET bl_found_at = ? WHERE id = ?", (min(ats) if ats else (r["cs_checked_at"] or "")[:16], r["id"]))
+            if get_setting(c, "bonded_fix_v", "") != "1":    # 예전에 보세운송 반출을 '반출'로 저장한 것 바로잡기
+                for r in c.execute("SELECT id, cs_events, cs_cleared_at FROM shipments WHERE cs_out_at != ''").fetchall():
+                    try:
+                        evs = json.loads(r["cs_events"] or "[]")
+                    except ValueError:
+                        continue
+                    ok = [e for e in evs if "반출" in str(e.get("kind", "")).replace(" ", "")
+                          and "보세운송" not in (str(e.get("kind", "")) + str(e.get("memo", ""))).replace(" ", "")
+                          and (not r["cs_cleared_at"] or str(e.get("at", "")) >= r["cs_cleared_at"])]
+                    c.execute("UPDATE shipments SET cs_out_at = ? WHERE id = ?", (ok[0]["at"] if ok else "", r["id"]))
+                set_setting(c, "bonded_fix_v", "1")
             if get_setting(c, "clear_fix_v", "") != "1":     # 인바운딩 Clear 날짜가 있던 기존 건 → 통관완료
                 for r in c.execute("SELECT id, note FROM shipments WHERE src_key != '' AND cs_cleared_at = ''"
                                    " AND status != 'arrived'").fetchall():
@@ -3045,12 +3056,12 @@ def stale_courier(a: str = "") -> str:
 def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current_user)):
     where, params = [], []
     if view == "open":
-        where.append("s.status != 'arrived' AND s.cs_cleared_at = '' AND s.cs_out_at = ''"   # 통관(수리)·반출 끝난 건은 따로
+        where.append("s.status != 'arrived' AND s.cs_cleared_at = ''"   # 통관(수입신고 수리) 끝난 건은 따로
                      f" AND NOT {stale_courier('s.')}")
     elif view == "stale":
         where.append(f"s.status != 'arrived' AND {stale_courier('s.')}")
     elif view == "cleared":
-        where.append("s.status != 'arrived' AND (s.cs_cleared_at != '' OR s.cs_out_at != '')")
+        where.append("s.status != 'arrived' AND s.cs_cleared_at != ''")
     elif view == "arrived":
         where.append("s.status = 'arrived'")
     if q:
@@ -3383,7 +3394,7 @@ def unipass_loop():
                     cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
                     ids = [r[0] for r in c.execute(
                         "SELECT id FROM shipments WHERE status != 'arrived' AND (bl_no != '' OR hbl_no != '')"
-                        f" AND cs_out_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 출발 안 한 특송은 그만 조회
+                        f" AND cs_cleared_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 통관 끝나면·출발 안 한 특송은 그만 조회
                         " ORDER BY eta LIMIT 100", (cutoff,))] if key else []
                 process_bl_watch()
                 for sid in ids:
@@ -3795,12 +3806,12 @@ def dashboard(user: dict = Depends(current_user)):
         # 진행중 화면과 같은 순서: 반입 → 입항·통관 → 선적 → 발주
         rank = ("CASE WHEN cs_in_at != '' THEN 0 WHEN cs_arrived != '' OR status = 'customs' THEN 1"
                 " WHEN status = 'shipped' THEN 2 ELSE 3 END")
-        open_ = f"status != 'arrived' AND cs_cleared_at = '' AND cs_out_at = '' AND NOT {stale_courier()}"
+        open_ = f"status != 'arrived' AND cs_cleared_at = '' AND NOT {stale_courier()}"
         ships_port = c.execute(f"SELECT * FROM shipments WHERE {open_} AND (cs_in_at != '' OR cs_arrived != ''"
                                " OR status = 'customs') ORDER BY " + rank + ", CASE WHEN cs_in_at != '' THEN cs_in_at"
                                " ELSE eta END, id").fetchall()
         port_ids = {r["id"] for r in ships_port}
-        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = '' AND cs_out_at = ''"
+        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = ''"
                                             f" AND NOT {stale_courier()}"
                                             f" ORDER BY status = 'arrived', {rank}, id", (today,)).fetchall()
                        if r["id"] not in port_ids]
@@ -3811,8 +3822,8 @@ def dashboard(user: dict = Depends(current_user)):
                                            (today,)).fetchall() if r["id"] not in port_ids]
         # 홈: 통관이 끝나 창고 입고만 남은 화물 (통관 끝난 순)
         ships_cleared = c.execute(
-            "SELECT * FROM shipments WHERE status != 'arrived' AND (cs_cleared_at != '' OR cs_out_at != '')"
-            " ORDER BY CASE WHEN cs_cleared_at != '' THEN cs_cleared_at ELSE cs_out_at END, id").fetchall()
+            "SELECT * FROM shipments WHERE status != 'arrived' AND cs_cleared_at != ''"
+            " ORDER BY cs_cleared_at, id").fetchall()
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
         stmts = c.execute(

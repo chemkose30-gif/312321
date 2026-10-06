@@ -1978,6 +1978,12 @@ function csTag(sh) {
   const today = new Date(Date.now() + 9 * 36e5).toISOString().slice(0, 10);
   if (sh.cs_out_at) return `<span class="tag s-done" title="UNI-PASS">🚚 반출 ${md(sh.cs_out_at)}</span>`;
   if (sh.cs_cleared_at) return `<span class="tag s-done" title="UNI-PASS">✅ 통관 ${md(sh.cs_cleared_at)}</span>`;
+  // 가장 최근의 반입·보세운송 단계 (보세운송으로 다른 창고에 옮겨 다시 반입되는 경우가 있음)
+  const evs = (() => { try { return JSON.parse(sh.cs_events || '[]'); } catch { return []; } })();
+  const last = evs.filter(e => /반입|보세운송/.test(((e.kind || '') + (e.memo || '')).replace(/\s/g, ''))).pop();
+  if (last && ((last.kind || '') + (last.memo || '')).replace(/\s/g, '').includes('보세운송'))
+    return `<span class="tag s-doing" title="보세운송: 다른 보세창고로 옮기는 중 — 아직 통관 전">🚛 보세운송 ${md(last.at)}</span>`;
+  if (last) return `<span class="tag s-doing" title="${esc(last.shed || sh.cs_shed)}">📦 반입 ${md(last.in_at || last.at)}</span>`;
   if (sh.cs_in_at) return `<span class="tag s-doing" title="${esc(sh.cs_shed)}">📦 반입 ${md(sh.cs_in_at)}</span>`;
   if (sh.cs_arrived) return `<span class="tag s-doing">🛳 입항 ${md(sh.cs_arrived)}</span>`;
   if (sh.cs_error) return '<span class="tag s-todo" title="UNI-PASS 에서 아직 못 찾음">UNI-PASS 대기</span>';
