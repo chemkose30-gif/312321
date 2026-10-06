@@ -1944,7 +1944,7 @@ function openStatementImport(dt = 'statement') {
 }
 
 // ===================================================== 입고 예정
-const SHIP = {ordered: '발주', shipped: '선적', customs: '통관', arrived: '입고완료'};
+const SHIP = {ordered: '발주', shipped: '선적', customs: '통관 진행', arrived: '입고완료'};
 const shTag = st => `<span class="tag sh-${st}">${SHIP[st]}</span>`;
 const fmtQty = n => Number(n || 0).toLocaleString('ko-KR', {maximumFractionDigits: 2});
 function dday(eta, status) {

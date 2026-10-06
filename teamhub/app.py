@@ -57,6 +57,16 @@ async def lifespan(_app):
                         t += ",freight"
                     c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
                 set_setting(c, "mail_topics_v", "4")
+            if get_setting(c, "clear_fix_v", "") != "1":     # 인바운딩 Clear 날짜가 있던 기존 건 → 통관완료
+                for r in c.execute("SELECT id, note FROM shipments WHERE src_key != '' AND cs_cleared_at = ''"
+                                   " AND status != 'arrived'").fetchall():
+                    m = re.search(r"통관 ([^·]+)", r["note"] or "")
+                    raw = m[1].strip() if m else ""
+                    if raw and not raw.startswith("→") and not re.search(r"eta|예정", raw, re.I):
+                        d = inb_date(raw) or (now()[:10] if re.fullmatch(r"(?i)o|ok|완료|통관완료|cleared|done|v|✓|✔", raw) else "")
+                        if d:
+                            c.execute("UPDATE shipments SET cs_cleared_at = ? WHERE id = ?", (d, r["id"]))
+                set_setting(c, "clear_fix_v", "1")
             if get_setting(c, "mail_watch_v", "") != "1":
                 recompute_watch(c)
                 set_setting(c, "mail_watch_v", "1")
@@ -3019,9 +3029,9 @@ def ship_values(b: ShipmentIn):
 def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current_user)):
     where, params = [], []
     if view == "open":
-        where.append("s.status != 'arrived' AND s.cs_cleared_at = ''")     # 통관(수입신고 수리)이 끝난 건은 따로
+        where.append("s.status != 'arrived' AND s.cs_cleared_at = '' AND s.cs_out_at = ''")   # 통관(수리)·반출 끝난 건은 따로
     elif view == "cleared":
-        where.append("s.status != 'arrived' AND s.cs_cleared_at != ''")
+        where.append("s.status != 'arrived' AND (s.cs_cleared_at != '' OR s.cs_out_at != '')")
     elif view == "arrived":
         where.append("s.status = 'arrived'")
     if q:
@@ -3760,12 +3770,12 @@ def dashboard(user: dict = Depends(current_user)):
         # 진행중 화면과 같은 순서: 반입 → 입항·통관 → 선적 → 발주
         rank = ("CASE WHEN cs_in_at != '' THEN 0 WHEN cs_arrived != '' OR status = 'customs' THEN 1"
                 " WHEN status = 'shipped' THEN 2 ELSE 3 END")
-        open_ = "status != 'arrived' AND cs_cleared_at = ''"
+        open_ = "status != 'arrived' AND cs_cleared_at = '' AND cs_out_at = ''"
         ships_port = c.execute(f"SELECT * FROM shipments WHERE {open_} AND (cs_in_at != '' OR cs_arrived != ''"
                                " OR status = 'customs') ORDER BY " + rank + ", CASE WHEN cs_in_at != '' THEN cs_in_at"
                                " ELSE eta END, id").fetchall()
         port_ids = {r["id"] for r in ships_port}
-        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = ''"
+        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = '' AND cs_out_at = ''"
                                             f" ORDER BY status = 'arrived', {rank}, id", (today,)).fetchall()
                        if r["id"] not in port_ids]
         ships_week = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND {open_}"
