@@ -3383,29 +3383,33 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
     return {"found": True, **r}
 
 
+UNIPASS_EVERY_MIN = int(os.getenv("TEAMHUB_UNIPASS_MIN", "25"))    # 같은 화물을 다시 조회하는 간격(분)
+
+
 def unipass_loop():
-    """진행 중인 입고예정(B/L 있음)을 낮 시간(7~21시)에 2시간마다 UNI-PASS 로 확인."""
+    """진행 중인 입고예정(B/L 있음)을 낮 시간(6~22시)에 25분마다 UNI-PASS 로 확인 — 반출될 때까지.
+    (통관 수리 뒤에도 반출을 놓치지 않게 계속 보고, 반출되거나 입고완료면 그만)"""
     time.sleep(30)
     while True:
         try:
-            if 7 <= datetime.now().hour < 21:
+            if 6 <= datetime.now().hour < 22:
                 with db() as c:
                     key = get_setting(c, "unipass_key", "")
-                    cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+                    cutoff = (datetime.now() - timedelta(minutes=UNIPASS_EVERY_MIN)).strftime("%Y-%m-%d %H:%M:%S")
                     ids = [r[0] for r in c.execute(
                         "SELECT id FROM shipments WHERE status != 'arrived' AND (bl_no != '' OR hbl_no != '')"
-                        f" AND cs_cleared_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 통관 끝나면·출발 안 한 특송은 그만 조회
-                        " ORDER BY eta LIMIT 100", (cutoff,))] if key else []
+                        f" AND cs_out_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 반출됐거나 출발 안 한 특송은 그만
+                        " ORDER BY cs_checked_at LIMIT 200", (cutoff,))] if key else []
                 process_bl_watch()
                 for sid in ids:
                     try:
                         refresh_unipass(sid)
                     except Exception as e:  # noqa: BLE001
                         print("[TeamHub] unipass error:", e)
-                    time.sleep(2)
+                    time.sleep(1)
         except Exception as e:  # noqa: BLE001
             print("[TeamHub] unipass loop error:", e)
-        time.sleep(600)
+        time.sleep(300)
 
 
 # ---- 메일에 나온 B/L·운송장 번호 → UNI-PASS 조회 → 입고예정 자동 등록
@@ -3588,7 +3592,7 @@ def register_from_bl(num: str, kind: str = "", owner_id=None, subject: str = "",
             if r.get("found"):
                 break
     if not r.get("found"):
-        return {"state": "wait", "message": "UNI-PASS 에 아직 없습니다 (적하목록 제출 전일 수 있음). 2시간마다 다시 찾습니다."}
+        return {"state": "wait", "message": "UNI-PASS 에 아직 없습니다 (적하목록 제출 전일 수 있음). 30분마다 다시 찾습니다."}
     # 이미 반출된 지 오래된 화물은 등록하지 않음 (예전 메일을 한꺼번에 가져온 경우)
     if r["out_at"] and r["out_at"][:10] < (date.today() - timedelta(days=3)).isoformat():
         return {"state": "old", "message": f"이미 {r['out_at'][:10]} 에 반출된 화물이라 등록하지 않았습니다."}
@@ -3648,7 +3652,7 @@ def process_bl_watch():
         with db() as c:
             if not get_setting(c, "unipass_key", ""):
                 return
-            cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+            cutoff = (datetime.now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
             stale = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d %H:%M:%S")
             c.execute("UPDATE bl_watch SET state = 'gave_up' WHERE state = 'wait' AND created_at < ?", (stale,))
             rows = [dict(r) for r in c.execute("SELECT * FROM bl_watch WHERE state = 'wait' AND last_try < ?"
