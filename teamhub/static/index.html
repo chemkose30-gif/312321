@@ -38,7 +38,11 @@ nav button.active{background:var(--primary-weak);color:var(--primary)}
 .dropdown button:hover{background:var(--bg)}
 .notif-panel{width:340px;max-height:420px;overflow:auto}
 .notif-item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
-.notif-item.unread{background:#eff6ff}
+.notif-item.unread{background:#dbeafe;border-left:4px solid #2563eb;font-weight:600;color:#1e3a8a}
+.notif-item.unread:hover{background:#bfdbfe}
+.notif-item:not(.unread){color:var(--muted);background:var(--panel)}
+.notif-panel .btn{display:inline-flex;width:auto;padding:4px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.notif-panel .nx{position:absolute;right:8px;top:8px;padding:0 7px;line-height:20px;color:var(--muted);font-weight:400}
 .notif-item small{color:var(--muted)}
 main{max-width:1200px;margin:0 auto;padding:20px}
 .card{background:var(--panel);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
@@ -425,7 +429,8 @@ document.addEventListener('click', e => {
 
 async function refreshNotifs(renderPanel = false) {
   if (!state.token) return;
-  const n = await api('/api/notifications').catch(() => null);
+  const showRead = !!state.notifRead;
+  const n = await api('/api/notifications' + (renderPanel && showRead ? '?read=true' : '')).catch(() => null);
   if (!n) return;
   const b = $('#bellBadge');
   b.textContent = n.unread > 99 ? '99+' : n.unread;
@@ -433,15 +438,27 @@ async function refreshNotifs(renderPanel = false) {
   document.title = (n.unread ? `(${n.unread}) ` : '') + 'TeamHub · 사내 캘린더 & 업무지시';
   if (!renderPanel) return;
   const p = $('#notifPanel');
+  // 알림 내용으로 갈 곳: 업무 / 메일 일정 / 입고예정
+  const target = i => i.task_id ? 'task' : /^📥|^📩/.test(i.message) ? 'mailin' : /^(🚢|📦|🛳|✅|🚚|✈️)|입고|통관|UNI-PASS|B\/L/.test(i.message) ? 'shipments' : '';
   p.innerHTML = `<div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line)">
-      <b>알림</b><span class="spacer"></span><button class="btn sm" id="readAll">모두 읽음</button></div>` +
-    (n.items.length ? n.items.map(i => `<div class="notif-item ${i.is_read ? '' : 'unread'}" data-task="${i.task_id ?? ''}">
-        ${esc(i.message)}<br><small>${esc(i.created_at.slice(0, 16))}</small></div>`).join('')
-      : '<div class="empty">알림이 없습니다.</div>');
-  $('#readAll', p).onclick = async () => { await api('/api/notifications/read-all', {method: 'POST'}); refreshNotifs(true); };
-  $$('.notif-item', p).forEach(el => el.onclick = () => {
+      <b>${showRead ? '읽은 알림' : '알림'}</b><span class="spacer"></span>
+      <button class="btn sm" id="notifMode" style="margin-right:4px">${showRead ? '← 새 알림' : '읽은 알림'}</button>${showRead || !n.items.length ? '' : '<button class="btn sm" id="readAll">모두 읽음</button>'}</div>` +
+    (n.items.length ? n.items.map(i => `<div class="notif-item ${i.is_read ? '' : 'unread'}" data-nid="${i.id}" data-go="${target(i)}" data-task="${i.task_id ?? ''}" style="position:relative;padding-right:46px">
+        ${esc(i.message)}<br><small>${esc(i.created_at.slice(0, 16))}</small>
+        ${i.is_read ? '' : `<button class="btn sm nx" data-dismiss="${i.id}" title="읽음 (목록에서 지우기)">✕</button>`}</div>`).join('')
+      : `<div class="empty">${showRead ? '읽은 알림이 없습니다.' : '새 알림이 없습니다. 🎉'}</div>`);
+  $('#notifMode', p).onclick = e => { e.stopPropagation(); state.notifRead = !showRead; refreshNotifs(true); };
+  if ($('#readAll', p)) $('#readAll', p).onclick = async e => { e.stopPropagation(); await api('/api/notifications/read-all', {method: 'POST'}); refreshNotifs(true); };
+  $$('[data-dismiss]', p).forEach(x => x.onclick = async e => {
+    e.stopPropagation();
+    await api(`/api/notifications/${x.dataset.dismiss}/read`, {method: 'POST'});
+    refreshNotifs(true);
+  });
+  $$('.notif-item', p).forEach(el => el.onclick = async () => {
     p.classList.add('hidden');
+    if (!showRead) { await api(`/api/notifications/${el.dataset.nid}/read`, {method: 'POST'}).catch(() => {}); refreshNotifs(); }
     if (el.dataset.task) openTask(+el.dataset.task);
+    else if (el.dataset.go) go(el.dataset.go);
   });
 }
 setInterval(() => refreshNotifs(), 30000);

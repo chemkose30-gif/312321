@@ -3751,15 +3751,23 @@ def delete_shipment(sid: int, user: dict = Depends(current_user)):
 
 # ---------------------------------------------------------------- Notifications / Dashboard
 @app.get("/api/notifications")
-def list_notifications(user: dict = Depends(current_user)):
+def list_notifications(read: bool = False, user: dict = Depends(current_user)):
+    """안 읽은 알림만 (읽으면 목록에서 사라짐). read=true 면 최근 읽은 알림."""
     with db() as c:
         rows = c.execute(
-            "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50", (user["id"],)
-        ).fetchall()
+            "SELECT * FROM notifications WHERE user_id = ? AND is_read = ? ORDER BY id DESC LIMIT 50",
+            (user["id"], 1 if read else 0)).fetchall()
         unread = c.execute(
             "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", (user["id"],)
         ).fetchone()[0]
     return {"unread": unread, "items": [dict(r) for r in rows]}
+
+
+@app.post("/api/notifications/{nid}/read")
+def read_one(nid: int, user: dict = Depends(current_user)):
+    with db() as c:
+        c.execute("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?", (nid, user["id"]))
+    return {"ok": True}
 
 
 @app.post("/api/notifications/read-all")
