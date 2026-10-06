@@ -95,6 +95,10 @@ def _detail(root) -> dict:
     out = next((e for e in events if "반출" in e["kind"].replace(" ", "") and not bonded(e)
                 and (not cleared or e["at"] >= cleared["at"])), None)
     transit = next((e for e in events if bonded(e)), None)
+    # 처리 이력에 '수입신고 수리' 줄이 없어도 통관진행상태가 '수입신고수리'면 통관 완료 ('수입신고전'이면 아님)
+    clr = _t(info, "csclPrgsStts").replace(" ", "")
+    if not cleared and "수리" in clr and "수입" in clr:
+        cleared = {"at": _dttm(_t(info, "prcsDttm")) or (events[-1]["at"] if events else "")}
     return {
         "found": True,
         "cargo_no": _t(info, "cargMtNo"), "mbl_no": _t(info, "mblNo"), "hbl_no": _t(info, "hblNo"),
