@@ -1505,15 +1505,15 @@ async function openQuoteForm(quote, task, template, docType) {
   const useEc = ec.products.length > 0;
   const prodCode = cd => cd ? `<span class="code" data-code="${esc(cd)}">${esc(cd)}<button type="button" data-unlink title="품목 연결 해제">✕</button></span>` : (ec.enabled ? '<span class="code miss">이카운트 품목 미지정</span>' : '');
   const row = (it = {}) => `<tr>
-      ${isSt ? '' : `<td style="width:96px"><input name="cas_no" value="${esc(it.cas_no || '')}" placeholder="Cas no."></td>`}
+      <td style="width:96px"><input name="cas_no" value="${esc(it.cas_no || '')}" placeholder="Cas no."></td>
       <td><input name="name" ${useEc ? '' : 'list="itemList"'} value="${esc(it.name)}" placeholder="${useEc ? '품목 검색 (이름·코드·규격)' : '품명'}"><input type="hidden" name="prod_cd" value="${esc(it.prod_cd || '')}"><div class="pc">${prodCode(it.prod_cd)}</div></td>
       <td><input name="spec" value="${esc(it.spec)}" placeholder="규격"></td>
       <td style="width:60px"><input name="unit" value="${esc(it.unit)}" placeholder="EA"></td>
       <td style="width:80px"><input name="qty" class="num" inputmode="decimal" value="${it.qty ?? ''}"></td>
       <td style="width:110px"><input name="price" class="num" inputmode="decimal" value="${it.unit_price != null ? won(it.unit_price) : ''}"></td>
-      ${isSt ? '' : `<td style="width:70px"><input name="origin" value="${esc(it.origin || '')}" placeholder="CN"></td>`}
+      <td style="width:70px"><input name="origin" value="${esc(it.origin || '')}" placeholder="CN"></td>
       <td class="calc sup">0</td><td class="calc vat">0</td>
-      <td class="hide-m" ${isSt ? '' : 'style="display:none"'}><input name="inote" value="${esc(it.note)}"></td>
+      <td class="hide-m" style="display:none"><input name="inote" value="${esc(it.note)}"></td>
       <td style="width:30px"><button type="button" class="btn sm" data-del title="행 삭제">✕</button></td></tr>`;
   openModal(`<h2>${quote ? `${D.label} 수정 <small class="muted">${esc(quote.quote_no)}</small>` : '새 ' + D.label}</h2>
     ${linkedTask ? `<div class="muted">📋 연결된 업무: ${esc(task?.title || '#' + linkedTask.id)}</div>` : ''}
@@ -1522,22 +1522,23 @@ async function openQuoteForm(quote, task, template, docType) {
         <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(이카운트 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
           <input type="hidden" name="cust_cd" value="${esc(q.cust_cd || '')}">${ec.enabled ? '<div id="custChip"></div>' : ''}</div>
         <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="${isSt ? '예: 10월 사무용품 납품' : '예: 사무용품 납품 견적'}"></div>
-        ${isSt ? `<div><label>공급받는자 사업자번호</label><input name="customer_biz_no" value="${esc(q.customer_biz_no)}" placeholder="000-00-00000"></div>
-        <div><label>공급받는자 대표자</label><input name="customer_ceo" value="${esc(q.customer_ceo)}"></div>
-        <div style="grid-column:1/-1"><label>공급받는자 주소</label><input name="customer_address" value="${esc(q.customer_address)}"></div>` : ''}
         <div><label>거래처 담당자</label><input name="customer_contact" value="${esc(q.customer_contact)}"></div>
         <div><label>거래처 연락처 / 이메일</label><div class="row" style="flex-wrap:nowrap"><input name="customer_phone" value="${esc(q.customer_phone)}" placeholder="연락처"><input name="customer_email" value="${esc(q.customer_email)}" placeholder="이메일"></div></div>
         <div><label>${D.date}</label><input type="date" name="quote_date" value="${esc(q.quote_date)}" required></div>
-        ${isSt ? '' : `<div><label>유효기간</label><input name="valid_until" value="${esc(q.valid_until)}"></div>
+        ${isSt ? '' : `<div><label>유효기간</label><input name="valid_until" value="${esc(q.valid_until)}"></div>`}
         <div><label>납기 (Leadtime)</label><input name="delivery" value="${esc(q.delivery)}" placeholder="예: 발주 후 7일"></div>
         <div><label>운송조건 (Transportation)</label><input name="transport" value="${esc(q.transport || '')}" placeholder="예: 착불 / 택배 / EXW"></div>
-        <div><label>거래처 FAX</label><input name="customer_fax" value="${esc(q.customer_fax || '')}"></div>`}
+        <div><label>거래처 FAX</label><input name="customer_fax" value="${esc(q.customer_fax || '')}"></div>
         <div><label>결제조건</label><input name="payment_terms" value="${esc(q.payment_terms)}" placeholder="예: 납품 후 익월 말 현금"></div>
         <div><label>부가세</label><select name="vat_mode">${Object.entries(VAT).map(([k, v]) => `<option value="${k}" ${q.vat_mode === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
         <div><label>상태</label><select name="status">${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${q.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
+      ${isSt ? `<details style="margin-top:8px" ${q.customer_biz_no || q.customer_address ? '' : ''}><summary style="cursor:pointer;font-size:13px"><b>공급받는자 정보</b> <small class="muted" id="bizSum">${esc([q.customer_biz_no, q.customer_ceo, q.customer_address].filter(Boolean).join(' · ') || '인쇄할 때 들어가는 사업자번호·대표자·주소 — 거래처를 고르면 예전 기록으로 자동 입력')}</small></summary>
+        <div class="grid2"><div><label>사업자번호</label><input name="customer_biz_no" value="${esc(q.customer_biz_no)}" placeholder="000-00-00000"></div>
+        <div><label>대표자</label><input name="customer_ceo" value="${esc(q.customer_ceo)}"></div>
+        <div style="grid-column:1/-1"><label>주소</label><input name="customer_address" value="${esc(q.customer_address)}"></div></div></details>` : ''}
       <label>품목</label>
-      <div class="qscroll"><table class="qitems"><thead><tr>${isSt ? '' : '<th>Cas no.</th>'}<th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th>${isSt ? '' : '<th>Origin</th>'}<th style="text-align:right">공급가액</th><th style="text-align:right">세액</th>${isSt ? '<th class="hide-m">비고</th>' : ''}<th></th></tr></thead>
+      <div class="qscroll"><table class="qitems"><thead><tr><th>Cas no.</th><th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th><th>Origin</th><th style="text-align:right">공급가액</th><th style="text-align:right">세액</th><th></th></tr></thead>
         <tbody>${(q.items.length ? q.items : [{}]).map(row).join('')}</tbody></table></div>
       <button type="button" class="btn sm" id="qAdd" style="margin-top:6px">+ 행 추가</button>
       <div class="qtotal"><span>공급가액 <b id="tSup">0</b></span><span>세액 <b id="tVat">0</b></span><span>합계 <b id="tSum" style="color:var(--primary)">0</b>원</span></div>
@@ -1581,6 +1582,8 @@ async function openQuoteForm(quote, task, template, docType) {
     f.customer_name.onchange = () => {
       const c = sug.customers.find(x => x.customer_name === f.customer_name.value);
       if (c) ['customer_contact', 'customer_phone', 'customer_email', 'customer_biz_no', 'customer_ceo', 'customer_address', 'customer_fax'].forEach(k => { if (f[k] && !f[k].value) f[k].value = c[k] || ''; });
+      const bs = $('#bizSum', bg);
+      if (bs && f.customer_biz_no) bs.textContent = [f.customer_biz_no.value, f.customer_ceo.value, f.customer_address.value].filter(Boolean).join(' · ') || '사업자번호·대표자·주소 (인쇄용)';
     };
     if (useEc) {
       tbody.addEventListener('focusin', e => {
