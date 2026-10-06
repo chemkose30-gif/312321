@@ -2095,7 +2095,8 @@ async function openShipment(id, day, pre = {}) {
   const v = sh ? {...sh, ...pre} : {eta: day || todayStr(), status: 'ordered', unit: 'kg', ...pre};
   const canDel = sh && (sh.created_by === state.me.id || state.me.role === 'admin');
   openModal(`<h2>${sh ? '입고 예정' : '새 입고 예정'}</h2>
-    ${sh ? `<div class="muted">등록: ${esc(sh.creator_name)}${sh.arrived_at ? ' · 입고 처리 ' + esc(sh.arrived_at.slice(0, 16)) : ''}</div>` : ''}
+    ${sh ? `<div class="row" style="gap:8px"><span class="muted">등록: ${esc(sh.creator_name)}${sh.arrived_at ? ' · 입고 처리 ' + esc(sh.arrived_at.slice(0, 16)) : ''}${sh.cs_cleared_at ? ' · ✅ 통관완료 ' + esc(sh.cs_cleared_at.slice(0, 10)) : ''}</span><span class="spacer"></span>
+      ${sh.status !== 'arrived' ? `<button type="button" class="btn sm" id="shClr">${sh.cs_cleared_at ? '통관완료 취소' : '✅ 통관완료로 표시'}</button>` : ''}</div>` : ''}
     ${sh && (sh.bl_no || sh.hbl_no) ? `<div class="ec-box" id="csBox">${csPanel(sh)}</div>` : ''}
     <form>
       <div class="grid2">
@@ -2117,6 +2118,11 @@ async function openShipment(id, day, pre = {}) {
       <div class="actions">${canDel ? '<button type="button" class="btn danger" id="shDel">삭제</button><span class="spacer"></span>' : ''}
         <button type="button" class="btn" data-close>취소</button><button class="btn primary">저장</button></div>
     </form>`, (bg, close) => {
+    if ($('#shClr', bg)) $('#shClr', bg).onclick = async () => {
+      await api(`/api/shipments/${sh.id}/cleared`, {method: 'POST', body: {cleared: !sh.cs_cleared_at}});
+      close(); toast(sh.cs_cleared_at ? '통관완료를 취소했습니다.' : '통관완료로 표시했습니다. 진행중·홈에서 빠집니다.');
+      pre.onSaved && pre.onSaved(); go(state.view);
+    };
     const csBind = () => { const b = $('#csRefresh', bg); if (b) b.onclick = async () => {
       b.disabled = true; b.textContent = '조회 중…';
       try { await api(`/api/shipments/${sh.id}/unipass`, {method: 'POST'}); const all = await api('/api/shipments?view=all'); const n = all.find(x => x.id === sh.id); $('#csBox', bg).innerHTML = csPanel(n); csBind(); }

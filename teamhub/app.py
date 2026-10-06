@@ -3067,6 +3067,17 @@ def unipass_soon(sid: int):
     threading.Thread(target=run, daemon=True).start()
 
 
+@app.post("/api/shipments/{sid}/cleared")
+def shipment_cleared(sid: int, body: dict, user: dict = Depends(current_user)):
+    """직접 통관완료 표시/취소 — 통관완료면 진행중·홈 목록에서 빠지고 '통관완료' 탭에 보인다."""
+    with db() as c:
+        if not c.execute("SELECT 1 FROM shipments WHERE id = ?", (sid,)).fetchone():
+            raise HTTPException(404, "입고 예정을 찾을 수 없습니다.")
+        c.execute("UPDATE shipments SET cs_cleared_at = ?, updated_at = ? WHERE id = ?",
+                  (now()[:16] if body.get("cleared") else "", now(), sid))
+    return {"ok": True}
+
+
 @app.put("/api/shipments/{sid}")
 def update_shipment(sid: int, body: ShipmentIn, user: dict = Depends(current_user)):
     check_shipment(body)
@@ -3197,7 +3208,7 @@ def sync_inbound(c, rows: list, by_id: int) -> dict:
             continue
         stat["open"] += 1
         eta, guessed = _inb_eta(r)
-        status = "customs" if r["clear"] else "shipped" if (r["etd"] or r["desp"]) and (r["etd"] or r["desp"]) <= ts[:10] \
+        status = "customs" if r["clear"] and not (r["clear_raw"] or "").strip().startswith("→") else "shipped" if (r["etd"] or r["desp"]) and (r["etd"] or r["desp"]) <= ts[:10] \
             else "ordered"
         note = " · ".join(x for x in (
             f"[인바운딩] {r['order']}" + (f" / {r['ref']}" if r["ref"] else ""),
@@ -3206,6 +3217,14 @@ def sync_inbound(c, rows: list, by_id: int) -> dict:
             r["memo"], f"위험물 {r['danger']}" if r["danger"] else "", f"CAS {r['cas']}" if r["cas"] else "") if x)
         vals = {"item": r["product"][:150], "supplier": r["supplier"][:100], "customer": r["client"][:60],
                 "qty": r["qty"], "eta": eta, "note": note[:1000]}
+        # 인바운딩 'Clear' 칸에 날짜(또는 표시)가 있으면 통관 완료 → 진행중·홈에서 빠짐
+        raw = (r["clear_raw"] or "").strip()
+        if raw.startswith("→") or re.search(r"eta|예정", raw, re.I):
+            cleared = ""                          # '→ 날짜' 는 예정일이지 통관 완료가 아님
+        elif r["clear"]:
+            cleared = r["clear"]
+        else:
+            cleared = ts[:10] if re.fullmatch(r"(?i)o|ok|완료|통관완료|cleared|done|v|✓|✔", raw) else ""
         if not sh:
             # 직접 만들어 둔 입고예정과 같은 건이면(품목·공급사 같고 예정일 ±45일) 새로 만들지 않고 연결
             ni, ns = _item_norm(r["product"]), _item_norm(r["supplier"])
@@ -3224,15 +3243,16 @@ def sync_inbound(c, rows: list, by_id: int) -> dict:
             # 통관 단계는 UNI-PASS 가 더 정확하면 그쪽을 따름 (이미 customs 면 내리지 않음)
             st = sh["status"] if sh["status"] == "customs" else status
             c.execute("UPDATE shipments SET item = ?, supplier = ?, customer = ?, qty = ?, eta = ?, note = ?, status = ?,"
+                      " cs_cleared_at = CASE WHEN cs_cleared_at = '' THEN ? ELSE cs_cleared_at END,"
                       " updated_at = ? WHERE id = ?", (vals["item"], vals["supplier"], vals["customer"], vals["qty"],
-                                                       vals["eta"], vals["note"], st, ts, sh["id"]))
+                                                       vals["eta"], vals["note"], st, cleared, ts, sh["id"]))
             stat["updated"] += 1
         else:
             c.execute("INSERT INTO shipments (item, spec, supplier, customer, qty, unit, eta, status, bl_no, hbl_no, warehouse,"
-                      " note, arrived_at, created_by, created_at, updated_at, src_key) VALUES"
-                      " (?, '', ?, ?, ?, 'kg', ?, ?, '', '', '', ?, NULL, ?, ?, ?, ?)",
+                      " note, arrived_at, created_by, created_at, updated_at, src_key, cs_cleared_at) VALUES"
+                      " (?, '', ?, ?, ?, 'kg', ?, ?, '', '', '', ?, NULL, ?, ?, ?, ?, ?)",
                       (vals["item"], vals["supplier"], vals["customer"], vals["qty"], vals["eta"], status, vals["note"],
-                       by_id, ts, ts, key))
+                       by_id, ts, ts, key, cleared))
             stat["created"] += 1
     return stat
 
@@ -3305,10 +3325,10 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
                       (clean_prnm(r["item"])[:120] or COURIER_ITEM, float(w[1]) if w else 0,
                        (w[2] or "kg").lower() if w else "kg", sid))
         c.execute("UPDATE shipments SET cs_cargo_no = ?, cs_status = ?, cs_arrived = ?, cs_in_at = ?, cs_shed = ?,"
-                  " cs_cleared_at = ?, cs_out_at = ?, cs_events = ?, cs_checked_at = ?, cs_error = '', status = ?,"
-                  " updated_at = ? WHERE id = ?",
+                  " cs_cleared_at = CASE WHEN ? != '' THEN ? ELSE cs_cleared_at END, cs_out_at = ?, cs_events = ?,"
+                  " cs_checked_at = ?, cs_error = '', status = ?, updated_at = ? WHERE id = ?",
                   (r["cargo_no"], " · ".join(x for x in (r["status"], r["clearance"]) if x), r["arrived"], r["in_at"],
-                   r["shed"], r["cleared_at"], r["out_at"], json.dumps(r["events"], ensure_ascii=False), now(), status,
+                   r["shed"], r["cleared_at"], r["cleared_at"], r["out_at"], json.dumps(r["events"], ensure_ascii=False), now(), status,
                    now(), sid))
         if not quiet:
             for col, label in CS_MILESTONES:
@@ -3745,8 +3765,9 @@ def dashboard(user: dict = Depends(current_user)):
                                " OR status = 'customs') ORDER BY " + rank + ", CASE WHEN cs_in_at != '' THEN cs_in_at"
                                " ELSE eta END, id").fetchall()
         port_ids = {r["id"] for r in ships_port}
-        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? ORDER BY status = 'arrived', {rank}, id",
-                                            (today,)).fetchall() if r["id"] not in port_ids]
+        ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = ''"
+                                            f" ORDER BY status = 'arrived', {rank}, id", (today,)).fetchall()
+                       if r["id"] not in port_ids]
         ships_week = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND {open_}"
                                            f" ORDER BY {rank}, eta", (today, week_end)).fetchall()
                       if r["id"] not in port_ids]
