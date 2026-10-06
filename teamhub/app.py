@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 import ecount
@@ -1181,8 +1181,14 @@ QUOTE_FIELDS = ("title", "cust_cd", "customer_biz_no", "customer_ceo", "customer
 
 @app.get("/api/quotes")
 def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: str = "", month: str = "",
-                page: int = 1, size: int = 30, user: dict = Depends(current_user)):
+                date_from: str = "", date_to: str = "", page: int = 1, size: int = 30, user: dict = Depends(current_user)):
     where, params = ["qt.doc_type = ?"], [doc_type]
+    if date_from:
+        where.append("qt.quote_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("qt.quote_date <= ?")
+        params.append(date_to)
     if q:
         where.append("(qt.customer_name LIKE ? OR qt.title LIKE ? OR qt.quote_no LIKE ?"
                      " OR EXISTS (SELECT 1 FROM quote_items qi WHERE qi.quote_id = qt.id AND qi.name LIKE ?))")
@@ -1222,6 +1228,100 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
         ).fetchall()
     return {"items": [dict(r) for r in rows], "total": total, "amount": amount, "page": page, "size": size,
             "pages": max(1, (total + size - 1) // size), "years": years}
+
+
+REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월별", "customer": "거래처별", "item": "품목별",
+                 "customer_item": "거래처·품목별", "creator": "담당자별"}
+
+
+@app.get("/api/quotes/report")
+def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str = "", customer: str = "", item: str = "",
+                  status: str = "", group: str = "line", format: str = "", user: dict = Depends(current_user)):
+    """판매현황·견적서현황: 기간·거래처·품목·상태로 걸러 품목 줄을 모으거나(일자·월·거래처·품목·담당자별) 그대로 보여줌.
+    format=csv 면 엑셀로 열 수 있는 CSV 로 내려줌."""
+    if group not in REPORT_GROUPS:
+        group = "line"
+    where, params = ["q.doc_type = ?"], [doc_type]
+    if date_from:
+        where.append("q.quote_date >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("q.quote_date <= ?")
+        params.append(date_to)
+    if customer.strip():
+        where.append("q.customer_name LIKE ?")
+        params.append(f"%{customer.strip()}%")
+    if item.strip():
+        where.append("(i.name LIKE ? OR i.spec LIKE ? OR i.prod_cd LIKE ?)")
+        params += [f"%{item.strip()}%"] * 3
+    if status:
+        where.append("q.status = ?")
+        params.append(status)
+    elif doc_type == "statement":
+        where.append("q.status != 'draft'")
+    w = " AND ".join(where)
+    with db() as c:
+        lines = [dict(r) for r in c.execute(
+            "SELECT q.id AS doc_id, q.quote_date, q.quote_no, q.customer_name, q.status, u.name AS creator,"
+            " i.name, i.spec, i.unit, i.qty, i.unit_price, i.supply, i.vat"
+            " FROM quote_items i JOIN quotes q ON q.id = i.quote_id JOIN users u ON u.id = q.created_by"
+            f" WHERE {w} AND i.name != '' ORDER BY q.quote_date, q.id, i.seq", params)]
+    for l in lines:
+        l["total"] = (l["supply"] or 0) + (l["vat"] or 0)
+    tot = {"qty": sum(l["qty"] or 0 for l in lines), "supply": sum(l["supply"] or 0 for l in lines),
+           "vat": sum(l["vat"] or 0 for l in lines), "total": sum(l["total"] for l in lines),
+           "docs": len({l["doc_id"] for l in lines}), "lines": len(lines)}
+    if group == "line":
+        rows = lines
+        cols = [("quote_date", "일자"), ("quote_no", "번호"), ("customer_name", "거래처"), ("name", "품목"), ("spec", "규격"),
+                ("qty", "수량"), ("unit", "단위"), ("unit_price", "단가"), ("supply", "공급가액"), ("vat", "부가세"),
+                ("total", "합계"), ("creator", "담당자")]
+    else:
+        keyf = {"date": lambda l: (l["quote_date"],), "month": lambda l: (l["quote_date"][:7],),
+                "customer": lambda l: (l["customer_name"],), "item": lambda l: (item_base(l["name"]),),
+                "customer_item": lambda l: (l["customer_name"], item_base(l["name"])),
+                "creator": lambda l: (l["creator"],)}[group]
+        heads = {"date": ["일자"], "month": ["월"], "customer": ["거래처"], "item": ["품목"],
+                 "customer_item": ["거래처", "품목"], "creator": ["담당자"]}[group]
+        agg = {}
+        for l in lines:
+            k = keyf(l)
+            a = agg.setdefault(k, {"docs": set(), "qty": 0, "units": set(), "supply": 0, "vat": 0, "total": 0, "last": ""})
+            a["docs"].add(l["doc_id"])
+            a["qty"] += l["qty"] or 0
+            a["units"].add((l["unit"] or "").strip())
+            a["supply"] += l["supply"] or 0
+            a["vat"] += l["vat"] or 0
+            a["total"] += l["total"]
+            a["last"] = max(a["last"], l["quote_date"])
+        rows = []
+        for k, a in agg.items():
+            r = {f"k{n}": v for n, v in enumerate(k)}
+            units = {u for u in a["units"] if u}
+            r.update(docs=len(a["docs"]), qty=a["qty"], unit=units.pop() if len(units) == 1 else "",
+                     supply=a["supply"], vat=a["vat"], total=a["total"], last=a["last"],
+                     avg_price=(a["supply"] / a["qty"]) if a["qty"] else 0)
+            rows.append(r)
+        rows.sort(key=lambda r: tuple(r[f"k{n}"] for n in range(len(heads))) if group in ("date", "month")
+                  else (-r["total"],))
+        cols = [(f"k{n}", h) for n, h in enumerate(heads)] + [
+            ("docs", "건수"), ("qty", "수량"), ("unit", "단위"), ("avg_price", "평균단가"), ("supply", "공급가액"),
+            ("vat", "부가세"), ("total", "합계")] + ([("last", "마지막 거래")] if group not in ("date", "month") else [])
+    if format == "csv":
+        import csv
+        import io
+        buf = io.StringIO()
+        wr = csv.writer(buf)
+        wr.writerow([h for _, h in cols])
+        for r in rows:
+            wr.writerow([round(r[k]) if isinstance(r[k], float) and k not in ("qty",) else r[k] for k, _ in cols])
+        wr.writerow(["합계"] + [round(tot[k]) if k in ("supply", "vat", "total") else tot[k] if k in ("qty", "docs") else ""
+                               for k, _ in cols[1:]])
+        label = ("판매현황" if doc_type == "statement" else "견적서현황") + f"_{REPORT_GROUPS[group]}_{date_from or '처음'}~{date_to or '끝'}.csv"
+        return Response(content=("\ufeff" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(label)})
+    return {"group": group, "groups": REPORT_GROUPS, "cols": [{"key": k, "label": h} for k, h in cols],
+            "rows": rows[:3000], "total": tot, "truncated": len(rows) > 3000}
 
 
 @app.get("/api/quotes/suggest")
