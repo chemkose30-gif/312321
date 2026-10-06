@@ -2044,6 +2044,13 @@ async function renderShipments() {
   const q = new URLSearchParams({view});
   if (state.shSearch) q.set('q', state.shSearch);
   const list = await api('/api/shipments?' + q);
+  // 진행중 목록 구역: B/L 확인된 화물(UNI-PASS) → 그 밖 → UNI-PASS 에 아직 없는 특송
+  const grp = sh => sh.cs_cargo_no ? 0 : (sh.note || '').startsWith('[특송]') ? 2 : 1;
+  const GRP = ['🛃 B/L 확인된 화물 (UNI-PASS 에 나온 순서)', '📋 진행 중 (반입 → 선적 → 발주)', '✈️ 특송 — UNI-PASS 에 아직 안 나옴'];
+  const head = (sh, i, colspan) => view === 'open' && (i === 0 || grp(list[i - 1]) !== grp(sh))
+    ? (colspan ? `<tr style="cursor:default"><td colspan="${colspan}" style="background:var(--bg);font-weight:700;font-size:12px">${GRP[grp(sh)]} <span class="muted">${list.filter(x => grp(x) === grp(sh)).length}건</span></td></tr>`
+      : `<div class="dept-head" style="padding:10px 0 2px">${GRP[grp(sh)]} (${list.filter(x => grp(x) === grp(sh)).length})</div>`) : '';
+  const blTime = sh => sh.bl_found_at ? `<small class="muted" title="UNI-PASS 에 처음 나온 때">B/L ${esc(sh.bl_found_at.slice(5, 10).replace('-', '/'))}</small>` : '';
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🚢 입고 예정</h3><span class="spacer"></span>
       ${state.me.role === 'admin' ? '<button class="btn" id="shInb">📋 인바운딩 올리기</button><button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
@@ -2053,14 +2060,14 @@ async function renderShipments() {
     <div class="row" style="margin-bottom:8px;gap:6px"><input id="shBl" placeholder="B/L·항공 운송장 번호로 바로 등록 (UNI-PASS 조회)" style="max-width:340px"><button class="btn" id="shBlGo">🛃 조회해서 등록</button></div>
     <div id="shWatch"></div><div id="shInbMeta" class="muted" style="font-size:12px;margin-bottom:6px"></div>
     <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B/L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
-    ${list.length ? `<div class="mlist">${list.map(sh => `<div class="mrow" data-ship="${sh.id}">
+    ${list.length ? `<div class="mlist">${list.map((sh, i) => `${head(sh, i)}<div class="mrow" data-ship="${sh.id}">
         <div class="l1">${shTag(sh.status)}<b>${sh.src_key ? '📋 ' : ''}${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
         ${csTag(sh) ? `<div class="l2">${csTag(sh)}</div>` : ''}
         <div class="l2"><span>${esc(sh.eta)}</span>${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}<span>${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''}</span>${sh.bl_no ? `<span>B/L ${esc(sh.bl_no)}</span>` : ''}</div></div>`).join('')}</div>
       <div class="qscroll dtable"><table><thead><tr><th>예상 입고일</th><th>품목</th><th class="hide-m">구매처</th><th class="hide-m">판매처</th><th style="text-align:right">수량</th><th>상태</th><th class="hide-m">M B/L / H B/L · 창고</th></tr></thead><tbody>
-      ${list.map(sh => `<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}</td>
+      ${list.map((sh, i) => `${head(sh, i, 7)}<tr data-ship="${sh.id}"><td>${esc(sh.eta)} ${dday(sh.eta, sh.cs_cleared_at ? 'arrived' : sh.status)}</td>
         <td class="title">${sh.src_key ? '<span title="인바운딩 엑셀에서 자동 등록">📋</span> ' : ''}${(sh.note || '').startsWith('[특송]') ? '<span title="특송(DHL·FedEx·UPS 등) 메일에서 자동 등록">✈️</span> ' : ''}${esc(sh.item)} <small class="muted">${esc(sh.spec)}</small></td><td class="hide-m">${esc(sh.supplier)}</td><td class="hide-m">${esc(sh.customer)}</td>
-        <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
+        <td class="money">${fmtQty(sh.qty)} ${esc(sh.unit)}</td><td>${shTag(sh.status)} ${csTag(sh)} ${view === 'open' ? blTime(sh) : ''}</td><td class="hide-m"><small>${esc([sh.bl_no, sh.hbl_no].filter(Boolean).join(' / '))}${sh.warehouse ? ' · ' + esc(sh.warehouse) : ''}</small></td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">등록된 입고 예정이 없습니다.</div>'}
   </div>`;
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.v === view); b.onclick = () => { state.shView = b.dataset.v; renderShipments(); }; });

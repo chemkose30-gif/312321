@@ -57,6 +57,12 @@ async def lifespan(_app):
                         t += ",freight"
                     c.execute("UPDATE users SET mail_topics = ? WHERE id = ?", (t, u["id"]))
                 set_setting(c, "mail_topics_v", "4")
+            for r in c.execute("SELECT id, cs_events, cs_checked_at FROM shipments WHERE cs_cargo_no != '' AND bl_found_at = ''").fetchall():
+                try:
+                    ats = [e["at"] for e in json.loads(r["cs_events"] or "[]") if e.get("at")]
+                except ValueError:
+                    ats = []
+                c.execute("UPDATE shipments SET bl_found_at = ? WHERE id = ?", (min(ats) if ats else (r["cs_checked_at"] or "")[:16], r["id"]))
             if get_setting(c, "clear_fix_v", "") != "1":     # 인바운딩 Clear 날짜가 있던 기존 건 → 통관완료
                 for r in c.execute("SELECT id, note FROM shipments WHERE src_key != '' AND cs_cleared_at = ''"
                                    " AND status != 'arrived'").fetchall():
@@ -439,6 +445,7 @@ def init_db():
                                 ("shipments", "cs_checked_at", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "bl_found_at", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
@@ -3038,8 +3045,12 @@ def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current
         where.append("(s.item LIKE ? OR s.supplier LIKE ? OR s.customer LIKE ? OR s.bl_no LIKE ? OR s.hbl_no LIKE ?)")
         params += [f"%{q}%"] * 5
     order = "s.eta DESC, s.id DESC" if view in ("arrived", "cleared") else "s.eta, s.id"
-    if view == "open":      # 진행중: 반입 → 입항·통관 중 → 선적 → 발주, 같은 단계 안에서는 예정일 순
-        order = ("CASE WHEN s.cs_in_at != '' THEN 0 WHEN s.cs_arrived != '' OR s.status = 'customs' THEN 1"
+    if view == "open":
+        # 진행중: ① UNI-PASS 에서 B/L 이 확인된 화물(B/L 나온 순) ② 그 밖(반입 → 입항·통관 중 → 선적 → 발주, 예정일 순)
+        #        ③ 맨 아래: UNI-PASS 에서 아직 안 나온 특송 화물
+        order = ("CASE WHEN s.cs_cargo_no != '' THEN 0 WHEN s.note LIKE '[특송]%' THEN 2 ELSE 1 END,"
+                 " CASE WHEN s.cs_cargo_no != '' THEN s.bl_found_at ELSE '' END,"
+                 " CASE WHEN s.cs_in_at != '' THEN 0 WHEN s.cs_arrived != '' OR s.status = 'customs' THEN 1"
                  " WHEN s.status = 'shipped' THEN 2 ELSE 3 END,"
                  " CASE WHEN s.cs_in_at != '' THEN s.cs_in_at ELSE s.eta END, s.id")
     with db() as c:
@@ -3336,10 +3347,11 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
                        (w[2] or "kg").lower() if w else "kg", sid))
         c.execute("UPDATE shipments SET cs_cargo_no = ?, cs_status = ?, cs_arrived = ?, cs_in_at = ?, cs_shed = ?,"
                   " cs_cleared_at = CASE WHEN ? != '' THEN ? ELSE cs_cleared_at END, cs_out_at = ?, cs_events = ?,"
-                  " cs_checked_at = ?, cs_error = '', status = ?, updated_at = ? WHERE id = ?",
+                  " cs_checked_at = ?, cs_error = '', status = ?, updated_at = ?,"
+                  " bl_found_at = CASE WHEN bl_found_at = '' THEN ? ELSE bl_found_at END WHERE id = ?",
                   (r["cargo_no"], " · ".join(x for x in (r["status"], r["clearance"]) if x), r["arrived"], r["in_at"],
                    r["shed"], r["cleared_at"], r["cleared_at"], r["out_at"], json.dumps(r["events"], ensure_ascii=False), now(), status,
-                   now(), sid))
+                   now(), min([e["at"] for e in r["events"] if e.get("at")] or [now()[:16]]), sid))
         if not quiet:
             for col, label in CS_MILESTONES:
                 if new[col] and not sh[col]:
