@@ -457,7 +457,12 @@ def init_db():
                                 ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "bl_found_at", "TEXT NOT NULL DEFAULT ''"),
-                                ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")):
+                                ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")) + tuple(
+                ("ecount_customers", k, "TEXT NOT NULL DEFAULT ''") for k in CUST_FIELDS if k != "memo") + tuple(
+                ("ecount_products", k, "TEXT NOT NULL DEFAULT ''") for k in PROD_TEXT_FIELDS if k not in ("spec", "unit")) + (
+                ("ecount_products", "buy_price", "REAL NOT NULL DEFAULT 0"),
+                ("ecount_products", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+                ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
@@ -1518,23 +1523,65 @@ def ecount_sync_products(user: dict = Depends(admin_user)):
     except ecount.EcountError as e:
         raise HTTPException(400, str(e))
     with db() as c:
-        replace_master(c, "products", rows)
+        replace_master(c, "products", rows, merge=True)
         set_setting(c, "ecount_last_sync", now())
     return {"ok": True, "count": len(rows)}
 
 
-def replace_master(c, kind: str, rows: list):
-    c.execute(f"DELETE FROM ecount_{kind}")
+# 거래처·품목 기초정보 (이카운트 없이도 TeamHub 안에서 관리)
+CUST_FIELDS = ("biz_no", "ceo", "biz_type", "biz_item", "address", "phone", "mobile", "fax", "email", "contact",
+               "pay_term", "memo")
+PROD_TEXT_FIELDS = ("spec", "unit", "cas_no", "origin", "category", "maker", "memo")
+# 엑셀 머리글(띄어쓰기 뺀 것)에 이 말이 들어 있으면 그 칸으로 봄 — 앞에 있는 말이 먼저
+CUST_HEADERS = {
+    "biz_no": ("사업자등록번호", "사업자번호", "등록번호"), "ceo": ("대표자", "대표"),
+    "biz_type": ("업태",), "biz_item": ("종목",), "address": ("주소",),
+    "phone": ("전화", "연락처", "tel"), "mobile": ("모바일", "핸드폰", "휴대폰", "휴대전화"),
+    "fax": ("팩스", "fax"), "email": ("이메일", "email", "e-mail", "메일"), "contact": ("담당자",),
+    "pay_term": ("결제조건", "결제방법", "결제"), "memo": ("비고", "적요", "메모"),
+}
+PROD_HEADERS = {
+    "spec": ("규격",), "unit": ("단위",), "cas_no": ("cas",), "origin": ("원산지", "origin", "제조국"),
+    "category": ("품목구분", "품목그룹", "구분", "분류"), "maker": ("제조사", "메이커", "maker", "브랜드"),
+    "memo": ("비고", "적요", "메모"),
+    "price": ("출고단가", "판매단가", "단가"), "buy_price": ("입고단가", "구매단가", "매입단가"),
+}
+
+
+def _master_cols(kind: str) -> tuple:
     if kind == "products":
-        c.executemany("INSERT OR REPLACE INTO ecount_products (code, name, spec, unit, price) VALUES (?, ?, ?, ?, ?)",
-                      [(r["code"], r.get("name", ""), r.get("spec", ""), r.get("unit", ""), r.get("price") or 0)
-                       for r in rows])
-    elif kind == "customers":
-        c.executemany("INSERT OR REPLACE INTO ecount_customers (code, name, memo) VALUES (?, ?, ?)",
-                      [(r["code"], r.get("name", ""), r.get("memo", "")) for r in rows])
-    else:
-        c.executemany(f"INSERT OR REPLACE INTO ecount_{kind} (code, name) VALUES (?, ?)",
-                      [(r["code"], r.get("name", "")) for r in rows])
+        return ("code", "name") + PROD_TEXT_FIELDS + ("price", "buy_price")
+    if kind == "customers":
+        return ("code", "name") + CUST_FIELDS
+    return ("code", "name")
+
+
+def replace_master(c, kind: str, rows: list, merge: bool = False):
+    """merge=False: 목록을 통째로 바꿈 / True: 같은 코드는 새 값이 있는 칸만 덮어쓰고 나머지는 그대로 둠."""
+    cols = _master_cols(kind)
+    if not merge:
+        c.execute(f"DELETE FROM ecount_{kind}")
+    for r in rows:
+        vals = {k: r.get(k) for k in cols if k in r}
+        vals["code"] = r["code"]
+        if "price" in cols:
+            vals.update({k: float(vals.get(k) or 0) for k in ("price", "buy_price") if k in vals})
+        old = c.execute(f"SELECT * FROM ecount_{kind} WHERE code = ?", (r["code"],)).fetchone() if merge else None
+        if old:
+            vals = {k: v for k, v in vals.items() if v not in ("", None, 0, 0.0) or k == "code"}
+            sets = ", ".join(f"{k} = ?" for k in vals if k != "code")
+            if sets:
+                extra = ", updated_at = ?" if kind != "warehouses" else ""
+                c.execute(f"UPDATE ecount_{kind} SET {sets}{extra} WHERE code = ?",
+                          [v for k, v in vals.items() if k != "code"] + ([now()] if extra else []) + [r["code"]])
+            continue
+        for k in cols:
+            vals.setdefault(k, 0 if k in ("price", "buy_price") else "")
+        if kind != "warehouses":
+            vals["updated_at"] = now()
+        keys = list(vals)
+        c.execute(f"INSERT OR REPLACE INTO ecount_{kind} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                  [vals[k] if vals[k] is not None else "" for k in keys])
 
 
 def parse_sheet(filename: str, data: bytes) -> list:
@@ -1654,39 +1701,62 @@ def read_xlsx_values(data: bytes, sheet=None) -> list:
     return rows
 
 
+BIZ_NO_RE = re.compile(r"^\d{3}-?\d{2}-?\d{5}$")
+
+
 def rows_to_master(kind: str, rows: list) -> list:
-    """이카운트에서 내려받은 목록의 머리글(…코드, …명, 규격, 단위, 단가)을 찾아 변환."""
+    """이카운트(또는 다른 프로그램)에서 내려받은 목록의 머리글을 찾아 변환.
+    거래처: 코드·이름 + 사업자번호·대표자·업태·종목·주소·전화·팩스·이메일·담당자 등
+    품목: 코드·이름 + 규격·단위·출고/입고단가·CAS·원산지 등 — 머리글에 있는 것만 가져옴."""
+    main = {"customers": ("거래처명", "상호", "회사명"), "products": ("품목명", "품명", "제품명")}.get(kind, ())
+    main_code = {"customers": ("거래처코드",), "products": ("품목코드", "제품코드")}.get(kind, ())
     for hi, header in enumerate(rows[:15]):
-        cells = [str(h).replace(" ", "") for h in header]
-        code_i = next((i for i, h in enumerate(cells) if h.endswith("코드")), None)
-        name_i = next((i for i, h in enumerate(cells) if h.endswith("명") and "코드" not in h), None)
+        cells = [str(h or "").replace(" ", "").replace("\n", "").lower() for h in header]
+        pick = lambda keys: next((i for k in keys for i, h in enumerate(cells) if h.startswith(k.lower())), None)
+        code_i = pick(main_code) if main_code else None
+        if code_i is None:
+            code_i = next((i for i, h in enumerate(cells) if h.endswith("코드")), None)
+        name_i = pick(main) if main else None
+        if name_i is None:
+            name_i = next((i for i, h in enumerate(cells) if h.endswith("명") and "코드" not in h and "대표" not in h), None)
         if code_i is None or name_i is None:
             continue
-        find = lambda *keys: next((i for i, h in enumerate(cells) if any(k in h for k in keys)), None)
-        spec_i, unit_i, price_i = find("규격"), find("단위"), find("출고단가", "판매단가", "단가")
-        memo_i = find("주소", "비고", "적요")
+        used = {code_i, name_i}
+        cols = {}
+        for key, words in (CUST_HEADERS if kind == "customers" else PROD_HEADERS if kind == "products" else {}).items():
+            i = next((i for w in words for i, h in enumerate(cells) if w.lower() in h and i not in used), None)
+            if i is not None:
+                cols[key] = i
+                used.add(i)
+        # 주소가 주소1·주소2 로 나뉜 경우 이어 붙임
+        addr2 = [i for i, h in enumerate(cells) if h.startswith("주소") and i not in used] if kind == "customers" else []
         out = []
         for r in rows[hi + 1:]:
             get = lambda i: (str(r[i]).strip() if i is not None and i < len(r) and r[i] is not None else "")
             code = get(code_i)
-            if not code:
+            if not code or code in ("합계", "총계"):
                 continue
             item = {"code": code, "name": get(name_i)}
-            if kind == "customers":
-                item["memo"] = get(memo_i)
+            for key, i in cols.items():
+                item[key] = get(i)
+            if addr2 and item.get("address") is not None:
+                item["address"] = " ".join([item["address"]] + [get(i) for i in addr2 if get(i)]).strip()
+            if kind == "customers" and not item.get("biz_no") and BIZ_NO_RE.match(code):
+                d = code.replace("-", "")
+                item["biz_no"] = f"{d[:3]}-{d[3:5]}-{d[5:]}"
             if kind == "products":
-                try:
-                    price = float(get(price_i).replace(",", "") or 0)
-                except ValueError:
-                    price = 0
-                item.update(spec=get(spec_i), unit=get(unit_i), price=price)
+                for k in ("price", "buy_price"):
+                    try:
+                        item[k] = float((item.get(k) or "0").replace(",", "") or 0)
+                    except ValueError:
+                        item[k] = 0
             out.append(item)
         return out
     raise HTTPException(400, "머리글에서 '○○코드'와 '○○명' 열을 찾지 못했습니다. 이카운트에서 내려받은 목록 그대로 올려주세요.")
 
 
 @app.post("/api/ecount/upload/{kind}")
-async def ecount_upload(kind: str, file: UploadFile = File(...), _: dict = Depends(admin_user)):
+async def ecount_upload(kind: str, file: UploadFile = File(...), replace: int = 0, _: dict = Depends(admin_user)):
     if kind not in ("products", "customers", "warehouses"):
         raise HTTPException(404, "잘못된 종류입니다.")
     data = await file.read()
@@ -1694,8 +1764,122 @@ async def ecount_upload(kind: str, file: UploadFile = File(...), _: dict = Depen
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
     items = rows_to_master(kind, parse_sheet(file.filename or "", data))
     with db() as c:
-        replace_master(c, kind, items)
-    return {"ok": True, "count": len(items)}
+        before = {r["code"] for r in c.execute(f"SELECT code FROM ecount_{kind}")}
+        # 거래처·품목은 기본적으로 합치기 (TeamHub 에서 직접 넣은 것·고친 것 유지), 창고는 통째로 바꿈
+        replace_master(c, kind, items, merge=kind != "warehouses" and not replace)
+    new = len({i["code"] for i in items} - before)
+    fields = sorted({k for i in items for k, v in i.items() if v not in ("", 0, None)} - {"code", "name"})
+    return {"ok": True, "count": len(items), "added": new, "updated": len(items) - new, "fields": fields}
+
+
+class MasterIn(BaseModel):
+    code: str = ""
+    name: str
+    data: dict = {}
+
+
+def _next_code(c, kind: str) -> str:
+    pre = "C" if kind == "customers" else "P"
+    n = 0
+    for (code,) in c.execute(f"SELECT code FROM ecount_{kind} WHERE code GLOB '{pre}[0-9]*'"):
+        if code[1:].isdigit():
+            n = max(n, int(code[1:]))
+    return f"{pre}{n + 1:05d}"
+
+
+def _master_kind(kind: str) -> str:
+    if kind not in ("customers", "products"):
+        raise HTTPException(404, "잘못된 종류입니다.")
+    return kind
+
+
+@app.post("/api/master/{kind}")
+def master_save(kind: str, body: MasterIn, old: str = "", user: dict = Depends(current_user)):
+    """거래처·품목 직접 등록/수정. old=기존 코드(코드 바꿀 때)."""
+    kind = _master_kind(kind)
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "이름을 입력하세요.")
+    cols = _master_cols(kind)
+    with db() as c:
+        code = body.code.strip() or old or _next_code(c, kind)
+        if code != old and c.execute(f"SELECT 1 FROM ecount_{kind} WHERE code = ?", (code,)).fetchone():
+            raise HTTPException(400, f"코드 {code} 는 이미 있습니다.")
+        row = {"code": code, "name": name}
+        for k in cols[2:]:
+            v = body.data.get(k, "")
+            if k in ("price", "buy_price"):
+                try:
+                    v = float(str(v or 0).replace(",", ""))
+                except ValueError:
+                    v = 0
+            row[k] = v if isinstance(v, float) else str(v or "").strip()
+        if old and old != code:
+            c.execute(f"DELETE FROM ecount_{kind} WHERE code = ?", (old,))
+            if kind == "customers":
+                c.execute("UPDATE quotes SET cust_cd = ? WHERE cust_cd = ?", (code, old))
+            else:
+                c.execute("UPDATE quote_items SET prod_cd = ? WHERE prod_cd = ?", (code, old))
+        keys = list(row) + ["updated_at"]
+        c.execute(f"INSERT OR REPLACE INTO ecount_{kind} ({', '.join(keys)}) VALUES ({', '.join('?' * len(keys))})",
+                  [row[k] for k in row] + [now()])
+    return {"ok": True, "code": code}
+
+
+@app.delete("/api/master/{kind}/{code}")
+def master_delete(kind: str, code: str, _: dict = Depends(admin_user)):
+    kind = _master_kind(kind)
+    with db() as c:
+        c.execute(f"DELETE FROM ecount_{kind} WHERE code = ?", (code,))
+    return {"ok": True}
+
+
+@app.post("/api/master/{kind}/from-docs")
+def master_from_docs(kind: str, _: dict = Depends(admin_user)):
+    """지금까지 만든 견적서·거래명세서에 나온 거래처/품목 중 목록에 없는 것을 새로 등록하고,
+    목록에 있는 것은 빈 칸(사업자번호·주소·CAS 등)만 채움."""
+    kind = _master_kind(kind)
+    added = filled = 0
+    with db() as c:
+        key = (lambda d: _norm_company(d["name"])) if kind == "customers" else \
+            (lambda d: _norm_company(d["name"]) + "|" + _norm_company(d.get("spec", "")))
+        have = {}
+        for r in c.execute(f"SELECT * FROM ecount_{kind}"):
+            have.setdefault(key(dict(r)), dict(r))
+        if kind == "customers":
+            src = c.execute(
+                "SELECT customer_name AS name, cust_cd AS hint, customer_contact AS contact, customer_phone AS phone,"
+                " customer_email AS email, customer_biz_no AS biz_no, customer_ceo AS ceo, customer_address AS address,"
+                " customer_fax AS fax FROM quotes WHERE id IN (SELECT MAX(id) FROM quotes"
+                " WHERE TRIM(customer_name) != '' GROUP BY TRIM(customer_name))").fetchall()
+        else:
+            src = c.execute(
+                "SELECT name, prod_cd AS hint, spec, unit, unit_price AS price, cas_no, origin FROM quote_items"
+                " WHERE id IN (SELECT MAX(id) FROM quote_items WHERE TRIM(name) != '' GROUP BY TRIM(name), TRIM(spec))"
+            ).fetchall()
+        for r in src:
+            r = dict(r)
+            hint = r.pop("hint") or ""
+            r["name"] = r["name"].strip()
+            cur = have.get(key(r))
+            if not cur and hint:
+                row = c.execute(f"SELECT * FROM ecount_{kind} WHERE code = ?", (hint,)).fetchone()
+                cur = dict(row) if row else None
+            vals = {k: v for k, v in r.items() if k != "name" and v not in ("", None, 0, 0.0)}
+            if cur:
+                blanks = {k: v for k, v in vals.items() if not cur.get(k)}
+                if blanks:
+                    replace_master(c, kind, [{"code": cur["code"], **blanks}], merge=True)
+                    cur.update(blanks)
+                    filled += 1
+                continue
+            code = hint if hint and not c.execute(f"SELECT 1 FROM ecount_{kind} WHERE code = ?", (hint,)).fetchone() \
+                else _next_code(c, kind)
+            row = {"code": code, "name": r["name"], **vals}
+            replace_master(c, kind, [row], merge=True)
+            have[key(r)] = row
+            added += 1
+    return {"ok": True, "added": added, "filled": filled}
 
 
 class WarehouseIn(BaseModel):
@@ -1734,8 +1918,8 @@ def ecount_master(user: dict = Depends(current_user)):
         return {
             "enabled": bool(cfg["com_code"] and cfg["user_id"] and cfg["api_key"]),
             "mode": "test" if cfg["is_test"] in ("1", "true") else "live",
-            "products": [dict(r) for r in c.execute("SELECT code, name, spec, unit, price FROM ecount_products ORDER BY name")],
-            "customers": [dict(r) for r in c.execute("SELECT code, name, memo FROM ecount_customers ORDER BY name")],
+            "products": [dict(r) for r in c.execute(f"SELECT {', '.join(_master_cols('products'))} FROM ecount_products ORDER BY name")],
+            "customers": [dict(r) for r in c.execute(f"SELECT {', '.join(_master_cols('customers'))} FROM ecount_customers ORDER BY name")],
             "warehouses": [dict(r) for r in c.execute("SELECT code, name FROM ecount_warehouses ORDER BY code")],
             "default_wh": default_wh(c),
         }

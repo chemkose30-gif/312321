@@ -268,6 +268,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
       <button data-view="analytics">📊 매출분석</button>
       <button data-view="profit" class="profit-only">💰 이익분석</button>
       <button data-view="collect" class="profit-only">💳 입금</button>
+      <button data-view="master">🗂 거래처·품목</button>
       <button data-view="users" class="admin-only">👥 직원관리</button>
     </nav>
     <div class="hdr-right">
@@ -412,7 +413,7 @@ function go(view) {
   if (view === 'profit' && !state.me.can_profit) view = 'dashboard';
   state.view = view;
   $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, mailin: renderMailin, analytics: renderAnalytics, inventory: renderInventory, profit: renderProfit, collect: renderCollections, users: renderUsers})[view]();
+  ({dashboard: renderDashboard, calendar: renderCalendar, tasks: renderTasks, quotes: renderQuotes, statements: renderQuotes, shipments: renderShipments, mailin: renderMailin, analytics: renderAnalytics, inventory: renderInventory, profit: renderProfit, collect: renderCollections, master: renderMaster, users: renderUsers})[view]();
 }
 
 $('#userBtn').onclick = e => { e.stopPropagation(); $('#notifPanel').classList.add('hidden'); $('#userMenu').classList.toggle('hidden'); };
@@ -1648,7 +1649,7 @@ async function openQuoteForm(quote, task, template, docType) {
     ${linkedTask ? `<div class="muted">📋 연결된 업무: ${esc(task?.title || '#' + linkedTask.id)}</div>` : ''}
     <form autocomplete="off">
       <div class="grid2">
-        <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(이카운트 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
+        <div><label>거래처명 * ${ec.customers.length ? '<small class="muted">(등록 거래처 검색)</small>' : ''}</label><input name="customer_name" ${ec.customers.length ? '' : 'list="custList"'} value="${esc(q.customer_name)}" required>
           <input type="hidden" name="cust_cd" value="${esc(q.cust_cd || '')}">${ec.enabled ? '<div id="custChip"></div>' : ''}</div>
         <div><label>건명</label><input name="title" value="${esc(q.title)}" placeholder="${isSt ? '예: 10월 사무용품 납품' : '예: 사무용품 납품 견적'}"></div>
         <div><label>거래처 담당자</label><input name="customer_contact" value="${esc(q.customer_contact)}"></div>
@@ -1718,13 +1719,15 @@ async function openQuoteForm(quote, task, template, docType) {
       tbody.addEventListener('focusin', e => {
         if (e.target.name !== 'name' || e.target.dataset.sb) return;
         e.target.dataset.sb = 1;
-        attachSearch(e.target, v => searchList(ec.products, v, p => [p.code, p.name, p.spec]), p =>
-          `<b>${esc(p.name)}</b> <small>${esc(p.spec)}</small><br><small>${esc(p.code)}${p.unit ? ' · ' + esc(p.unit) : ''}${p.price ? ' · ' + won(p.price) + '원' : ''}</small>`,
+        attachSearch(e.target, v => searchList(ec.products, v, p => [p.code, p.name, p.spec, p.cas_no]), p =>
+          `<b>${esc(p.name)}</b> <small>${esc(p.spec)}</small><br><small>${esc(p.code)}${p.cas_no ? ' · CAS ' + esc(p.cas_no) : ''}${p.unit ? ' · ' + esc(p.unit) : ''}${p.price ? ' · ' + won(p.price) + '원' : ''}</small>`,
           p => {
             const tr = e.target.closest('tr');
             e.target.value = p.name; $('[name=prod_cd]', tr).value = p.code; $('.pc', tr).innerHTML = prodCode(p.code);
             $('[name=spec]', tr).value = p.spec; if (p.unit) $('[name=unit]', tr).value = p.unit;
             if (p.price && !numVal($('[name=price]', tr).value)) $('[name=price]', tr).value = won(p.price);
+            if (p.cas_no) $('[name=cas_no]', tr).value = p.cas_no;
+            if (p.origin && !$('[name=origin]', tr).value) $('[name=origin]', tr).value = p.origin;
             if (!$('[name=qty]', tr).value) $('[name=qty]', tr).value = 1;
             recalc(); $('[name=qty]', tr).focus(); $('[name=qty]', tr).select();
           });
@@ -1737,12 +1740,16 @@ async function openQuoteForm(quote, task, template, docType) {
     });
     if (ec.customers.length) {
       const pickCust = c => {
-        f.customer_name.value = c.name; f.cust_cd.value = c.code; f.customer_name.dispatchEvent(new Event('change'));
-        if (f.customer_address && !f.customer_address.value && c.memo) f.customer_address.value = c.memo;
+        f.customer_name.value = c.name; f.cust_cd.value = c.code;
+        // 등록된 거래처 정보 → 빈 칸 채움 (그 다음 이전 문서 값으로 나머지 채움)
+        [['customer_contact', c.contact], ['customer_phone', c.phone || c.mobile], ['customer_email', c.email], ['customer_biz_no', c.biz_no],
+         ['customer_ceo', c.ceo], ['customer_address', c.address || c.memo], ['customer_fax', c.fax], ['payment_terms', c.pay_term]]
+          .forEach(([k, val]) => { if (f[k] && !f[k].value && val) f[k].value = val; });
+        f.customer_name.dispatchEvent(new Event('change'));
         drawCustChip();
       };
-      const custHtml = c => `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>${c.memo ? `<br><small>${esc(c.memo)}</small>` : ''}`;
-      attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name, c.memo]), custHtml, pickCust);
+      const custHtml = c => { const sub = [c.biz_no, c.ceo, c.contact, c.address || c.memo].filter(Boolean).join(' · '); return `<b>${esc(c.name)}</b> <small>${esc(c.code)}</small>${sub ? `<br><small>${esc(sub)}</small>` : ''}`; };
+      attachSearch(f.customer_name, v => searchList(ec.customers, v, c => [c.code, c.name, c.biz_no, c.contact, c.memo]), custHtml, pickCust);
       // 직접 입력한 이름이 이카운트 거래처 하나와 정확히 같으면 자동 연결
       f.customer_name.addEventListener('blur', () => setTimeout(() => {
         if (f.cust_cd.value) return;
@@ -3200,6 +3207,88 @@ async function openCompany() {
 }
 
 
+// ===================================================== 거래처·품목 (기초정보)
+const MF = {
+  customers: [['code', '거래처코드', '비우면 자동 (C00001…)'], ['name', '거래처명 *'], ['biz_no', '사업자번호', '000-00-00000'], ['ceo', '대표자'],
+    ['biz_type', '업태'], ['biz_item', '종목'], ['address', '주소', '', 1], ['contact', '담당자'], ['phone', '전화'], ['mobile', '휴대폰'],
+    ['fax', '팩스'], ['email', '이메일'], ['pay_term', '결제조건', '예: 익월 말 현금'], ['memo', '비고', '', 1]],
+  products: [['code', '품목코드', '비우면 자동 (P00001…)'], ['name', '품목명 *'], ['spec', '규격'], ['unit', '단위', 'kg / EA'],
+    ['cas_no', 'CAS no.'], ['origin', '원산지', 'CN'], ['price', '판매단가'], ['buy_price', '입고단가'],
+    ['category', '분류'], ['maker', '제조사'], ['memo', '비고', '', 1]],
+};
+async function renderMaster() {
+  const ms = state.ms ||= {kind: 'customers', q: ''};
+  const ec = await ecMaster(true), admin = state.me.role === 'admin';
+  const list = ec[ms.kind], isC = ms.kind === 'customers';
+  const words = ms.q.split(/\s+/).map(normText).filter(Boolean);
+  const hits = words.length ? list.filter(x => { const hay = normText(Object.values(x).join(' ')); return words.every(w => hay.includes(w)); }) : list;
+  const shown = hits.slice(0, 500);
+  $('#main').innerHTML = `<div class="card">
+    <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🗂 거래처·품목</h3>
+      <div class="row" style="gap:4px">${[['customers', '🏢 거래처'], ['products', '📦 품목']].map(([k, l]) => `<button class="btn sm ${ms.kind === k ? 'primary' : ''}" data-msk="${k}">${l} ${ec[k].length}</button>`).join('')}</div>
+      <span class="spacer"></span>
+      ${admin ? `<label class="btn" style="margin:0" title="이카운트 ${isC ? '거래처등록' : '품목등록'} 화면에서 [Excel] 로 내려받은 파일">📥 엑셀 가져오기<input type="file" accept=".xlsx,.xls,.csv" id="msUp" hidden></label>
+        <button class="btn" id="msDocs" title="지금까지 만든 견적서·거래명세서에서 ${isC ? '거래처' : '품목'}를 모아 등록">📄 문서에서 모으기</button>` : ''}
+      <button class="btn primary" id="msAdd">+ 새 ${isC ? '거래처' : '품목'}</button></div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">여기 등록한 ${isC ? '거래처는 견적서·거래명세서에서 이름 일부로 검색하면 <b>사업자번호·대표자·주소·담당자·연락처</b>가' : '품목은 견적서·거래명세서에서 이름·코드·CAS 일부로 검색하면 <b>규격·단위·단가·CAS·원산지</b>가'} 자동으로 채워집니다. 이카운트 연동 없이도 됩니다.</div>
+    <input id="msQ" placeholder="${isC ? '거래처명·코드·사업자번호·담당자·전화 검색' : '품목명·코드·규격·CAS 검색'}" value="${esc(ms.q)}" style="font-size:16px;padding:10px 12px;margin-bottom:8px">
+    <div class="muted" style="font-size:12px;margin-bottom:4px">${hits.length}건${hits.length > shown.length ? ` 중 ${shown.length}건 표시 — 검색어로 좁혀 보세요` : ''}</div>
+    <div class="qscroll" style="max-height:640px;overflow:auto"><table class="an-table"><thead><tr>${isC
+      ? '<th>코드</th><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>담당자</th><th>전화 / 이메일</th><th>주소</th>'
+      : '<th>코드</th><th>품목명</th><th>규격</th><th>단위</th><th>CAS</th><th>원산지</th><th class="num">판매단가</th><th class="num">입고단가</th>'}</tr></thead><tbody>
+      ${shown.map((x, i) => `<tr data-mi="${i}" style="cursor:pointer">${isC
+        ? `<td><small>${esc(x.code)}</small></td><td><b>${esc(x.name)}</b></td><td>${esc(x.biz_no)}</td><td>${esc(x.ceo)}</td><td>${esc(x.contact)}</td><td><small>${esc([x.phone || x.mobile, x.email].filter(Boolean).join(' · '))}</small></td><td><small>${esc(x.address)}</small></td>`
+        : `<td><small>${esc(x.code)}</small></td><td><b>${esc(x.name)}</b></td><td>${esc(x.spec)}</td><td>${esc(x.unit)}</td><td><small>${esc(x.cas_no)}</small></td><td>${esc(x.origin)}</td><td class="num">${x.price ? won(x.price) : ''}</td><td class="num">${x.buy_price ? won(x.buy_price) : ''}</td>`}</tr>`).join('')
+        || `<tr><td colspan="8" class="empty">${list.length ? '검색 결과가 없습니다.' : `아직 등록된 ${isC ? '거래처' : '품목'}가 없습니다. ${admin ? '📥 엑셀 가져오기나 📄 문서에서 모으기로 한 번에 넣을 수 있어요.' : ''}`}</td></tr>`}
+    </tbody></table></div></div>`;
+  $$('[data-msk]').forEach(b => b.onclick = () => { ms.kind = b.dataset.msk; ms.q = ''; renderMaster(); });
+  let timer;
+  $('#msQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { ms.q = e.target.value; renderMaster().then(() => { const i = $('#msQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 250); };
+  $$('[data-mi]').forEach(tr => tr.onclick = () => openMasterForm(ms.kind, shown[+tr.dataset.mi]));
+  $('#msAdd').onclick = () => openMasterForm(ms.kind, null);
+  const up = $('#msUp');
+  if (up) up.onchange = async () => {
+    const file = up.files[0]; if (!file) return;
+    const fd = new FormData(); fd.append('file', file);
+    try {
+      const res = await fetch(`/api/ecount/upload/${ms.kind}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const d = await res.json(); if (!res.ok) throw new Error(d.detail || '업로드 실패');
+      toast(`${d.count}건 — 새로 ${d.added}건, 갱신 ${d.updated}건`); renderMaster();
+    } catch (err) { alert(err.message); }
+  };
+  const docs = $('#msDocs');
+  if (docs) docs.onclick = async () => {
+    if (!confirm(`지금까지 만든 견적서·거래명세서에서 ${isC ? '거래처' : '품목'}를 모읍니다.\n목록에 없는 것은 새로 등록하고, 있는 것은 빈 칸만 채웁니다.`)) return;
+    const r = await api(`/api/master/${ms.kind}/from-docs`, {method: 'POST'});
+    toast(`새로 ${r.added}건 등록, ${r.filled}건 빈 칸 채움`); renderMaster();
+  };
+}
+
+function openMasterForm(kind, x) {
+  const isC = kind === 'customers', admin = state.me.role === 'admin', v = x || {};
+  openModal(`<h2>${x ? (isC ? '거래처' : '품목') + ' 수정' : '새 ' + (isC ? '거래처' : '품목')}</h2>
+    <form autocomplete="off"><div class="grid2">
+      ${MF[kind].map(([k, l, ph, wide]) => `<div ${wide ? 'style="grid-column:1/-1"' : ''}><label>${l}</label><input name="${k}" value="${esc(k.endsWith('price') ? (v[k] ? won(v[k]) : '') : v[k] || '')}" placeholder="${esc(ph || '')}" ${k === 'name' ? 'required' : ''} ${k.endsWith('price') ? 'inputmode="decimal"' : ''}></div>`).join('')}
+    </div><div class="err"></div>
+    <div class="actions">${x && admin ? '<button type="button" class="btn danger" id="mDel" style="margin-right:auto">삭제</button>' : ''}<button type="button" class="btn" data-close>취소</button><button class="btn primary">저장</button></div></form>`, (bg, close) => {
+    const f = $('form', bg);
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const data = Object.fromEntries($$('input', f).map(i => [i.name, i.name.endsWith('price') ? numVal(i.value) : i.value]));
+      try {
+        await api(`/api/master/${kind}${x ? '?old=' + encodeURIComponent(x.code) : ''}`, {method: 'POST', body: {code: data.code, name: data.name, data}});
+        close(); toast('저장했습니다.'); ecCache = null; if (state.view === 'master') renderMaster();
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    const del = $('#mDel', bg);
+    if (del) del.onclick = async () => {
+      if (!confirm(`${v.name} 을(를) 목록에서 지울까요? (이미 만든 문서는 그대로 남습니다)`)) return;
+      await api(`/api/master/${kind}/${encodeURIComponent(x.code)}`, {method: 'DELETE'});
+      close(); toast('삭제했습니다.'); ecCache = null; renderMaster();
+    };
+  });
+}
+
 // ===================================================== 이카운트 연동
 let ecCache = null;
 async function ecMaster(reload) {
@@ -3378,7 +3467,7 @@ async function openEcountSettings() {
         const res = await fetch(`/api/ecount/upload/${inp.dataset.up}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || '업로드 실패');
-        toast(`${data.count}건을 등록했습니다.`); close(); openEcountSettings();
+        toast(data.added != null ? `${data.count}건 — 새로 ${data.added}건, 갱신 ${data.updated}건` : `${data.count}건을 등록했습니다.`); close(); openEcountSettings();
       } catch (err) { $('#ecSetErr', bg).textContent = err.message; }
     });
     $('#whSave', bg).onclick = async () => {
