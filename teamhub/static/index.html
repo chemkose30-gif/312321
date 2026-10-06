@@ -971,9 +971,18 @@ async function renderDashboard() {
     </div>
     <div class="card" style="margin-top:16px">
       <div class="row"><h3>🚢 입고 예정</h3><span class="spacer"></span><button class="btn sm" id="dNewShip">+ 입고 예정</button><button class="btn sm" id="dAllShip">전체 보기</button></div>
-      ${shipBlock('📦 반입·입항 (통관 대기)', d.ships_port || [])}${shipBlock('⚠️ 입고일 지남', d.ships_late)}${shipBlock('오늘 입고', d.ships_today, '오늘 입고 예정이 없습니다.')}${shipBlock('이번 주 (7일 이내)', d.ships_week)}
+      ${(d.ships_cleared || []).length ? `<div class="dept-head" style="padding:10px 0 2px">✅ 통관 완료 — 창고 입고 대기 (${d.ships_cleared.length})</div>` + d.ships_cleared.map(sh => `<div class="list-item" data-ship="${sh.id}">
+          <div style="flex:1"><b>${esc(sh.item)}</b> <small class="muted">${esc(sh.spec)}</small> ${csTag(sh)}<br>
+          <small class="muted">${esc(sh.supplier)}${sh.customer ? ' → ' + esc(sh.customer) : ''} · ${fmtQty(sh.qty)} ${esc(sh.unit)}${sh.cs_shed ? ' · 📍 ' + esc(sh.cs_shed) : ''}${sh.bl_no || sh.hbl_no ? ' · B/L ' + esc(sh.bl_no || sh.hbl_no) : ''}</small></div>
+          <button class="btn sm" data-arrive="${sh.id}" title="창고에 들어왔으면 입고완료로">✔ 입고완료</button></div>`).join('')
+        : '<div class="muted" style="padding:8px 0">통관이 끝나 입고를 기다리는 화물이 없습니다.</div>'}
     </div>`;
   $$('[data-ship]').forEach(el => el.onclick = () => openShipment(+el.dataset.ship));
+  $$('[data-arrive]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    await api(`/api/shipments/${b.dataset.arrive}/status`, {method: 'PATCH', body: {status: 'arrived'}});
+    toast('입고완료 처리했습니다.'); renderDashboard();
+  });
   $$('[data-stmt]').forEach(el => el.onclick = e => {
     const done = e.target.closest('[data-ship-done]'), undo = e.target.closest('[data-ship-undo]');
     if (done || undo) {

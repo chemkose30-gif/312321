@@ -3809,6 +3809,10 @@ def dashboard(user: dict = Depends(current_user)):
                       if r["id"] not in port_ids]
         ships_late = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta < ? AND {open_} ORDER BY {rank}, eta",
                                            (today,)).fetchall() if r["id"] not in port_ids]
+        # 홈: 통관이 끝나 창고 입고만 남은 화물 (통관 끝난 순)
+        ships_cleared = c.execute(
+            "SELECT * FROM shipments WHERE status != 'arrived' AND (cs_cleared_at != '' OR cs_out_at != '')"
+            " ORDER BY CASE WHEN cs_cleared_at != '' THEN cs_cleared_at ELSE cs_out_at END, id").fetchall()
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
         stmts = c.execute(
@@ -3828,6 +3832,7 @@ def dashboard(user: dict = Depends(current_user)):
         "ships_week": [dict(r) for r in ships_week],
         "ships_late": [dict(r) for r in ships_late],
         "ships_port": [dict(r) for r in ships_port],
+        "ships_cleared": [dict(r) for r in ships_cleared],
         "today": today,
         "counts": {s: counts.get(s, 0) for s in STATUSES},
         "overdue": overdue,
