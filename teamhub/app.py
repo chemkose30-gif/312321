@@ -3032,11 +3032,23 @@ def ship_values(b: ShipmentIn):
     return [getattr(b, f).strip() if isinstance(getattr(b, f), str) else getattr(b, f) for f in SHIP_FIELDS]
 
 
+COURIER_STALE_DAYS = 20
+
+
+def stale_courier(a: str = "") -> str:
+    """메일로 등록된 특송인데 20일이 지나도 UNI-PASS 에 안 나온 것 = 출발하지 않은 것으로 봄 (목록·홈에서 숨김)"""
+    cutoff = (datetime.now() - timedelta(days=COURIER_STALE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    return f"({a}note LIKE '[특송]%' AND {a}cs_cargo_no = '' AND {a}created_at < '{cutoff}')"
+
+
 @app.get("/api/shipments")
 def list_shipments(view: str = "open", q: str = "", user: dict = Depends(current_user)):
     where, params = [], []
     if view == "open":
-        where.append("s.status != 'arrived' AND s.cs_cleared_at = '' AND s.cs_out_at = ''")   # 통관(수리)·반출 끝난 건은 따로
+        where.append("s.status != 'arrived' AND s.cs_cleared_at = '' AND s.cs_out_at = ''"   # 통관(수리)·반출 끝난 건은 따로
+                     f" AND NOT {stale_courier('s.')}")
+    elif view == "stale":
+        where.append(f"s.status != 'arrived' AND {stale_courier('s.')}")
     elif view == "cleared":
         where.append("s.status != 'arrived' AND (s.cs_cleared_at != '' OR s.cs_out_at != '')")
     elif view == "arrived":
@@ -3371,7 +3383,8 @@ def unipass_loop():
                     cutoff = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
                     ids = [r[0] for r in c.execute(
                         "SELECT id FROM shipments WHERE status != 'arrived' AND (bl_no != '' OR hbl_no != '')"
-                        " AND cs_out_at = '' AND cs_checked_at < ? ORDER BY eta LIMIT 100", (cutoff,))] if key else []
+                        f" AND cs_out_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 출발 안 한 특송은 그만 조회
+                        " ORDER BY eta LIMIT 100", (cutoff,))] if key else []
                 process_bl_watch()
                 for sid in ids:
                     try:
@@ -3782,12 +3795,13 @@ def dashboard(user: dict = Depends(current_user)):
         # 진행중 화면과 같은 순서: 반입 → 입항·통관 → 선적 → 발주
         rank = ("CASE WHEN cs_in_at != '' THEN 0 WHEN cs_arrived != '' OR status = 'customs' THEN 1"
                 " WHEN status = 'shipped' THEN 2 ELSE 3 END")
-        open_ = "status != 'arrived' AND cs_cleared_at = '' AND cs_out_at = ''"
+        open_ = f"status != 'arrived' AND cs_cleared_at = '' AND cs_out_at = '' AND NOT {stale_courier()}"
         ships_port = c.execute(f"SELECT * FROM shipments WHERE {open_} AND (cs_in_at != '' OR cs_arrived != ''"
                                " OR status = 'customs') ORDER BY " + rank + ", CASE WHEN cs_in_at != '' THEN cs_in_at"
                                " ELSE eta END, id").fetchall()
         port_ids = {r["id"] for r in ships_port}
         ships_today = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta = ? AND cs_cleared_at = '' AND cs_out_at = ''"
+                                            f" AND NOT {stale_courier()}"
                                             f" ORDER BY status = 'arrived', {rank}, id", (today,)).fetchall()
                        if r["id"] not in port_ids]
         ships_week = [r for r in c.execute(f"SELECT * FROM shipments WHERE eta > ? AND eta <= ? AND {open_}"

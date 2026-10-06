@@ -2046,7 +2046,7 @@ async function renderShipments() {
   const list = await api('/api/shipments?' + q);
   // 진행중 목록 구역: B/L 확인된 화물(UNI-PASS) → 그 밖 → UNI-PASS 에 아직 없는 특송
   const grp = sh => sh.cs_cargo_no ? 0 : (sh.note || '').startsWith('[특송]') ? 2 : 1;
-  const GRP = ['🛃 B/L 확인된 화물 (UNI-PASS 에 나온 순서)', '📋 진행 중 (반입 → 선적 → 발주)', '✈️ 특송 — UNI-PASS 에 아직 안 나옴'];
+  const GRP = ['🛃 B/L 확인된 화물 (UNI-PASS 에 나온 순서)', '📋 진행 중 (반입 → 선적 → 발주)', '✈️ 특송 — UNI-PASS 에 아직 안 나옴 (20일 지나도 안 나오면 출발 안 한 것으로 보고 숨김)'];
   const head = (sh, i, colspan) => view === 'open' && (i === 0 || grp(list[i - 1]) !== grp(sh))
     ? (colspan ? `<tr style="cursor:default"><td colspan="${colspan}" style="background:var(--bg);font-weight:700;font-size:12px">${GRP[grp(sh)]} <span class="muted">${list.filter(x => grp(x) === grp(sh)).length}건</span></td></tr>`
       : `<div class="dept-head" style="padding:10px 0 2px">${GRP[grp(sh)]} (${list.filter(x => grp(x) === grp(sh)).length})</div>`) : '';
@@ -2055,10 +2055,11 @@ async function renderShipments() {
     <div class="row" style="margin-bottom:6px"><h3 style="margin:0">🚢 입고 예정</h3><span class="spacer"></span>
       ${state.me.role === 'admin' ? '<button class="btn" id="shInb">📋 인바운딩 올리기</button><button class="btn" id="shUp">🛃 UNI-PASS</button>' : ''}<button class="btn primary" id="shNew">+ 입고 예정 등록</button></div>
     <div class="tabs">
-      <button data-v="open">진행중</button><button data-v="cleared">통관완료</button><button data-v="arrived">입고완료</button><button data-v="all">전체</button>
+      <button data-v="open">진행중</button><button data-v="cleared">통관완료</button><button data-v="arrived">입고완료</button><button data-v="stale" title="메일로 등록된 특송 중 20일이 지나도 UNI-PASS 에 안 나온 것">✈️ 출발 안 한 특송</button><button data-v="all">전체</button>
     </div>
     <div class="row" style="margin-bottom:8px;gap:6px"><input id="shBl" placeholder="B/L·항공 운송장 번호로 바로 등록 (UNI-PASS 조회)" style="max-width:340px"><button class="btn" id="shBlGo">🛃 조회해서 등록</button></div>
     <div id="shWatch"></div><div id="shInbMeta" class="muted" style="font-size:12px;margin-bottom:6px"></div>
+    ${view === 'stale' ? '<div class="muted" style="font-size:12px;margin-bottom:6px">메일로 등록된 특송 중 <b>20일이 지나도 UNI-PASS 에 나오지 않은 건</b> — 출발하지 않은 것으로 보고 진행중·홈에서 뺐습니다. 늦게라도 들어오는 건이면 열어서 B/L 을 확인하고, 필요 없으면 삭제하세요.</div>' : ''}
     <div class="row" style="margin-bottom:10px"><input id="shSearch" placeholder="품목/구매처/판매처/B/L 검색" value="${esc(state.shSearch || '')}" style="max-width:280px"><span class="muted">${list.length}건</span></div>
     ${list.length ? `<div class="mlist">${list.map((sh, i) => `${head(sh, i)}<div class="mrow" data-ship="${sh.id}">
         <div class="l1">${shTag(sh.status)}<b>${sh.src_key ? '📋 ' : ''}${esc(sh.item)}</b><span class="amt">${fmtQty(sh.qty)} ${esc(sh.unit)}</span></div>
