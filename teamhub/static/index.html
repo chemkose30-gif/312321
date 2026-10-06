@@ -789,6 +789,7 @@ async function openMailinUpload() {
       · 메일 한 통씩 저장한 <code>.eml</code> 도 됩니다.</div>
     <label>파일 <small class="muted">— 200MB 넘는 파일은 32MB씩 나눠 올리고, 끊기면 이어서 올립니다 (수십 GB 가능)</small></label><input type="file" id="miFile" accept=".pst,.ost,.mbox,.mbx,.zip,.eml">
     <label style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:10px"><input type="checkbox" id="miArch" style="width:auto" checked><b>🗄 모든 메일을 보관함에 저장</b> <small class="muted">(기간과 상관없이 전부 — 나중에 검색해서 볼 수 있음. 첨부파일은 빼고 본문만)</small></label>
+    <label style="display:flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="miFresh" style="width:auto">처음부터 다시 올리기 <small class="muted">(전에 올리다 만 같은 파일이 있어도 이어 붙이지 않음)</small></label>
     <label>일정 찾을 기간 <small class="muted">(이 기간 메일만 '확인할 것'·입고예정 자동 등록에 씀)</small></label>
     <select id="miMonths"><option value="1">최근 1개월</option><option value="3" selected>최근 3개월</option><option value="6">최근 6개월</option><option value="12">최근 1년</option><option value="0">전체</option></select>
     <label>압축 파일 비밀번호 <small class="muted">(비밀번호 걸린 .zip 일 때만 — 저장되지 않습니다)</small></label>
@@ -817,7 +818,10 @@ async function openMailinUpload() {
     const chunked = async f => {
       const id = Array.from(new TextEncoder().encode(`${f.name}|${f.size}|${f.lastModified}|${state.me.id}`)).reduce((h, b) => (h * 31 + b) >>> 0, 7).toString(16) + f.size.toString(16);
       const q = new URLSearchParams({upload_id: id, name: f.name, total: f.size});
-      let got = (await api('/api/mailin/import/chunk?' + q)).received;
+      let got = (await api('/api/mailin/import/chunk?' + q + ($('#miFresh', bg).checked ? '&reset=true' : ''))).received;
+      if (got && !confirm(`이 파일은 서버에 ${(got / 1073741824).toFixed(1)}GB 까지 올라가 있습니다.\n\n[확인] 이어서 올리기\n[취소] 처음부터 다시 올리기`)) {
+        got = (await api('/api/mailin/import/chunk?' + q + '&reset=true')).received;
+      }
       const CH = 32 * 1048576, t0 = Date.now(), start = got;
       const gb = v => (v / 1073741824).toFixed(1) + 'GB';
       $('#miProg', bg).innerHTML = `<div class="ec-box">⬆ 올리는 중… <b id="miPct"></b><br><small class="muted" id="miEta"></small><br><small class="muted">끊겨도 괜찮습니다. 같은 파일을 다시 고르고 '가져오기'를 누르면 이어서 올립니다. PC가 잠들지 않게 해 주세요.</small></div>`;

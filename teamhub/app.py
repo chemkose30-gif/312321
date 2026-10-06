@@ -4168,11 +4168,17 @@ def _chunk_path(uid: int, upload_id: str, name: str) -> Path:
 
 
 @app.get("/api/mailin/import/chunk")
-def mailin_chunk_status(upload_id: str, name: str, total: int, user: dict = Depends(current_user)):
-    """이어 올리기: 지금까지 받은 크기 + 서버 여유 공간 확인"""
+def mailin_chunk_status(upload_id: str, name: str, total: int, reset: bool = False, user: dict = Depends(current_user)):
+    """이어 올리기: 지금까지 받은 크기 + 서버 여유 공간 확인. reset=true 면 받아 둔 것을 지우고 처음부터."""
     import shutil
     path = _chunk_path(user["id"], upload_id, name)
     MAIL_IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+    if reset:
+        shutil.rmtree(path.parent, ignore_errors=True)
+        with db() as c:
+            st = json.loads(get_setting(c, f"mail_import:{user['id']}", "{}") or "{}")
+        if st.get("retry") and Path(st["retry"]).parent == path.parent:
+            _set_import(user["id"], retry="")
     for d in MAIL_IMPORT_DIR.glob("up-*"):      # 3일 넘게 손대지 않은 올리다 만 파일은 지움
         if d != path.parent and time.time() - d.stat().st_mtime > 3 * 86400:
             shutil.rmtree(d, ignore_errors=True)
