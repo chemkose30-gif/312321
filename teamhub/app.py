@@ -1286,8 +1286,13 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
         agg = {}
         for l in lines:
             k = keyf(l)
-            a = agg.setdefault(k, {"docs": set(), "qty": 0, "units": set(), "supply": 0, "vat": 0, "total": 0, "last": ""})
+            a = agg.setdefault(k, {"docs": set(), "qty": 0, "units": set(), "supply": 0, "vat": 0, "total": 0, "last": "",
+                                   "dl": {}})
             a["docs"].add(l["doc_id"])
+            dd = a["dl"].setdefault(l["doc_id"], {"id": l["doc_id"], "date": l["quote_date"], "no": l["quote_no"],
+                                                  "customer": l["customer_name"], "status": l["status"], "items": [], "total": 0})
+            dd["items"].append(l["name"])
+            dd["total"] += l["total"]
             a["qty"] += l["qty"] or 0
             a["units"].add((l["unit"] or "").strip())
             a["supply"] += l["supply"] or 0
@@ -1300,7 +1305,8 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
             units = {u for u in a["units"] if u}
             r.update(docs=len(a["docs"]), qty=a["qty"], unit=units.pop() if len(units) == 1 else "",
                      supply=a["supply"], vat=a["vat"], total=a["total"], last=a["last"],
-                     avg_price=(a["supply"] / a["qty"]) if a["qty"] else 0)
+                     avg_price=(a["supply"] / a["qty"]) if a["qty"] else 0,
+                     doc_list=sorted(a["dl"].values(), key=lambda x: (x["date"], x["id"]), reverse=True)[:200])
             rows.append(r)
         rows.sort(key=lambda r: tuple(r[f"k{n}"] for n in range(len(heads))) if group in ("date", "month")
                   else (-r["total"],))
