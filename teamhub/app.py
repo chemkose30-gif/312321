@@ -3954,6 +3954,19 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
 MAIL_IMPORT_DIR = Path(os.getenv("TEAMHUB_IMPORT_DIR", "/tmp/teamhub-mail-import"))
 
 
+def pst_check(path: Path):
+    """PST 머리글 확인: 진짜 PST 인지, 읽을 수 있는 형식인지 (Outlook 2013 이후 OST/4K 형식은 못 읽음)."""
+    with open(path, "rb") as f:
+        head = f.read(16)
+    if head[:4] != b"!BDN":
+        raise RuntimeError("PST 파일 형식이 아닙니다 (파일 앞부분이 Outlook 데이터 파일과 다름). 다 올라가지 않았거나 다른 종류의 파일일 수 있습니다.")
+    client, ver = head[8:10], int.from_bytes(head[10:12], "little")
+    if client == b"SO" or ver >= 36:
+        raise RuntimeError("이 파일은 Outlook 이 계정용으로 쓰는 오프라인 데이터 파일(OST / 2013 이후 4K 형식)이라 서버에서 열 수 없습니다."
+                           " Outlook 에서 '파일 → 열기 및 내보내기 → 가져오기/내보내기 → 파일로 내보내기 → Outlook 데이터 파일(.pst)'로"
+                           " 새로 내보낸 파일을 올려 주세요.")
+
+
 def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
     """파일 → 메일 원본(bytes) 하나씩."""
     import mailbox
@@ -3964,16 +3977,26 @@ def _iter_mailbox(path: Path, workdir: Path, password: str = ""):
     if name.endswith((".pst", ".ost")):
         if not shutil.which("readpst"):
             raise RuntimeError("서버에 PST 변환 프로그램(readpst)이 없습니다. 서버 업데이트(update.sh)를 다시 실행하세요.")
+        pst_check(path)
         out = workdir / "pst"
-        out.mkdir(parents=True, exist_ok=True)
-        # 첨부파일은 빼고(-a 로 없는 확장자만 남김 = 모두 버림) 메일만(-te) 꺼낸다 → 큰 PST 도 디스크를 적게 씀
         big = path.stat().st_size > 2 * 1024 ** 3
-        r = subprocess.run(["readpst", "-e", "-q", "-b", "-te", "-a", ".teamhub-none", "-o", str(out), str(path)],
-                           capture_output=True, timeout=12 * 3600 if big else 3600)
-        if r.returncode != 0:
-            msg = ((r.stderr or b"") + (r.stdout or b"")).decode(errors="replace").strip()[-300:]
-            raise RuntimeError("PST 파일을 읽지 못했습니다. Outlook 에서 내보낸 .pst 파일이 맞는지, 비밀번호가 걸려 있지 않은지"
-                               " 확인하세요." + (f" ({msg})" if msg else ""))
+        # 첨부파일은 빼고(-a 로 없는 확장자만 남김 = 모두 버림) 메일만(-te) 꺼낸다 → 큰 PST 도 디스크를 적게 씀.
+        # 안 되면 옵션 없이 한 번 더.
+        errs = []
+        for opts in (["-e", "-b", "-te", "-a", ".teamhub-none"], ["-e", "-b"]):
+            shutil.rmtree(out, ignore_errors=True)
+            out.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(["readpst", *opts, "-o", str(out), str(path)],
+                               capture_output=True, timeout=12 * 3600 if big else 3600)
+            if r.returncode == 0:
+                break
+            tail = [x for x in ((r.stderr or b"") + b"\n" + (r.stdout or b"")).decode(errors="replace").splitlines()
+                    if x.strip() and not x.startswith(("Processing", "Opening", "Saving"))]
+            errs.append(" / ".join(tail[-3:])[-300:])
+        else:
+            raise RuntimeError("PST 파일을 읽지 못했습니다 (읽기 프로그램 오류: " + (errs[-1] or "알 수 없음") + ")."
+                               " Outlook 이 켜진 상태에서 데이터 파일을 복사했다면 파일이 깨졌을 수 있습니다 —"
+                               " Outlook 의 '가져오기/내보내기 → 파일로 내보내기'로 새로 만든 .pst 를 올려 주세요.")
         for f in sorted(out.rglob("*")):
             if f.is_file() and not f.name.startswith("."):
                 folder = "/".join(f.relative_to(out).parts[:-1][-3:])
@@ -4094,9 +4117,17 @@ def run_mail_import(path: Path, uid: int, months: int, password: str = "", archi
         if ai_ids:
             run_ai_queue(ai_ids, quiet=True)      # 알림은 위에서 한 번만
     except Exception as e:
-        _set_import(uid, status="error", error=str(e)[:300], finished_at=now())
-    finally:
+        keep = path.exists() and path.stat().st_size > 200 * 1024 ** 2
+        _set_import(uid, status="error", error=str(e)[:400], finished_at=now(),
+                    retry=str(path) if keep else "", retry_months=months, retry_archive=archive)
+        if keep:                         # 큰 파일은 다시 올리지 않고 '다시 시도'할 수 있게 남겨 둠 (풀던 것만 지움)
+            for x in workdir.iterdir():
+                if x != path:
+                    shutil.rmtree(x, ignore_errors=True) if x.is_dir() else x.unlink(missing_ok=True)
+            return
         shutil.rmtree(workdir, ignore_errors=True)
+        return
+    shutil.rmtree(workdir, ignore_errors=True)
 
 
 @app.post("/api/mailin/import")
@@ -4298,6 +4329,26 @@ def mail_archive_clear(_: dict = Depends(admin_user)):
         except sqlite3.OperationalError:
             pass
     return {"deleted": n}
+
+
+@app.post("/api/mailin/import/retry")
+def mailin_import_retry(body: dict, user: dict = Depends(current_user)):
+    """실패한 큰 파일을 다시 올리지 않고 다시 읽기 (지우기: {"discard": true})"""
+    import shutil
+    with db() as c:
+        st = json.loads(get_setting(c, f"mail_import:{user['id']}", "{}") or "{}")
+    path = Path(st.get("retry") or "")
+    if not st.get("retry") or not path.exists() or MAIL_IMPORT_DIR not in path.parents:
+        raise HTTPException(400, "다시 시도할 파일이 없습니다. 파일을 다시 올려 주세요.")
+    if body.get("discard"):
+        shutil.rmtree(path.parent, ignore_errors=True)
+        _set_import(user["id"], retry="")
+        return {"ok": True}
+    _set_import(user["id"], status="running", error="", retry="", read=0, added=0, archived=0, duplicates=0,
+                skipped_old=0, started_at=now(), finished_at="", stage="")
+    threading.Thread(target=run_mail_import, args=(path, user["id"], int(st.get("retry_months") or 0), "",
+                                                   st.get("retry_archive", True) is not False), daemon=True).start()
+    return {"ok": True}
 
 
 @app.get("/api/mailin/import/status")

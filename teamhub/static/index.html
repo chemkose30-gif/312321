@@ -805,7 +805,10 @@ async function openMailinUpload() {
       $('#miProg', bg).innerHTML = s.status === 'running'
         ? `<div class="ec-box">⏳ <b>${esc(s.file)}</b>${mb} ${esc(s.stage || '가져오는 중')}… 창을 닫아도 계속됩니다. 끝나면 🔔 알림이 옵니다.<br><small class="muted">${line}</small></div>`
         : s.status === 'done' ? `<div class="ec-box">✅ <b>${esc(s.file)}</b> 완료 · 확인할 일정 ${s.threads || 0}건<br><small class="muted">${line}</small></div>`
-        : `<div class="ec-box" style="color:var(--danger)">❌ ${esc(s.file || '')} 실패: ${esc(s.error)}</div>`;
+        : `<div class="ec-box" style="color:var(--danger)">❌ ${esc(s.file || '')} 실패: ${esc(s.error)}
+            ${s.retry ? `<div style="margin-top:8px;color:var(--text)"><small>올린 파일은 서버에 남아 있습니다.</small><br><button type="button" class="btn sm primary" id="miRetry">🔁 다시 올리지 않고 다시 시도</button> <button type="button" class="btn sm" id="miDiscard">남은 파일 지우기</button></div>` : ''}</div>`;
+      if ($('#miRetry', bg)) $('#miRetry', bg).onclick = async () => { await api('/api/mailin/import/retry', {method: 'POST', body: {}}); show(await api('/api/mailin/import/status')); };
+      if ($('#miDiscard', bg)) $('#miDiscard', bg).onclick = async () => { if (!confirm('서버에 남은 파일을 지울까요? 다시 하려면 파일을 새로 올려야 합니다.')) return; await api('/api/mailin/import/retry', {method: 'POST', body: {discard: true}}); show(await api('/api/mailin/import/status')); };
       if (s.status === 'running') { clearTimeout(timer); timer = setTimeout(async () => { if (document.body.contains(bg)) show(await api('/api/mailin/import/status')); }, 2000); }
       else if (state.view === 'mailin') renderMailin();
     };
