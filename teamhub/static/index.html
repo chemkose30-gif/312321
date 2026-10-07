@@ -2824,7 +2824,7 @@ async function drawCostCheck(year) {
   const pct = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
   box.innerHTML = `<div class="row" style="margin-bottom:6px;gap:8px"><span class="muted" style="font-size:13px">원가계산서 <b>${d.sheets}</b>개 · 품목 ${d.items}개${d.first ? ` · 통관 ${esc(d.first)} ~ ${esc(d.last)}` : ''}</span>
       <span class="spacer"></span><span class="muted" style="font-size:12px">차이</span><select id="ccTol" style="width:auto">${[0.5, 1, 3, 5, 10].map(v => `<option value="${v}" ${v === cc.tol ? 'selected' : ''}>${v}% 이상</option>`).join('')}</select>
-      <label class="btn sm" style="margin:0">🧮 원가계산서 올리기<input type="file" id="ccUp" accept=".xls,.xlsx" multiple hidden></label></div>
+      <button class="btn sm primary" id="ccMake">✏ 원가계산서 만들기</button><label class="btn sm" style="margin:0">🧮 원가계산서 올리기<input type="file" id="ccUp" accept=".xls,.xlsx" multiple hidden></label></div>
     <div class="muted" style="font-size:12px;margin-bottom:8px;line-height:1.6">일계장 줄마다 품목·매입처(공급사)·통관일로 원가계산서를 찾아 <b>매입단가 ↔ 수입단가(단가+통관비, 원/kg)</b>를 비교합니다.
       매입처에 날짜(예: LYS 260915)가 있으면 그 통관 건, 없으면 같은 공급사의 판매일 전 1년 안 가장 최근 통관 건과 비교합니다(<i>추정</i>). 관계사 넘김은 뺍니다.
       <br>맞음 <b>${d.ok}</b>줄 · <span class="${d.n_diff ? 'down' : ''}">다름 <b>${d.n_diff}</b>줄</span> · 원가계산서 없음 ${d.n_missing}줄</div>
@@ -2839,6 +2839,7 @@ async function drawCostCheck(year) {
       ${d.missing.slice().sort((a, b) => b.buy_price * b.qty - a.buy_price * a.qty).slice(0, 300).map(x => `<tr><td>${esc(x.date.slice(5))}</td><td>${esc(x.item)}</td><td>${esc(x.customer)}</td><td>${esc(x.supplier)}</td><td class="num">${kg(x.qty)}</td><td class="num">${won(x.buy_price)}</td></tr>`).join('')}
       </tbody></table></div></details>` : ''}`;
   $('#ccTol').onchange = e => { cc.tol = +e.target.value; drawCostCheck(year); };
+  $('#ccMake').onclick = () => openCostMake(() => drawCostCheck(year));
   if ($('#ccMiss')) $('#ccMiss').ontoggle = e => { cc.miss = e.target.open; };
   $('#ccUp').onchange = async e => {
     const files = [...e.target.files]; let ok = 0; const errs = [];
@@ -2852,6 +2853,80 @@ async function drawCostCheck(year) {
     if (errs.length) alert('못 읽은 파일:\n' + errs.slice(0, 20).join('\n'));
     drawCostCheck(year);
   };
+}
+
+// ---- ✏ 원가계산서 만들기 (받은 원가계산서와 같은 계산: 원 단위 올림, 통관수수료는 수량 비율로 나눔)
+async function openCostMake(after) {
+  let co = '이알씨', def = await api(`/api/costs/defaults?company=${encodeURIComponent(co)}`);
+  const itemRow = (it = {}) => `<tr><td><input name="item" value="${esc(it.item || '')}" placeholder="품목 (원문)"></td><td style="width:80px"><input name="qty" class="num" inputmode="decimal" value="${it.qty || ''}"></td>
+      <td style="width:90px"><input name="unit_fx" class="num" inputmode="decimal" value="${it.unit_fx || ''}"></td><td style="width:100px"><input name="duty" class="num" inputmode="decimal" value="${it.duty || ''}" placeholder="0"></td>
+      <td style="width:90px"><input name="stamp_food" class="num" inputmode="decimal" placeholder="0"></td><td style="width:90px"><input name="stamp_chem" class="num" inputmode="decimal" placeholder="0"></td>
+      <td class="money calc" style="width:90px"></td><td class="money calc" style="width:90px"></td><td style="width:28px"><button type="button" class="btn sm" data-x>✕</button></td></tr>`;
+  const feeRows = names => names.map(n => `<div class="row" style="gap:6px;margin:2px 0"><input name="fname" value="${esc(n)}" style="max-width:200px"><input name="famt" class="num" inputmode="decimal" placeholder="0" style="max-width:140px"></div>`).join('');
+  openModal(`<h2>✏ 원가계산서 만들기</h2>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">${def.template ? '그 회사가 마지막으로 올린 원가계산서 양식 그대로 엑셀을 만듭니다.' : '올린 원가계산서가 없어 기본 양식으로 만듭니다 (원가계산서를 하나 올리면 같은 양식으로 나옵니다).'}
+      계산: 단가(원/kg) = 외화 단가 × 송금환율 · 통관수수료는 수량(kg) 비율로 나눔 · 통관금액(원/kg) = (관세+통관수수료+인지대) ÷ 수량 · 모두 원 단위 올림</div>
+    <form autocomplete="off"><div class="grid2">
+      <div><label>회사</label><select name="company"><option>이알씨</option><option>켐코스</option></select></div>
+      <div><label>입고예정에서 불러오기 <small class="muted">(최근 90일)</small></label><select id="cmShip"><option value="">— 고르기 —</option>${def.shipments.map((x, i) => `<option value="${i}">${esc((x.cs_cleared_at || x.eta || '').slice(0, 10))} · ${esc(x.supplier || '')} · ${esc(x.item)} ${x.qty ? fmtQty(x.qty) + (x.unit || '') : ''}</option>`).join('')}</select></div>
+      <div><label>공급사 (○○社) *</label><input name="supplier" required placeholder="예: Fengle"></div>
+      <div><label>운송 / INVOICE NO.</label><div class="row" style="flex-wrap:nowrap"><select name="mode" style="max-width:90px"><option>Sea</option><option>Air</option><option>Courier</option></select><input name="invoice" placeholder="INVOICE NO."></div></div>
+      <div><label>송금일 · 송금환율 *</label><div class="row" style="flex-wrap:nowrap"><input type="date" name="remit_date" required><input name="remit_rate" class="num" inputmode="decimal" placeholder="1467.13" required style="max-width:110px"></div></div>
+      <div><label>통화 · 송금 메모</label><div class="row" style="flex-wrap:nowrap"><select name="currency" style="max-width:90px"><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>CNY</option><option>CHF</option></select><input name="remit_note" placeholder="사전 송금 ok / 사후 송금 ok"></div></div>
+      <div><label>통관일 · 통관 기준환율 *</label><div class="row" style="flex-wrap:nowrap"><input type="date" name="customs_date" required><input name="customs_rate" class="num" inputmode="decimal" placeholder="1477.5" style="max-width:110px"></div></div>
+      <div><label>발신 담당자</label><input name="sender" placeholder="예: 유경아"></div>
+    </div>
+    <label>품목</label><div class="qscroll"><table><thead><tr><th>품목</th><th>수량(kg)</th><th>단가(외화/kg)</th><th>관세(원)</th><th>식품검역인지대</th><th>화학물질인지대</th><th style="text-align:right">통관금액/kg</th><th style="text-align:right">수입단가</th><th></th></tr></thead><tbody id="cmItems">${itemRow()}</tbody></table></div>
+    <button type="button" class="btn sm" id="cmAdd">+ 품목 추가</button>
+    <label>통관수수료 내역 <small class="muted">(정산서·청구서 금액, 원)</small></label><div id="cmFees">${feeRows(def.fees)}</div><button type="button" class="btn sm" id="cmFeeAdd">+ 항목 추가</button>
+    <div id="cmSum" style="margin-top:10px;font-size:14px"></div><div class="err"></div>
+    <div class="actions"><button type="button" class="btn" data-close>닫기</button><button type="button" class="btn" id="cmSave">💾 저장만</button><button type="button" class="btn primary" id="cmGo">💾 저장 + 엑셀 받기</button></div></form>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    const f = $('form', bg), tb = $('#cmItems', bg);
+    const body = () => ({company: f.company.value, supplier: f.supplier.value, mode: f.mode.value, invoice: f.invoice.value, currency: f.currency.value,
+      remit_date: f.remit_date.value, remit_rate: numVal(f.remit_rate.value), remit_note: f.remit_note.value, customs_date: f.customs_date.value,
+      customs_rate: numVal(f.customs_rate.value), sender: f.sender.value,
+      items: $$('tr', tb).map(tr => ({item: $('[name=item]', tr).value, qty: numVal($('[name=qty]', tr).value), unit_fx: numVal($('[name=unit_fx]', tr).value),
+        duty: numVal($('[name=duty]', tr).value), stamp_food: numVal($('[name=stamp_food]', tr).value), stamp_chem: numVal($('[name=stamp_chem]', tr).value)})).filter(i => i.item.trim() && i.qty),
+      fees: $$('#cmFees .row', bg).map(r => ({name: $('[name=fname]', r).value, amount: numVal($('[name=famt]', r).value)})).filter(x => x.name.trim() && x.amount)});
+    let timer;
+    const calc = () => { clearTimeout(timer); timer = setTimeout(async () => {
+      const b = body(); $('.err', bg).textContent = '';
+      if (!b.items.length || !b.remit_rate || !b.remit_date || !b.customs_date) { $('#cmSum', bg).innerHTML = '<span class="muted">품목·수량·단가와 송금일·환율·통관일을 넣으면 계산됩니다.</span>'; return; }
+      try {
+        const r = await api('/api/costs/make', {method: 'POST', body: b});
+        const live = $$('tr', tb).filter(tr => $('[name=item]', tr).value.trim() && numVal($('[name=qty]', tr).value));
+        live.forEach((tr, i) => { const x = r.rows[i]; if (!x) return; const c = $$('.calc', tr); c[0].textContent = won(x.per_kg); c[1].innerHTML = `<b>${won(x.landed)}</b>`; });
+        $('#cmSum', bg).innerHTML = `문서번호 <b>${esc(r.doc_no)}</b> · 송금 ${won(r.amount_krw)}원 · 관세 ${won(r.duty)}원 · 통관수수료 ${won(r.fee_total)}원 → <b>납품 총금액 ${won(r.total)}원</b> (부가세 포함 ${won(r.total_vat)}원)<br><small class="muted">${esc(r.filename)}</small>`;
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    }, 300); };
+    f.addEventListener('input', calc); f.addEventListener('change', calc);
+    tb.addEventListener('click', e => { if (e.target.closest('[data-x]')) { e.target.closest('tr').remove(); if (!$('tr', tb)) tb.insertAdjacentHTML('beforeend', itemRow()); calc(); } });
+    $('#cmAdd', bg).onclick = () => tb.insertAdjacentHTML('beforeend', itemRow());
+    $('#cmFeeAdd', bg).onclick = () => $('#cmFees', bg).insertAdjacentHTML('beforeend', feeRows(['']));
+    f.company.onchange = async () => { def = await api(`/api/costs/defaults?company=${encodeURIComponent(f.company.value)}`); $('#cmFees', bg).innerHTML = feeRows(def.fees); calc(); };
+    $('#cmShip', bg).onchange = e => {
+      const x = def.shipments[+e.target.value]; if (!x) return;
+      if (x.supplier && !f.supplier.value) f.supplier.value = x.supplier;
+      if (x.cs_cleared_at || x.eta) f.customs_date.value = (x.cs_cleared_at || x.eta).slice(0, 10);
+      const tr = $$('tr', tb).find(t => !$('[name=item]', t).value) || (tb.insertAdjacentHTML('beforeend', itemRow()), $$('tr', tb).pop());
+      $('[name=item]', tr).value = x.item; if (x.qty) $('[name=qty]', tr).value = x.qty;
+      calc();
+    };
+    const send = async dl => {
+      if (!f.reportValidity()) return;
+      try {
+        if (!dl) { await api('/api/costs/make?save=1', {method: 'POST', body: body()}); close(); toast('원가계산서를 저장했습니다 (원가 체크·일계장에 반영).'); after && after(); return; }
+        const res = await fetch('/api/costs/make?save=1&download=1', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token, 'Content-Type': 'application/json'}, body: JSON.stringify(body())});
+        if (!res.ok) throw new Error((await res.json()).detail || '만들지 못했습니다.');
+        const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || '원가계산.xlsx');
+        const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        close(); toast('저장하고 엑셀을 받았습니다.'); after && after();
+      } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    $('#cmSave', bg).onclick = () => send(false);
+    $('#cmGo', bg).onclick = () => send(true);
+  });
 }
 
 // ---- 📒 거래명세서로 일계장 만들기 (매출액 · 매출품목 · 매입매출장 시트, 회사별)

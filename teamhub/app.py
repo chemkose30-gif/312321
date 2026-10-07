@@ -3595,6 +3595,12 @@ async def costs_upload(file: UploadFile = File(...), user: dict = Depends(upload
     items = [i for i in cs["items"] if i["landed"]]
     if not items:
         raise HTTPException(400, f"{filename}: 원가계산서 표(품목·수량·수입단가)를 찾지 못했습니다.")
+    if cs["company"] and data[:4] == b"\xd0\xcf\x11\xe0":    # 회사별 원가계산서 양식(틀)으로 보관 — 가장 최근 통관 건
+        LEDGER_TPL_DIR.mkdir(parents=True, exist_ok=True)
+        tp, meta_p = LEDGER_TPL_DIR / f"cost_{cs['company']}.xls", LEDGER_TPL_DIR / f"cost_{cs['company']}.date"
+        if not meta_p.exists() or meta_p.read_text() <= (cs["customs_date"] or ""):
+            tp.write_bytes(data)
+            meta_p.write_text(cs["customs_date"] or "")
     with db() as c:
         c.execute("DELETE FROM cost_sheets WHERE filename = ?", (filename,))
         for it in items:
@@ -3604,6 +3610,258 @@ async def costs_upload(file: UploadFile = File(...), user: dict = Depends(upload
                        cs["invoice"], it["item"], it["qty"], it["unit_fx"], it["unit_krw"], it["landed"], now()))
     return {"ok": True, "filename": filename, "company": cs["company"], "supplier": cs["supplier"],
             "customs_date": cs["customs_date"], "items": [{"item": i["item"], "qty": i["qty"], "landed": i["landed"]} for i in items]}
+
+
+# ---- ✏ 원가계산서 만들기: 송금(외화 단가 × 송금환율) + 통관(관세·통관수수료·인지대) → 품목별 수입단가(원/kg)
+import math
+
+COST_FEES = ("송금수수료", "T.H.C", "CFS Charge", "Document Fee", "B.A.F", "C.A.F", "Container Cleaning", "C.R.C", "E.B.S",
+             "E.R.S", "Low Sulfur Surcharge", "PSS", "Wharfage", "Handling Charge", "Drayage", "창고료", "운송료",
+             "취급수수료", "통관수수료")
+COST_PREFIX = {"이알씨": "ERC", "켐코스": "CKS"}
+
+
+class CostItemIn(BaseModel):
+    item: str
+    qty: float
+    unit_fx: float = 0
+    duty: float = 0
+    stamp_food: float = 0
+    stamp_chem: float = 0
+
+
+class CostFeeIn(BaseModel):
+    name: str
+    amount: float = 0
+
+
+class CostIn(BaseModel):
+    company: str = "이알씨"
+    supplier: str
+    mode: str = "Sea"
+    invoice: str = ""
+    currency: str = "USD"
+    remit_date: str
+    remit_rate: float
+    remit_note: str = ""
+    customs_date: str
+    customs_rate: float = 0
+    sender: str = ""
+    items: List[CostItemIn]
+    fees: List[CostFeeIn] = []
+
+
+def cost_compute(b: CostIn) -> dict:
+    """원가계산서 계산 — 받은 원가계산서와 같은 방식 (모두 원 단위 올림):
+    단가(원/kg) = 외화 단가 × 송금환율 / 통관수수료는 수량(kg) 비율로 나눔 /
+    통관금액(원/kg) = (관세 + 나눈 통관수수료 + 인지대) ÷ 수량 / 수입단가 = 단가(원/kg) + 통관금액."""
+    items = [i for i in b.items if i.item.strip() and i.qty > 0]
+    if not items:
+        raise HTTPException(400, "품목과 수량을 입력하세요.")
+    if not b.remit_rate:
+        raise HTTPException(400, "송금 환율을 입력하세요.")
+    up = lambda v: math.ceil(round(v, 6))
+    fee_total = sum(f.amount for f in b.fees)
+    tq = sum(i.qty for i in items)
+    rows = []
+    for i in items:
+        krw = up(i.unit_fx * b.remit_rate)
+        share = up(fee_total * i.qty / tq) if fee_total else 0
+        per = up((i.duty + share + i.stamp_food + i.stamp_chem) / i.qty)
+        rows.append({"item": i.item.strip(), "qty": i.qty, "unit_fx": i.unit_fx, "unit_krw": krw,
+                     "amount_fx": round(i.qty * i.unit_fx, 2), "amount_krw": round(i.qty * krw), "duty": i.duty,
+                     "fee": share, "stamp_food": i.stamp_food, "stamp_chem": i.stamp_chem, "per_kg": per,
+                     "landed": krw + per, "supply": round(i.qty * (krw + per))})
+    total = sum(r["supply"] for r in rows)
+    d = b.customs_date.replace("-", "")
+    return {"rows": rows, "fees": [{"name": f.name, "amount": f.amount} for f in b.fees if f.amount],
+            "fee_total": fee_total, "qty": tq, "amount_fx": sum(r["amount_fx"] for r in rows),
+            "amount_krw": sum(r["amount_krw"] for r in rows), "duty": sum(r["duty"] for r in rows),
+            "total": total, "total_vat": round(total * 1.1),
+            "doc_no": f"{COST_PREFIX.get(b.company, 'ERC')}-{d[2:4]}-{d[4:8]}/01",
+            "filename": f"원가계산_{b.supplier.strip()}-{b.mode}-{b.customs_date.replace('-', '.')}_{rows[0]['item']}"
+                        f"{' 외' if len(rows) > 1 else ''}_{int(tq) if tq == int(tq) else tq}kg.xlsx"}
+
+
+def _kdate(d: str) -> str:
+    return f"{d[:4]}년 {d[5:7]}월 {d[8:10]}일"
+
+
+def cost_workbook(b: CostIn, r: dict):
+    """원가계산서 엑셀. 그 회사의 원가계산서를 올린 적이 있으면 그 파일의 모양(글꼴·테두리·병합·열 너비)을 그대로 씀."""
+    import openpyxl
+    from copy import copy
+    tpl = LEDGER_TPL_DIR / f"cost_{b.company}.xls"
+    cur = b.currency.upper()
+    if tpl.exists():
+        wb = xls_to_openpyxl(tpl.read_bytes())
+        src = wb.worksheets[0]
+    else:
+        wb, src = openpyxl.Workbook(), None
+    ws = wb.create_sheet("원가계산_new", 0)
+    out_row = [0]
+    if src is not None:
+        for k, dim in src.column_dimensions.items():
+            ws.column_dimensions[k].width = dim.width
+        vals = lambda rr: [str(src.cell(row=rr, column=c).value or "") for c in range(1, 10)]
+        find = lambda pred, start=1: next((rr for rr in range(start, src.max_row + 1) if pred(vals(rr))), None)
+        merges = [m for m in src.merged_cells.ranges]
+
+    def put(proto, values, height=None):
+        """proto 행(양식)의 서식·병합을 복사하고 values 로 채움 (values 에 없는 칸은 양식 글자 그대로 — 머리글 등)."""
+        out_row[0] += 1
+        rr = out_row[0]
+        for c in range(1, 10):
+            cell = ws.cell(row=rr, column=c)
+            if src is not None and proto:
+                sc = src.cell(row=proto, column=c)
+                cell.font, cell.fill, cell.border, cell.alignment, cell.number_format = (
+                    copy(sc.font), copy(sc.fill), copy(sc.border), copy(sc.alignment), sc.number_format)
+                cell.value = sc.value if c - 1 not in values else None
+            if c - 1 in values:
+                cell.value = values[c - 1]
+        if src is not None and proto:
+            for m in merges:
+                if m.min_row == proto and m.max_row == proto:
+                    ws.merge_cells(start_row=rr, end_row=rr, start_column=m.min_col, end_column=m.max_col)
+            h = src.row_dimensions[proto].height
+            if h:
+                ws.row_dimensions[rr].height = h
+        return rr
+    P = lambda *a, **k: (find(*a, **k) if src is not None else None)
+    t1 = P(lambda v: "송금" in v[0])
+    h1 = P(lambda v: v[0].replace(" ", "") == "품목", t1 or 1)
+    i1 = (h1 + 2) if h1 else None
+    s1 = P(lambda v: v[0].replace(" ", "") == "합계", h1 or 1)
+    t2 = P(lambda v: "통관" in v[0] and "환율" in v[0], s1 or 1)
+    h2 = P(lambda v: v[0].replace(" ", "") == "품목", t2 or 1)
+    i2 = (h2 + 3) if h2 else None
+    s2 = P(lambda v: v[0].replace(" ", "") == "합계", h2 or 1)
+    f0 = P(lambda v: "통관수수료내역" in v[0].replace(" ", ""), s2 or 1)
+    s3 = P(lambda v: v[0].replace(" ", "") == "합계", f0 or 1)
+    h4 = P(lambda v: v[0].replace(" ", "") == "품목", s3 or 1)
+    i4 = (h4 + 2) if h4 else None
+    s4 = P(lambda v: v[0].replace(" ", "") == "합계", h4 or 1)
+    z1 = P(lambda v: "납품총금액" in v[0].replace(" ", ""), s4 or 1)
+    z2 = P(lambda v: "부가세" in v[0], z1 or 1)
+    # 머리 (회사·주소·문서번호·제목 …) — 양식 그대로, 문서번호·운송·공급사만 바꿈
+    head_end = (t1 - 1) if t1 else 0
+    for rr in range(1, head_end + 1):
+        v = vals(rr)
+        rep = {}
+        if "문서번호" in v[0]:
+            rep[0] = re.sub(r":.*$", f": {r['doc_no']}", v[0])
+        if "납품한" in v[0]:
+            rep[0] = re.sub(r"납품한\s*.+?社", f"납품한 {b.supplier.strip()}社", v[0])
+        if "발" in v[0] and "신" in v[0] and b.sender:
+            rep[0] = re.sub(r":.*$", f": 주식회사 {b.company} / {b.sender}", v[0])
+        if v[8].lower().startswith("by "):
+            rep[8] = f"by {b.mode}"
+        put(rr, rep)
+    if src is None:
+        for t in (f"주식회사{b.company}", "", "", f"문서번호   : {r['doc_no']}", "수        신 :", f"발        신 : 주식회사 {b.company}",
+                  "제        목 : 수입 통관 원가 계산서", "1.  그 동안 폐사에 보내주신 협조에 감사 드리며 귀사의 일익번창 하심을 기원합니다.",
+                  f"2.  귀사에 납품한 {b.supplier}社 제품의 통관내역 및 계산서를 아래와 같이 보내드립니다.", "-  아         래  -"):
+            put(None, {0: t, 8: f"by {b.mode}" if t.startswith("주식회사") else None})
+    # 송금
+    put(t1, {0: f"{_kdate(b.remit_date)} 송금일 기준환율 :", 7: b.remit_rate, 8: b.remit_note or None})
+    put(h1, {} if h1 else {0: "품목", 1: "수량", 2: "단가", 3: "단가", 6: "금액", 7: "금액"})
+    put(h1 + 1 if h1 else None, {2: f"({cur}/Kg)", 6: f"({cur})"} if h1 else
+        {1: "(Kg)", 2: f"({cur}/Kg)", 3: "(원/Kg)", 6: f"({cur})", 7: "(원)"})
+    if h1:   # INVOICE 번호는 양식에서 머리글 첫 줄 끝에 있음
+        ws.cell(row=out_row[0] - 1, column=9).value = f"INVOICE NO.: {b.invoice}" if b.invoice else None
+        ws.cell(row=out_row[0], column=9).value = None
+    for x in r["rows"]:
+        put(i1, {0: x["item"], 1: x["qty"], 2: x["unit_fx"], 3: x["unit_krw"], 4: None, 5: None, 6: x["amount_fx"],
+                 7: x["amount_krw"], 8: None})
+    put(s1, {0: "합계", 1: r["qty"], 2: None, 3: None, 6: r["amount_fx"], 7: r["amount_krw"], 8: None})
+    # 통관
+    put(t2, {0: f"{_kdate(b.customs_date)} 통관일 기준환율 :", 7: b.customs_rate or None, 8: None})
+    if h2:
+        put(h2, {})
+        put(h2 + 1, {2: r["duty"]})
+        put(h2 + 2, {})
+    else:
+        put(None, {0: "품목", 1: "수량", 2: "관세", 3: "통관", 4: "식품검역인지대", 5: "화학물질인지대", 6: "통관금액", 7: "수입단가"})
+        put(None, {1: "(Kg)", 2: "(원)", 3: "수수료", 6: "(원/Kg)", 7: "(단가+통관금액(원/Kg)"})
+    for x in r["rows"]:
+        put(i2, {0: x["item"], 1: x["qty"], 2: x["duty"], 3: x["fee"], 4: x["stamp_food"] or None, 5: x["stamp_chem"] or None,
+                 6: x["per_kg"], 7: x["landed"], 8: None})
+    put(s2, {0: "합계", 1: r["qty"], 2: r["duty"], 3: sum(x["fee"] for x in r["rows"]), 4: None, 5: None, 6: None, 7: None, 8: None})
+    out_row[0] += 1
+    # 통관수수료 내역
+    put(f0, {} if f0 else {0: "*통관수수료내역*", 3: "금액(원)"})
+    for f in r["fees"]:
+        put((f0 + 1) if f0 else None, {0: f["name"], 1: None, 2: None, 3: f["amount"]})
+    put(s3, {0: "합계", 3: r["fee_total"]})
+    out_row[0] += 1
+    # 납품
+    if h4:
+        put(h4, {})
+        put(h4 + 1, {})
+    else:
+        put(None, {0: "품목", 1: "수량", 2: "납품단가(원/Kg)", 6: "공급가액"})
+        put(None, {1: "(Kg)", 6: "(원)"})
+    for x in r["rows"]:
+        put(i4, {0: x["item"], 1: x["qty"], 2: x["landed"], 3: x["landed"], 6: x["supply"]})
+    put(s4, {0: "합계", 1: r["qty"], 6: r["total"]})
+    out_row[0] += 1
+    put(z1, {0: "납품 총금액", 3: r["total"]})
+    put(z2, {0: "부가세 포함 금액", 3: r["total_vat"]})
+    for sh in [x for x in wb.worksheets if x is not ws]:
+        wb.remove(sh)
+    ws.title = "원가계산"
+    return wb
+
+
+@app.post("/api/costs/make")
+def costs_make(body: CostIn, download: bool = False, save: bool = False, user: dict = Depends(current_user)):
+    """원가계산서 계산(미리보기) / 엑셀 받기 / 저장(원가 체크·일계장 매입단가에 반영)."""
+    import io
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+    r = cost_compute(body)
+    if save:
+        with db() as c:
+            c.execute("DELETE FROM cost_sheets WHERE filename = ?", (r["filename"],))
+            for x in r["rows"]:
+                c.execute("INSERT INTO cost_sheets (filename, company, supplier, doc_no, remit_date, customs_date, rate, invoice,"
+                          " item, qty, unit_fx, unit_krw, landed, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (r["filename"], body.company, body.supplier.strip(), r["doc_no"], body.remit_date, body.customs_date,
+                           body.remit_rate, body.invoice, x["item"], x["qty"], x["unit_fx"], x["unit_krw"], x["landed"], now()))
+        r["saved"] = True
+    if download:
+        buf = io.BytesIO()
+        cost_workbook(body, r).save(buf)
+        return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(r["filename"])})
+    r["fee_names"] = COST_FEES
+    return r
+
+
+@app.get("/api/costs/defaults")
+def costs_defaults(company: str = "이알씨", user: dict = Depends(current_user)):
+    """원가계산서 작성 기본값: 통관수수료 항목(그 회사 최근 원가계산서 양식에서), 최근 통관된 입고예정."""
+    names = list(COST_FEES)
+    tpl = LEDGER_TPL_DIR / f"cost_{company}.xls"
+    if tpl.exists():
+        try:
+            rows = [[str(v or "").strip() for v in r] for r in _xls_rows("x.xls", tpl.read_bytes())]
+            i = next(k for k, r in enumerate(rows) if "통관수수료내역" in r[0].replace(" ", ""))
+            got = []
+            for r in rows[i + 1:]:
+                if r[0].replace(" ", "") in ("합계", "계") or not r[0]:
+                    break
+                got.append(r[0])
+            names = got or names
+        except Exception:
+            pass
+    with db() as c:
+        ships = [dict(r) for r in c.execute(
+            "SELECT id, item, qty, unit, supplier, bl_no, cs_cleared_at, eta FROM shipments"
+            " WHERE COALESCE(NULLIF(cs_cleared_at, ''), eta) >= date('now', '-90 day') ORDER BY COALESCE(NULLIF(cs_cleared_at, ''), eta) DESC LIMIT 60")]
+    return {"fees": names, "shipments": ships, "template": tpl.exists()}
 
 
 def cost_index(c) -> dict:
