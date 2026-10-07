@@ -136,6 +136,7 @@ def to_candidates(result: dict) -> list:
 # ---- 수입 통관 정산서·청구서(스캔 PDF 포함) → 원가계산서 입력값
 COST_SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨/켐코스)의 회계 비서입니다. 수입 한 건의 서류 묶음(관세사 정산서, 통관 예상경비 청구서,
 수입신고필증, 포워더 인보이스, 창고·운송·하역 세금계산서, 납부서, 송금 내역 등 — 스캔본일 수 있음)을 읽고 원가계산서 입력값을 JSON 으로 뽑습니다.
+- importer: 수입자(납세의무자) 회사 이름 (예: "주식회사 이알씨", "주식회사 켐코스").
 - supplier: 해외 공급사 짧은 이름 (예: JIAXING SUNLONG INDUSTRIAL & TRADING → "Sunlong"). mode: "Sea" / "Air" / "Courier".
 - invoice: 공급사 인보이스 번호(없으면 ""). bl_no: B/L 번호. currency: 결제 통화(USD 등).
 - customs_date: 수입신고 수리일(통관일) YYYY-MM-DD. customs_rate: 수입신고필증의 환율.
@@ -153,7 +154,7 @@ COST_SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨/켐코�
 COST_SCHEMA = {
     "type": "object",
     "properties": {
-        "supplier": {"type": "string"}, "mode": {"type": "string"}, "invoice": {"type": "string"}, "bl_no": {"type": "string"},
+        "importer": {"type": "string"}, "supplier": {"type": "string"}, "mode": {"type": "string"}, "invoice": {"type": "string"}, "bl_no": {"type": "string"},
         "currency": {"type": "string"}, "customs_date": {"type": "string"}, "customs_rate": {"type": "number"},
         "remit_date": {"type": "string"}, "remit_rate": {"type": "number"},
         "items": {"type": "array", "items": {"type": "object", "properties": {
@@ -164,7 +165,7 @@ COST_SCHEMA = {
                                             "required": ["name", "amount"], "additionalProperties": False}},
         "notes": {"type": "string"},
     },
-    "required": ["supplier", "mode", "invoice", "bl_no", "currency", "customs_date", "customs_rate", "remit_date", "remit_rate",
+    "required": ["importer", "supplier", "mode", "invoice", "bl_no", "currency", "customs_date", "customs_rate", "remit_date", "remit_rate",
                  "items", "fees", "notes"],
     "additionalProperties": False,
 }

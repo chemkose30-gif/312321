@@ -45,6 +45,7 @@ async def lifespan(_app):
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
             set_item_tags(get_setting(c, "item_tags_extra", ""))  # 품목 이름에서 뗄 단어 (관리자가 더 넣은 것)
+            settle_auto_soon()               # 원가계산서가 없는 정산서 자동 작성 (AI 키가 있을 때)
             if get_setting(c, "mail_topics_v", "") != "4":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
                 for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
                                    " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():   # noqa
@@ -3828,6 +3829,22 @@ def cost_workbook(b: CostIn, r: dict):
     return wb
 
 
+def cost_save(c, body: "CostIn", r: dict, settle_id: int = 0, status: str = "done"):
+    """계산한 원가계산서를 저장 → 원가 체크·일계장 매입단가에 쓰임. 정산서에서 만든 것이면 그 정산서를 처리됨으로."""
+    if settle_id:   # 같은 정산서로 전에 만든 것(자동 작성 등)은 지움
+        old = c.execute("SELECT cost_filename FROM settlements WHERE id = ?", (settle_id,)).fetchone()
+        if old and old["cost_filename"]:
+            c.execute("DELETE FROM cost_sheets WHERE filename = ?", (old["cost_filename"],))
+    c.execute("DELETE FROM cost_sheets WHERE filename = ?", (r["filename"],))
+    for x in r["rows"]:
+        c.execute("INSERT INTO cost_sheets (filename, company, supplier, doc_no, remit_date, customs_date, rate, invoice,"
+                  " item, qty, unit_fx, unit_krw, landed, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (r["filename"], body.company, body.supplier.strip(), r["doc_no"], body.remit_date, body.customs_date,
+                   body.remit_rate, body.invoice, x["item"], x["qty"], x["unit_fx"], x["unit_krw"], x["landed"], now()))
+    if settle_id:
+        c.execute("UPDATE settlements SET status = ?, cost_filename = ? WHERE id = ?", (status, r["filename"], settle_id))
+
+
 # 만든 원가계산서를 사무실 원가계산 폴더로: 사무실 PC 자동 업로드 프로그램이 1시간마다 받아 감 (클라우드 서버는 Z: 드라이브에 못 씀)
 COST_OUT_DIR = Path(os.getenv("TEAMHUB_COST_OUT_DIR", str(Path(DB_PATH).parent / "cost_out")))
 
@@ -3887,14 +3904,7 @@ def costs_make(body: CostIn, download: bool = False, save: bool = False, to_fold
     r = cost_compute(body)
     if save:
         with db() as c:
-            c.execute("DELETE FROM cost_sheets WHERE filename = ?", (r["filename"],))
-            for x in r["rows"]:
-                c.execute("INSERT INTO cost_sheets (filename, company, supplier, doc_no, remit_date, customs_date, rate, invoice,"
-                          " item, qty, unit_fx, unit_krw, landed, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                          (r["filename"], body.company, body.supplier.strip(), r["doc_no"], body.remit_date, body.customs_date,
-                           body.remit_rate, body.invoice, x["item"], x["qty"], x["unit_fx"], x["unit_krw"], x["landed"], now()))
-            if settle_id:
-                c.execute("UPDATE settlements SET status = 'done', cost_filename = ? WHERE id = ?", (r["filename"], settle_id))
+            cost_save(c, body, r, settle_id)
         r["saved"] = True
     if download or to_folder:
         buf = io.BytesIO()
@@ -3980,6 +3990,7 @@ async def settlements_upload(file: UploadFile = File(...), user: dict = Depends(
             sid = c.execute("INSERT INTO settlements (filename, doc_date, supplier, size, uploaded_at) VALUES (?, ?, ?, ?, ?)",
                             (filename, d, sup, len(data), now())).lastrowid
     (SETTLE_DIR / f"{sid}.pdf").write_bytes(data)
+    settle_auto_soon()
     return {"ok": True, "id": sid, "date": d, "supplier": sup}
 
 
@@ -4009,15 +4020,114 @@ def _settle_match(c) -> list:
     return out
 
 
+SETTLE_LOCK = threading.Lock()
+
+
+def settle_auto_on(c) -> bool:
+    return get_setting(c, "settle_auto", "1") == "1"
+
+
+def _settle_extract(sid: int) -> dict:
+    """정산서 PDF → AI 결과 (저장해 둔 게 있으면 그것)."""
+    import base64
+    with db() as c:
+        s = c.execute("SELECT * FROM settlements WHERE id = ?", (sid,)).fetchone()
+    if s["extract"]:
+        return json.loads(s["extract"])
+    f = SETTLE_DIR / f"{sid}.pdf"
+    if not f.exists():
+        raise RuntimeError("PDF 파일이 서버에 없습니다.")
+    r = ai_mail.extract_costs([{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                              "data": base64.b64encode(f.read_bytes()).decode()}}])
+    if not r.get("supplier") and s["supplier"]:
+        r["supplier"] = s["supplier"]
+    with db() as c:
+        c.execute("UPDATE settlements SET extract = ?, error = '', status = CASE status WHEN 'new' THEN 'read' ELSE status END"
+                  " WHERE id = ?", (json.dumps(r, ensure_ascii=False), sid))
+    return r
+
+
+def settle_body(r: dict) -> "CostIn":
+    """AI 결과 → 원가계산서 입력 (송금일·환율이 없으면 통관일·신고환율로 — '확인 필요')."""
+    imp = (r.get("importer") or "").replace(" ", "")
+    return CostIn(company="켐코스" if "켐코스" in imp else "이알씨", supplier=r.get("supplier") or "?",
+                  mode=r.get("mode") if r.get("mode") in ("Sea", "Air", "Courier") else "Sea", invoice=r.get("invoice") or "",
+                  currency=r.get("currency") or "USD", remit_date=r.get("remit_date") or r.get("customs_date") or "",
+                  remit_rate=r.get("remit_rate") or r.get("customs_rate") or 0, customs_date=r.get("customs_date") or "",
+                  customs_rate=r.get("customs_rate") or 0,
+                  items=[CostItemIn(**{k: i.get(k) or (0 if k != "item" else "") for k in ("item", "qty", "unit_fx", "duty",
+                                                                                        "stamp_food", "stamp_chem")})
+                         for i in r.get("items") or [] if i.get("item") and i.get("qty")],
+                  fees=[CostFeeIn(name=f["name"], amount=f.get("amount") or 0) for f in r.get("fees") or [] if f.get("name")])
+
+
+def settle_auto_run():
+    """🤖 원가계산서가 없는 정산서(최근 400일)를 AI 로 읽어 원가계산서를 자동으로 만들어 둠 — 송금환율은 '확인 필요'."""
+    if not ai_mail.enabled() or not SETTLE_LOCK.acquire(blocking=False):
+        return
+    made = []
+    try:
+        with db() as c:
+            if not settle_auto_on(c):
+                return
+            since = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+            todo = [x for x in _settle_match(c) if not x["cost"] and x["status"] in ("new", "read")
+                    and (x["doc_date"] or "9") >= since and not x["error"]]
+        for x in todo[:30]:
+            try:
+                with AI_LOCK:
+                    r = _settle_extract(x["id"])
+                body = settle_body(r)
+                res = cost_compute(body)
+                with db() as c:
+                    cost_save(c, body, res, x["id"], status="auto")
+                made.append(f"{body.supplier} {body.customs_date[5:]}")
+            except Exception as e:
+                with db() as c:
+                    c.execute("UPDATE settlements SET error = ? WHERE id = ?", (str(e)[:300], x["id"]))
+        if made:
+            with db() as c:
+                for u in c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1"):
+                    notify(c, u["id"], f"🧮 원가계산서 자동 작성 {len(made)}건: {', '.join(made[:4])}{' 외' if len(made) > 4 else ''}"
+                                       " — 송금환율 확인 필요 (이익분석 → 원가계산서)")
+    finally:
+        SETTLE_LOCK.release()
+
+
+def settle_auto_soon():
+    threading.Thread(target=lambda: (time.sleep(3), settle_auto_run()), daemon=True).start()
+
+
+@app.get("/api/settlements/known")
+def settlements_known(user: dict = Depends(upload_user)):
+    """이미 올라온 정산서 파일 이름 (사무실 PC 가 새 파일만 올리게)."""
+    with db() as c:
+        return [urllib.parse.quote(r[0]) for r in c.execute("SELECT filename FROM settlements")]
+
+
+@app.post("/api/settlements/auto")
+def settlements_auto(body: dict, user: dict = Depends(admin_user)):
+    """자동 작성 켜기/끄기, run=true 면 지금 바로 찾기."""
+    with db() as c:
+        if "on" in body:
+            set_setting(c, "settle_auto", "1" if body["on"] else "0")
+    if body.get("run"):
+        settle_auto_soon()
+    return {"ok": True}
+
+
 @app.get("/api/settlements")
 def settlements_list(user: dict = Depends(current_user)):
     with db() as c:
         if not can_see_cost(c, user):
             raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
         rows = _settle_match(c)
-    todo = [r for r in rows if not r["cost"] and r["status"] not in ("done", "skip")]
-    return {"todo": todo, "total": len(rows), "matched": sum(1 for r in rows if r["cost"]),
-            "skipped": sum(1 for r in rows if r["status"] == "skip"), "ai": ai_mail.enabled()}
+        auto_on = settle_auto_on(c)
+    todo = [r for r in rows if not r["cost"] and r["status"] not in ("done", "skip", "auto")]
+    auto = [r for r in rows if r["status"] == "auto"]
+    return {"todo": todo, "auto": auto, "total": len(rows), "matched": sum(1 for r in rows if r["cost"] and r["status"] != "auto"),
+            "skipped": sum(1 for r in rows if r["status"] == "skip"), "ai": ai_mail.enabled(), "auto_on": auto_on,
+            "running": SETTLE_LOCK.locked()}
 
 
 @app.post("/api/settlements/{sid}/read")
