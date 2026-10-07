@@ -1,4 +1,5 @@
 """TeamHub - 사내 캘린더 & 업무지시 시스템 (FastAPI + SQLite)."""
+import asyncio
 import email
 import functools
 import hashlib
@@ -3837,6 +3838,40 @@ def costs_make(body: CostIn, download: bool = False, save: bool = False, user: d
         return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(r["filename"])})
     r["fee_names"] = COST_FEES
+    return r
+
+
+@app.post("/api/costs/extract")
+async def costs_extract(files: List[UploadFile] = File(...), user: dict = Depends(current_user)):
+    """📎 정산서·청구서·수입신고필증 PDF(스캔본도) → 원가계산서 입력값 (AI 키 필요)."""
+    import base64
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다. 서버 /etc/teamhub.env 에 TEAMHUB_ANTHROPIC_API_KEY 를 넣고 재시작하세요.")
+    blocks, total = [], 0
+    for f in files:
+        data = await f.read()
+        total += len(data)
+        name = (f.filename or "").lower()
+        if total > 30 * 1024 * 1024:
+            raise HTTPException(400, "파일이 너무 큽니다 (모두 합쳐 30MB 이하).")
+        if name.endswith(".pdf"):
+            blocks.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                         "data": base64.b64encode(data).decode()}})
+        elif name.endswith((".jpg", ".jpeg", ".png")):
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": "image/png" if name.endswith(".png") else "image/jpeg",
+                                                      "data": base64.b64encode(data).decode()}})
+        elif name.endswith((".xls", ".xlsx")):
+            blocks.append({"type": "text", "text": f"[첨부 {f.filename}]\n" + "\n".join(
+                "\t".join(str(v) for v in r) for r in (read_xls_sheets(data).popitem()[1] if name.endswith(".xls") else parse_sheet(f.filename, data)))[:40000]})
+    if not blocks:
+        raise HTTPException(400, "PDF·사진·엑셀 파일을 올려 주세요.")
+    try:
+        r = await asyncio.to_thread(ai_mail.extract_costs, blocks)
+    except Exception as e:
+        raise HTTPException(400, f"서류를 읽지 못했습니다: {e}")
     return r
 
 

@@ -131,3 +131,62 @@ def to_candidates(result: dict) -> list:
                     "supplier": s.get("supplier", ""), "prev_date": s.get("prev_date", "") if re.match(
                         r"^\d{4}-\d{2}-\d{2}$", s.get("prev_date", "")) else "", "ai": True})
     return out[:12]
+
+
+# ---- 수입 통관 정산서·청구서(스캔 PDF 포함) → 원가계산서 입력값
+COST_SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨/켐코스)의 회계 비서입니다. 수입 한 건의 서류 묶음(관세사 정산서, 통관 예상경비 청구서,
+수입신고필증, 포워더 인보이스, 창고·운송·하역 세금계산서, 납부서, 송금 내역 등 — 스캔본일 수 있음)을 읽고 원가계산서 입력값을 JSON 으로 뽑습니다.
+- supplier: 해외 공급사 짧은 이름 (예: JIAXING SUNLONG INDUSTRIAL & TRADING → "Sunlong"). mode: "Sea" / "Air" / "Courier".
+- invoice: 공급사 인보이스 번호(없으면 ""). bl_no: B/L 번호. currency: 결제 통화(USD 등).
+- customs_date: 수입신고 수리일(통관일) YYYY-MM-DD. customs_rate: 수입신고필증의 환율.
+- remit_date / remit_rate: 공급사에 대금을 송금한 날·환율이 서류에 있으면 (없으면 "" / 0).
+- items: 품목마다 — item(제품명 원문), qty(순중량 kg 합계, 같은 품목은 합침), unit_fx(외화 단가/kg), duty(그 품목 관세 원, 부가세 아님),
+  stamp_food(식품검역 인지대 원), stamp_chem(화학물질 인지대 원).
+- fees: 통관·물류 비용을 **부가세를 뺀 공급가액**으로, 서류에 나온 항목별로. 이름은 가능하면 이 표준 이름을 씀:
+  송금수수료, Wharfage, T.H.C, CFS Charge, Container Cleaning, Document Fee, B.A.F, C.A.F, C.R.C, E.B.S, E.R.S, Low Sulfur Surcharge,
+  PSS, Handling Charge, Drayage, 창고료, 운송료, 취급수수료, 통관수수료.
+  - 포워더 인보이스에 항목이 나뉘어 있으면 나눠서 적고(선박 운임 묶음 금액으로 적지 말 것), 같은 비용을 두 번 적지 마세요
+    (정산서 합계 = 세금계산서들의 합 — 세금계산서 기준으로 한 번씩만).
+  - 관세·부가가치세(수입 부가세)·미수금·입금액은 fees 가 아닙니다.
+- notes: 확인이 필요한 점 한두 줄 (예: "송금 환율 없음 — 신고 환율로 대신", "통관수수료 부가세 별도 금액 추정")."""
+
+COST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "supplier": {"type": "string"}, "mode": {"type": "string"}, "invoice": {"type": "string"}, "bl_no": {"type": "string"},
+        "currency": {"type": "string"}, "customs_date": {"type": "string"}, "customs_rate": {"type": "number"},
+        "remit_date": {"type": "string"}, "remit_rate": {"type": "number"},
+        "items": {"type": "array", "items": {"type": "object", "properties": {
+            "item": {"type": "string"}, "qty": {"type": "number"}, "unit_fx": {"type": "number"}, "duty": {"type": "number"},
+            "stamp_food": {"type": "number"}, "stamp_chem": {"type": "number"}},
+            "required": ["item", "qty", "unit_fx", "duty", "stamp_food", "stamp_chem"], "additionalProperties": False}},
+        "fees": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "amount": {"type": "number"}},
+                                            "required": ["name", "amount"], "additionalProperties": False}},
+        "notes": {"type": "string"},
+    },
+    "required": ["supplier", "mode", "invoice", "bl_no", "currency", "customs_date", "customs_rate", "remit_date", "remit_rate",
+                 "items", "fees", "notes"],
+    "additionalProperties": False,
+}
+
+
+def extract_costs(blocks: list) -> dict:
+    """정산서·청구서 묶음(PDF·사진 블록) → COST_SCHEMA 결과."""
+    global _client
+    import anthropic
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=API_KEY, timeout=300.0)
+    response = _client.beta.messages.create(
+        model=MODEL,
+        max_tokens=16000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        system=COST_SYSTEM,
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": COST_SCHEMA}},
+        messages=[{"role": "user", "content": list(blocks) + [{"type": "text", "text": "이 수입 건의 원가계산서 입력값을 뽑아 주세요."}]}],
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError("AI 가 이 서류 처리를 거절했습니다.")
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError("서류가 너무 길어 끝까지 읽지 못했습니다.")
+    return json.loads(next((b.text for b in response.content if b.type == "text"), "{}"))

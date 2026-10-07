@@ -2866,6 +2866,8 @@ async function openCostMake(after) {
   openModal(`<h2>✏ 원가계산서 만들기</h2>
     <div class="muted" style="font-size:12px;margin-bottom:6px">${def.template ? '그 회사가 마지막으로 올린 원가계산서 양식 그대로 엑셀을 만듭니다.' : '올린 원가계산서가 없어 기본 양식으로 만듭니다 (원가계산서를 하나 올리면 같은 양식으로 나옵니다).'}
       계산: 단가(원/kg) = 외화 단가 × 송금환율 · 통관수수료는 수량(kg) 비율로 나눔 · 통관금액(원/kg) = (관세+통관수수료+인지대) ÷ 수량 · 모두 원 단위 올림</div>
+    <div class="row" style="gap:8px;margin-bottom:6px"><label class="btn sm" style="margin:0">📎 정산서·청구서 PDF로 채우기<input type="file" id="cmPdf" accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx" multiple hidden></label>
+      <span class="muted" id="cmPdfNote" style="font-size:12px">관세사 정산서·청구서·수입신고필증·세금계산서 묶음(스캔 PDF도)을 올리면 AI가 읽어 아래 칸을 채웁니다.</span></div>
     <form autocomplete="off"><div class="grid2">
       <div><label>회사</label><select name="company"><option>이알씨</option><option>켐코스</option></select></div>
       <div><label>입고예정에서 불러오기 <small class="muted">(최근 90일)</small></label><select id="cmShip"><option value="">— 고르기 —</option>${def.shipments.map((x, i) => `<option value="${i}">${esc((x.cs_cleared_at || x.eta || '').slice(0, 10))} · ${esc(x.supplier || '')} · ${esc(x.item)} ${x.qty ? fmtQty(x.qty) + (x.unit || '') : ''}</option>`).join('')}</select></div>
@@ -2923,6 +2925,32 @@ async function openCostMake(after) {
         const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
         close(); toast('저장하고 엑셀을 받았습니다.'); after && after();
       } catch (err) { $('.err', bg).textContent = err.message; }
+    };
+    $('#cmPdf', bg).onchange = async e => {
+      const files = [...e.target.files]; if (!files.length) return;
+      const note = $('#cmPdfNote', bg); note.textContent = '📎 서류를 읽는 중… (1분쯤 걸릴 수 있어요)'; $('.err', bg).textContent = '';
+      const fd = new FormData(); files.forEach(x => fd.append('files', x));
+      try {
+        const res = await fetch('/api/costs/extract', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+        const d = await res.json(); if (!res.ok) throw new Error(d.detail || '읽지 못했습니다.');
+        const set = (k, v) => { if (v !== undefined && v !== null && v !== '' && v !== 0 && f[k]) f[k].value = v; };
+        set('supplier', d.supplier); set('invoice', d.invoice); set('customs_date', d.customs_date); set('customs_rate', d.customs_rate);
+        set('remit_date', d.remit_date || d.customs_date); set('remit_rate', d.remit_rate || d.customs_rate);
+        if (['Sea', 'Air', 'Courier'].includes(d.mode)) f.mode.value = d.mode;
+        if ([...f.currency.options].some(o => o.value === d.currency)) f.currency.value = d.currency;
+        tb.innerHTML = (d.items || []).map(it => itemRow(it)).join('') || itemRow();
+        (d.items || []).forEach((it, i) => { const tr = $$('tr', tb)[i]; $('[name=stamp_food]', tr).value = it.stamp_food || ''; $('[name=stamp_chem]', tr).value = it.stamp_chem || ''; });
+        const rows = $$('#cmFees .row', bg); rows.forEach(r => $('[name=famt]', r).value = '');
+        const norm = x => String(x || '').toLowerCase().replace(/[^a-z0-9가-힣]/g, '');
+        for (const fe of d.fees || []) {
+          const hit = rows.find(r => norm($('[name=fname]', r).value) === norm(fe.name) && !$('[name=famt]', r).value);
+          if (hit) $('[name=famt]', hit).value = fe.amount;
+          else { $('#cmFees', bg).insertAdjacentHTML('beforeend', feeRows([fe.name])); $('[name=famt]', $$('#cmFees .row', bg).pop()).value = fe.amount; }
+        }
+        note.innerHTML = `✅ 읽었습니다${d.bl_no ? ` (B/L ${esc(d.bl_no)})` : ''} — <b>숫자를 한 번 확인하세요.</b>${d.notes ? ' ' + esc(d.notes) : ''}${!d.remit_rate ? ' <span class="down">송금 환율이 서류에 없어 신고 환율을 넣었습니다.</span>' : ''}`;
+        calc();
+      } catch (err) { note.textContent = ''; $('.err', bg).textContent = err.message; }
+      e.target.value = '';
     };
     $('#cmSave', bg).onclick = () => send(false);
     $('#cmGo', bg).onclick = () => send(true);
