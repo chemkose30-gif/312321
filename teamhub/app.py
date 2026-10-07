@@ -6919,6 +6919,12 @@ def parse_bank(data: bytes, filename: str) -> list:
             out.append({"tx_at": when, "name": name[:100], "memo": memo[:100], "amount_in": ain, "amount_out": aout,
                         "balance": bal, "account": account,
                         "uniq": hashlib.sha1(f"{account}|{when}|{ain}|{aout}|{bal}|{name}".encode()).hexdigest()})
+    seen = {}
+    for r in out:   # 한 파일 안에 똑같은 줄이 여러 번(같은 날 같은 사람이 같은 금액 두 번 입금 등) → 둘째부터 번호를 붙여 따로 저장
+        n = seen.get(r["uniq"], 0)
+        seen[r["uniq"]] = n + 1
+        if n:
+            r["uniq"] = hashlib.sha1(f"{r['uniq']}|{n}".encode()).hexdigest()
     return out
 
 
@@ -6937,11 +6943,27 @@ async def bank_upload(file: UploadFile = File(...), dry_run: bool = False, user:
         return summary
     added = 0
     with db() as c:
+        # 겹치는 거래 빼기: ① 완전히 같은 줄(uniq) ② 같은 날·같은 금액·같은 잔액(잔액이 없으면 같은 입금자명)이 이미 있으면
+        #   — 은행·파일 형식에 따라 시간이 빠지거나 계좌번호가 없어도 같은 거래로 봄 (같은 날 같은 금액이 여러 번이면 개수만큼은 넣음)
+        norm = lambda n: re.sub(r"[\s()㈜주식회사]", "", n or "")
+        key2 = lambda r: (r["tx_at"][:10], r["amount_in"], r["amount_out"],
+                          r["balance"] if r["balance"] is not None else norm(r["name"]))
+        groups = {}
         for r in rows:
-            added += c.execute("INSERT OR IGNORE INTO bank_tx (uniq, tx_at, name, memo, amount_in, amount_out, balance, account,"
-                               " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                               (r["uniq"], r["tx_at"], r["name"], r["memo"], r["amount_in"], r["amount_out"], r["balance"],
-                                r["account"], now())).rowcount
+            groups.setdefault(key2(r), []).append(r)
+        for k, grp in groups.items():
+            day, ain, aout, b = k
+            if isinstance(b, (int, float)):
+                have = c.execute("SELECT COUNT(*) FROM bank_tx WHERE substr(tx_at, 1, 10) = ? AND amount_in = ? AND amount_out = ?"
+                                 " AND balance = ?", (day, ain, aout, b)).fetchone()[0]
+            else:
+                have = sum(1 for x in c.execute("SELECT name FROM bank_tx WHERE substr(tx_at, 1, 10) = ? AND amount_in = ?"
+                                                " AND amount_out = ?", (day, ain, aout)) if norm(x["name"]) == b)
+            for r in grp[have:]:
+                added += c.execute("INSERT OR IGNORE INTO bank_tx (uniq, tx_at, name, memo, amount_in, amount_out, balance, account,"
+                                   " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                   (r["uniq"], r["tx_at"], r["name"], r["memo"], r["amount_in"], r["amount_out"], r["balance"],
+                                    r["account"], now())).rowcount
         set_setting(c, "bank_meta", json.dumps({"filename": filename, "uploaded_at": now(), "by": user["name"]},
                                                ensure_ascii=False))
     return {**summary, "added": added, "duplicates": len(rows) - added}

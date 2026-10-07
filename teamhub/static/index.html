@@ -2776,29 +2776,41 @@ async function renderCollections() {
 
 function openBankUpload() {
   openModal(`<h2>🏦 은행 거래내역 올리기</h2>
-    <div class="muted" style="font-size:13px;line-height:1.7">인터넷뱅킹 → 거래내역 조회 → <b>엑셀 저장</b>한 파일을 그대로 올리세요 (xls·xlsx·csv). 기간이 겹쳐도 같은 거래는 한 번만 들어갑니다.
+    <div class="muted" style="font-size:13px;line-height:1.7">인터넷뱅킹 → 거래내역 조회 → <b>엑셀 저장</b>한 파일을 그대로 올리세요 (xls·xlsx·csv). <b>여러 파일을 한꺼번에</b> 골라도 되고(Ctrl+A),
+      기간·계좌가 겹쳐도 <b>같은 거래는 한 번만</b> 들어갑니다 (같은 날·같은 금액·같은 잔액이면 같은 거래로 봄).
       <br>⚙ 자동 업로드에서 은행 거래내역 폴더를 정하면 그 폴더에 저장한 최신 파일이 매일 자동으로 올라갑니다.</div>
-    <label>파일</label><input type="file" id="bkFile" accept=".xls,.xlsx,.csv,.htm,.html">
-    <div id="bkPrev" class="muted" style="margin-top:8px"></div><div class="err"></div>
+    <label>파일 <small class="muted">(여러 개 가능)</small></label><input type="file" id="bkFile" accept=".xls,.xlsx,.csv,.htm,.html" multiple>
+    <div id="bkPrev" class="muted" style="margin-top:8px;max-height:40vh;overflow:auto;line-height:1.7"></div><div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="bkGo" disabled>올리기</button></div>`, (bg, close) => {
-    const send = async dry => {
-      const fd = new FormData(); fd.append('file', $('#bkFile', bg).files[0]);
+    const send = async (file, dry) => {
+      const fd = new FormData(); fd.append('file', file);
       const res = await fetch(`/api/bank/upload?dry_run=${dry}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || '업로드 실패');
+      if (!res.ok) throw new Error(`${file.name}: ${data.detail || '업로드 실패'}`);
       return data;
     };
+    const files = () => [...$('#bkFile', bg).files];
     $('#bkFile', bg).onchange = async () => {
       $('.err', bg).textContent = ''; $('#bkGo', bg).disabled = true; $('#bkPrev', bg).textContent = '읽는 중…';
-      try {
-        const r = await send(true);
-        $('#bkPrev', bg).innerHTML = `<b>${esc(r.from)} ~ ${esc(r.to)}</b> 거래 <b>${r.rows}</b>건 (입금 ${r.in_count}건, ${krw(r.in_total)}원)을 찾았습니다.`;
-        $('#bkGo', bg).disabled = false;
-      } catch (err) { $('#bkPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+      const lines = []; let ok = 0;
+      for (const f of files()) {
+        try { const r = await send(f, true); ok++; lines.push(`${esc(f.name)} — <b>${esc(r.from)} ~ ${esc(r.to)}</b> 거래 ${r.rows}건 (입금 ${r.in_count}건, ${krw(r.in_total)}원)`); }
+        catch (err) { lines.push(`<span class="down">${esc(err.message)}</span>`); }
+      }
+      $('#bkPrev', bg).innerHTML = lines.join('<br>');
+      $('#bkGo', bg).disabled = !ok;
     };
     $('#bkGo', bg).onclick = async () => {
-      try { const r = await send(false); close(); toast(`새 거래 ${r.added}건을 넣었습니다${r.duplicates ? ` (이미 있던 ${r.duplicates}건 제외)` : ''}.`); renderCollections(); }
-      catch (err) { $('.err', bg).textContent = err.message; }
+      $('#bkGo', bg).disabled = true;
+      let added = 0, dup = 0; const errs = [];
+      for (const [i, f] of files().entries()) {
+        $('#bkGo', bg).textContent = `올리는 중… ${i + 1}/${files().length}`;
+        try { const r = await send(f, false); added += r.added; dup += r.duplicates; }
+        catch (err) { errs.push(err.message); }
+      }
+      if (errs.length) { $('.err', bg).textContent = errs.join(' / '); $('#bkGo', bg).textContent = '올리기'; }
+      else close();
+      toast(`새 거래 ${added}건을 넣었습니다${dup ? ` (겹친 ${dup}건은 빼고)` : ''}.`); renderCollections();
     };
   });
 }
