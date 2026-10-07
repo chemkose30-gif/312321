@@ -1283,6 +1283,8 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
     tot = {"qty": sum(l["qty"] or 0 for l in lines), "supply": sum(l["supply"] or 0 for l in lines),
            "vat": sum(l["vat"] or 0 for l in lines), "total": sum(l["total"] for l in lines),
            "docs": len({l["doc_id"] for l in lines}), "lines": len(lines)}
+    shown = {}  # 같은 품목(대소문자·띄어쓰기·포장 표시만 다른 것)은 처음 나온 이름 하나로
+    disp = lambda n: shown.setdefault(_item_key(item_base(n)), item_base(n))
     if group == "line":
         rows = lines
         cols = [("quote_date", "일자"), ("quote_no", "번호"), ("customer_name", "거래처"), ("name", "품목"), ("spec", "규격"),
@@ -1290,8 +1292,8 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
                 ("total", "합계"), ("creator", "담당자")]
     else:
         keyf = {"date": lambda l: (l["quote_date"],), "month": lambda l: (l["quote_date"][:7],),
-                "customer": lambda l: (l["customer_name"],), "item": lambda l: (item_base(l["name"]),),
-                "customer_item": lambda l: (l["customer_name"], item_base(l["name"])),
+                "customer": lambda l: (l["customer_name"],), "item": lambda l: (disp(l["name"]),),
+                "customer_item": lambda l: (l["customer_name"], disp(l["name"])),
                 "creator": lambda l: (l["creator"],)}[group]
         heads = {"date": ["일자"], "month": ["월"], "customer": ["거래처"], "item": ["품목"],
                  "customer_item": ["거래처", "품목"], "creator": ["담당자"]}[group]
@@ -1342,7 +1344,9 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
         uniq = {}
         for (n,) in c.execute("SELECT DISTINCT i.name FROM quote_items i JOIN quotes q ON q.id = i.quote_id"
                               " WHERE q.doc_type = ? AND i.name != ''", (doc_type,)):
-            uniq.setdefault(_item_key(item_base(n)), item_base(n))
+            k, b = _item_key(item_base(n)), item_base(n)
+            if k not in uniq or (uniq[k].isupper() and not b.isupper()):
+                uniq[k] = b
         names = sorted(uniq.values(), key=str.lower)
     return {"item_names": names[:3000], "group": group, "groups": REPORT_GROUPS, "cols": [{"key": k, "label": h} for k, h in cols],
             "rows": rows[:3000], "total": tot, "truncated": len(rows) > 3000}
@@ -3155,10 +3159,27 @@ def _item_key(s: str) -> str:
     return re.sub(r"[\s\-_.,·]", "", str(s or "")).lower()
 
 
+_PACK_UNIT = r"(?:kgs?|g|l|lt|ltr|ml|ea|lbs?|mt|tons?|kilos?)"
+_PACK_CNT = r"(?:ea|pcs?|bags?|drums?|boxe?s?|cans?|btls?|bottles?|pails?|ctns?|cartons?|개|포|통|드럼|박스|병|캔)"
+_PACK_RE = re.compile(
+    r"[\s,/_-]*[\(\[]?\s*(?:"
+    rf"\d+(?:\.\d+)?\s*{_PACK_UNIT}\.?(?:\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_CNT}?)?(?:\s*/\s*{_PACK_CNT})?"  # 25kg, 25kg*4, 25kg x 40bags, 25kg/drum
+    rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}?\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_UNIT}"  # 4x25kg, 4 drums x 200kg
+    rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}"  # 40bags, 4드럼
+    r")\s*[\)\]]?\s*$", re.I)
+
+
 def item_base(name: str) -> str:
-    """'Heliotropine(Piperonal) (25kg *4)_향' → 'Heliotropine(Piperonal)' (포장·용도 표시 제거)."""
-    n = re.sub(r"\s*\(\s*[\d.]+\s*(kg|g|l|ml|ea)\b[^)]*\).*$", "", str(name or ""), flags=re.I)
-    n = re.sub(r"_.*$", "", n)
+    """'Heliotropine(Piperonal) (25kg *4)_향' → 'Heliotropine(Piperonal)',
+    'Vanillin 25kg x 4' · 'Vanillin 4X25KG' · 'Vanillin(25kg/drum)' → 'Vanillin' (포장·용도 표시 제거)."""
+    n = re.sub(r"_.*$", "", str(name or ""))
+    n = re.sub(r"\s*\(\s*[\d.]+\s*(kg|g|l|ml|ea)\b[^)]*\).*$", "", n, flags=re.I)
+    for _ in range(4):  # '25kg x 4 bags 2drums' 처럼 여러 개 붙은 것도 차례로 뗌
+        m = _PACK_RE.search(n)
+        if not m or m.start() == 0:
+            break
+        n = n[:m.start()]
+    n = n.strip(" ,/-*x×")
     return n.strip() or str(name or "").strip()
 
 
