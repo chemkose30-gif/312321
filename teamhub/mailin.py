@@ -297,45 +297,6 @@ def extract(subject: str, text: str, sent: datetime) -> list:
     return cands[:12]
 
 
-PO_FILE_EXT = (".pdf", ".xlsx", ".xls", ".xlsm", ".csv", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".docx", ".txt", ".html", ".htm")
-
-
-def attachments(msg, limit: int = 25 * 1024 * 1024) -> list:
-    """발주서로 읽을 수 있는 첨부 [(파일이름, 종류, bytes)] — PDF·엑셀·사진·워드 (전체 25MB 까지)."""
-    out, total = [], 0
-    for part in msg.walk() if msg.is_multipart() else [msg]:
-        if part.get_content_type() == "message/rfc822" or part.is_multipart():
-            continue
-        name = part.get_filename() or ""
-        if not name or part.get_content_disposition() not in ("attachment", "inline"):
-            continue
-        if not name.lower().endswith(PO_FILE_EXT):
-            continue
-        data = part.get_payload(decode=True) or b""
-        if not data or len(data) > 10 * 1024 * 1024 or total + len(data) > limit:
-            continue
-        if part.get_content_disposition() == "inline" and part.get_content_type().startswith("image/") and len(data) < 30000:
-            continue                     # 서명·로고 같은 작은 그림
-        total += len(data)
-        out.append((name, part.get_content_type(), data))
-    return out[:8]
-
-
-PO_WORDS = re.compile(r"발\s*주|주\s*문\s*서|주문\s*드립|주문\s*합니|purchase\s*order|\bP\s*/?\s*O\b|\bPO\s*(?:no|#|번호)|order\s*sheet", re.I)
-NOT_PO = re.compile(r"발주\s*(?:취소|문의\s*드립니다만)|견적\s*(?:요청|문의|부탁)|quotation\s*request|request\s*for\s*quot", re.I)
-
-
-def looks_like_po(subject: str, body: str, files: list) -> bool:
-    """발주서 메일 같은지 (제목·첨부 이름·본문 앞부분에 '발주/주문서/PO')."""
-    names = " ".join(f[0] for f in files)
-    head = f"{subject}\n{names}"
-    if NOT_PO.search(subject or ""):
-        return False
-    if PO_WORDS.search(head):
-        return True
-    return bool(PO_WORDS.search(own_text(body or "")[:1500])) and bool(files)
-
-
 def parse_raw(raw: bytes) -> list:
     """원본 메일 → 저장할 항목 [{msg_id, from_addr, from_name, subject, sent_at, body, candidates, forwarder}]"""
     items = []
@@ -362,8 +323,7 @@ def parse_raw(raw: bytes) -> list:
                       "rcpt": (" ".join(str(v) for h in ("to", "cc", "x-gm-original-to", "x-original-to", "delivered-to",
                                                           "resent-to", "x-forwarded-to")
                                         for v in (msg.get_all(h, []) or [])) + " " + " ".join(owners))[:2000],
-                      "to": ", ".join(a for _, a in getaddresses([str(msg.get("to", "") or "")]))[:300],
-                      "files": attachments(msg)})
+                      "to": ", ".join(a for _, a in getaddresses([str(msg.get("to", "") or "")]))[:300]})
     return items
 
 

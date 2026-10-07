@@ -464,12 +464,7 @@ def init_db():
                 ("ecount_products", k, "TEXT NOT NULL DEFAULT ''") for k in PROD_TEXT_FIELDS if k not in ("spec", "unit")) + (
                 ("ecount_products", "buy_price", "REAL NOT NULL DEFAULT 0"),
                 ("ecount_products", "updated_at", "TEXT NOT NULL DEFAULT ''"),
-                ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''"),
-                ("notifications", "link", "TEXT NOT NULL DEFAULT ''"),
-                ("quotes", "mail_id", "INTEGER"),
-                ("mail_items", "po_status", "TEXT NOT NULL DEFAULT ''"),
-                ("mail_items", "po_quote_id", "INTEGER"),
-                ("mail_items", "po_error", "TEXT NOT NULL DEFAULT ''")):
+                ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
@@ -524,13 +519,12 @@ def set_setting(c, key: str, value: str):
               (key, value))
 
 
-def notify(c, user_id: int, message: str, task_id: Optional[int] = None, link: str = ""):
+def notify(c, user_id: int, message: str, task_id: Optional[int] = None):
     c.execute(
-        "INSERT INTO notifications (user_id, message, task_id, created_at, link) VALUES (?, ?, ?, ?, ?)",
-        (user_id, message, task_id, now(), link),
+        "INSERT INTO notifications (user_id, message, task_id, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, message, task_id, now()),
     )
-    push_async(user_id, {"title": "TeamHub", "body": message,
-                         "url": f"/#task={task_id}" if task_id else f"/#{link}" if link else "/",
+    push_async(user_id, {"title": "TeamHub", "body": message, "url": f"/#task={task_id}" if task_id else "/",
                          "tag": f"task-{task_id}" if task_id else "teamhub"})
 
 
@@ -4434,7 +4428,7 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
     items = mailin.parse_raw(raw)
     emails = {r["email"].lower(): r["id"] for r in c.execute("SELECT id, email FROM users WHERE email != ''")}
     collect = (mailer.MAIL_FROM or "").lower()
-    added, dup, skipped, touched, po_queue = 0, 0, 0, {}, []
+    added, dup, skipped, touched = 0, 0, 0, {}
     for it in items:
         # 모으는 주소(info@ = 발송 메일함)는 주인 판단에서 뺀다 (관리자 메일로 등록돼 있어도 모든 메일이 관리자 것이 되지 않게)
         oid = owner_id or next((emails[a] for a in it["owners"] if a in emails and a != collect), None)
@@ -4458,11 +4452,6 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
             added += 1
             touched[key] = oid
             watch_bl_numbers(c, cur.lastrowid, oid, it, bulk)
-            if not bulk and po_auto_on(c) and mailin.looks_like_po(it["subject"], it["body"], it["files"]) \
-                    and not is_our_mail(c, it["from_addr"]):
-                po_save_files(cur.lastrowid, it["files"])
-                c.execute("UPDATE mail_items SET po_status = 'pending' WHERE id = ?", (cur.lastrowid,))
-                po_queue.append(cur.lastrowid)
     found, ai_queue, heads = 0, [], []
     for key in touched:
         head_id, cands, foreign = refresh_thread(c, key)
@@ -4484,8 +4473,6 @@ def save_mail_items(c, raw: bytes, owner_id: Optional[int] = None, bulk: bool = 
               " AND thread_key NOT IN (SELECT thread_key FROM mail_items WHERE created_at >= ?)", (cutoff,))
     if ai_queue:
         threading.Thread(target=run_ai_queue, args=(ai_queue,), daemon=True).start()
-    if po_queue:
-        threading.Thread(target=run_po_queue, args=(po_queue,), daemon=True).start()
     if added and not bulk:
         bl_watch_soon()
     out = {"messages": len(items), "added": added, "duplicates": dup, "skipped": skipped, "with_schedule": found}
@@ -5350,296 +5337,6 @@ def mail_owner_check(row, user: dict):
         raise HTTPException(403, "메일 주인만 할 수 있습니다.")
 
 
-
-# ---- 발주서 메일 → 거래명세서 초안 (발행 전 '작성중' 상태로 만들어 두고 담당자에게 알림)
-PO_DIR = Path(os.getenv("TEAMHUB_PO_DIR", str(Path(DB_PATH).parent / "po_files")))
-
-
-def po_auto_on(c) -> bool:
-    return get_setting(c, "po_auto", "1") == "1"
-
-
-def is_our_mail(c, addr: str) -> bool:
-    """우리 회사(직원·모으는 주소·같은 도메인)가 보낸 메일 — 우리가 해외에 낸 발주 등은 거래명세서 대상 아님."""
-    addr = (addr or "").lower()
-    ours = {r[0].lower() for r in c.execute("SELECT email FROM users WHERE email != ''")} | {(mailer.MAIL_FROM or "").lower()}
-    doms = {a.split("@")[-1] for a in ours if "@" in a} - {"gmail.com", "naver.com", "hanmail.net", "daum.net", "nate.com",
-                                                          "hotmail.com", "outlook.com", "kakao.com"}
-    return addr in ours or (addr.split("@")[-1] in doms if "@" in addr else False)
-
-
-def po_save_files(mid: int, files: list):
-    if not files:
-        return
-    d = PO_DIR / str(mid)
-    d.mkdir(parents=True, exist_ok=True)
-    for i, (name, ctype, data) in enumerate(files):
-        safe = re.sub(r"[^\w.\-가-힣]", "_", name)[-80:]
-        (d / f"{i:02d}_{safe}").write_bytes(data)
-
-
-def po_load_files(mid: int) -> list:
-    d = PO_DIR / str(mid)
-    return [(f.name[3:], f.read_bytes()) for f in sorted(d.iterdir())] if d.is_dir() else []
-
-
-def _sheet_text(name: str, data: bytes) -> str:
-    low = name.lower()
-    try:
-        if low.endswith(".xls"):
-            sheets = read_xls_sheets(data)
-            rows = [r for rs in sheets.values() for r in rs]
-        else:
-            rows = parse_sheet(name, data)
-    except Exception:
-        return ""
-    return "\n".join("\t".join(str(v) for v in r).rstrip() for r in rows[:400] if any(str(v).strip() for v in r))
-
-
-def _docx_text(data: bytes) -> str:
-    import io
-    import zipfile
-    try:
-        xml = zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8", "replace")
-    except Exception:
-        return ""
-    xml = re.sub(r"</w:p>|</w:tr>", "\n", xml)
-    xml = re.sub(r"</w:tc>", "\t", xml)
-    return html.unescape(re.sub(r"<[^>]+>", "", xml))
-
-
-def po_blocks(files: list) -> list:
-    """첨부 → Claude 메시지 블록 (PDF·사진은 그대로 보여주고, 엑셀·워드는 글자로)."""
-    import base64
-    out = []
-    for name, data in files:
-        low = name.lower()
-        if low.endswith(".pdf"):
-            out.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                       "data": base64.b64encode(data).decode()}, "title": name[:200]})
-        elif low.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-            mt = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}[low.rsplit(".", 1)[1]]
-            if len(data) <= 5 * 1024 * 1024:
-                out.append({"type": "image", "source": {"type": "base64", "media_type": f"image/{mt}",
-                                                        "data": base64.b64encode(data).decode()}})
-        else:
-            txt = _sheet_text(name, data) if low.endswith((".xlsx", ".xls", ".xlsm", ".csv")) else \
-                _docx_text(data) if low.endswith(".docx") else \
-                mailin.html_to_text(data.decode("utf-8", "replace")) if low.endswith((".html", ".htm")) else \
-                data.decode("utf-8", "replace")
-            if txt.strip():
-                out.append({"type": "text", "text": f"[첨부: {name}]\n{txt[:40000]}"})
-    return out
-
-
-PO_HEAD = {"name": ("품명", "품목", "제품명", "상품명", "description", "item", "product"), "spec": ("규격", "포장", "spec", "packing"),
-           "unit": ("단위", "unit"), "qty": ("수량", "주문량", "발주량", "qty", "quantity"),
-           "unit_price": ("단가", "unit price", "price"), "cas_no": ("cas",)}
-
-
-def po_rule_extract(files: list) -> dict:
-    """AI 없이: 엑셀 발주서에서 품명·수량·단가 표를 찾아 읽음."""
-    items = []
-    for name, data in files:
-        if not name.lower().endswith((".xlsx", ".xls", ".xlsm", ".csv")):
-            continue
-        try:
-            rows = [r for rs in read_xls_sheets(data).values() for r in rs] if name.lower().endswith(".xls") \
-                else parse_sheet(name, data)
-        except Exception:
-            continue
-        for hi, hdr in enumerate(rows[:40]):
-            cells = [str(h or "").replace(" ", "").lower() for h in hdr]
-            col = {k: next((i for i, h in enumerate(cells) if any(w.replace(" ", "") in h for w in ws)), None)
-                   for k, ws in PO_HEAD.items()}
-            if col["name"] is None or col["qty"] is None:
-                continue
-            for r in rows[hi + 1:]:
-                get = lambda k: str(r[col[k]]).strip() if col[k] is not None and col[k] < len(r) and r[col[k]] is not None else ""
-                nm = get("name")
-                if not nm or re.search(r"합\s*계|소\s*계|총\s*계|total|부가세|vat", nm, re.I):
-                    continue
-                num = lambda v: float(re.sub(r"[^\d.\-]", "", v) or 0) if re.search(r"\d", v) else 0
-                items.append({"name": nm, "spec": get("spec"), "unit": get("unit"), "qty": num(get("qty")),
-                              "unit_price": num(get("unit_price")), "cas_no": get("cas_no")})
-            break
-    return {"is_po": bool(items), "customer": "", "customer_contact": "", "customer_phone": "", "customer_email": "",
-            "order_no": "", "delivery_date": "", "delivery_place": "", "payment_terms": "", "note": "", "items": items}
-
-
-def _match_customer(c, name: str, from_addr: str) -> dict:
-    """발주처 이름/보낸 메일 주소 → 등록 거래처 또는 이전 문서의 거래처 정보."""
-    key = _norm_company(name)
-    dom = from_addr.split("@")[-1].lower() if "@" in (from_addr or "") else ""
-    for r in c.execute("SELECT * FROM ecount_customers"):
-        r = dict(r)
-        if key and _norm_company(r["name"]) == key:
-            return {"src": "master", **r}
-    if dom and dom not in ("gmail.com", "naver.com", "hanmail.net", "daum.net", "nate.com", "hotmail.com", "outlook.com"):
-        for r in c.execute("SELECT * FROM ecount_customers WHERE email LIKE ?", (f"%@{dom}",)):
-            return {"src": "master", **dict(r)}
-    rows = c.execute("SELECT customer_name, cust_cd, customer_contact, customer_phone, customer_email, customer_biz_no,"
-                     " customer_ceo, customer_address, customer_fax, payment_terms FROM quotes ORDER BY id DESC LIMIT 5000").fetchall()
-    for r in rows:
-        if (key and _norm_company(r["customer_name"]) == key) or \
-                (dom and str(r["customer_email"] or "").lower().endswith("@" + dom) and dom not in ("gmail.com", "naver.com")):
-            return {"src": "doc", "code": r["cust_cd"], "name": r["customer_name"], "contact": r["customer_contact"],
-                    "phone": r["customer_phone"], "email": r["customer_email"], "biz_no": r["customer_biz_no"],
-                    "ceo": r["customer_ceo"], "address": r["customer_address"], "fax": r["customer_fax"],
-                    "pay_term": r["payment_terms"]}
-    if key:  # 이름 일부만 같은 등록 거래처 (예: '서울향료' → '서울향료(주) 1공장') — 하나뿐일 때만
-        hits = [dict(r) for r in c.execute("SELECT * FROM ecount_customers") if key in _norm_company(r["name"])]
-        if len(hits) == 1:
-            return {"src": "master", **hits[0]}
-    return {}
-
-
-def _match_item(c, it: dict, customer: str) -> dict:
-    """주문 품목 → 등록 품목(코드·규격·단위·단가) + 이 거래처에 마지막으로 판 단가."""
-    key = _item_key(item_base(it["name"]))
-    prod = None
-    for r in c.execute("SELECT * FROM ecount_products"):
-        if _item_key(item_base(r["name"])) == key or (it.get("cas_no") and r["cas_no"] == it["cas_no"]):
-            prod = dict(r)
-            break
-    last = None
-    for r in c.execute("SELECT qi.name, qi.unit_price, qi.unit, qi.spec, qi.prod_cd, qi.cas_no, qi.origin FROM quote_items qi"
-                       " JOIN quotes q ON q.id = qi.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft'"
-                       " AND q.customer_name = ? ORDER BY q.quote_date DESC, q.id DESC LIMIT 500", (customer,)):
-        if _item_key(item_base(r["name"])) == key:
-            last = dict(r)
-            break
-    price = it.get("unit_price") or (last or {}).get("unit_price") or (prod or {}).get("price") or 0
-    return {"prod_cd": (prod or {}).get("code") or (last or {}).get("prod_cd") or "",
-            "cas_no": it.get("cas_no") or (prod or {}).get("cas_no") or (last or {}).get("cas_no") or "",
-            "origin": (prod or {}).get("origin") or (last or {}).get("origin") or "",
-            "name": it["name"].strip(), "spec": it.get("spec") or "", "unit": it.get("unit") or (prod or {}).get("unit") or "",
-            "qty": float(it.get("qty") or 0), "unit_price": float(price),
-            "note": "" if it.get("unit_price") else ("이전 판매 단가" if last and last.get("unit_price") else
-                                                     "등록 단가" if prod and prod.get("price") else "단가 확인 필요")}
-
-
-def po_to_statement(c, mid: int, res: dict) -> int:
-    """추출 결과 → 거래명세서 '작성중' 초안. 만든 문서 id."""
-    m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
-    cust = _match_customer(c, res.get("customer") or m["from_name"], m["from_addr"])
-    cname = cust.get("name") or res.get("customer") or ""
-    if not cname:   # 누가 보낸 발주인지 모름 → 보낸 사람 이름 + 확인 표시
-        cname = f"{m['from_name'] or m['from_addr']} (거래처 확인 필요)"
-    items = [_match_item(c, it, cname) for it in res.get("items") or [] if str(it.get("name") or "").strip()]
-    if not items:
-        raise RuntimeError("발주서에서 품목을 찾지 못했습니다.")
-    creator = m["owner_id"] or c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1 ORDER BY id").fetchone()[0]
-    today = datetime.now().strftime("%Y-%m-%d")
-    notes = [f"📧 발주 메일에서 자동 작성 ({m['sent_at']} {m['from_name'] or m['from_addr']}: {m['subject']})"]
-    if res.get("order_no"):
-        notes.append(f"발주번호 {res['order_no']}")
-    if res.get("delivery_place"):
-        notes.append(f"납품 장소 {res['delivery_place']}")
-    if res.get("note"):
-        notes.append(res["note"])
-    body = QuoteIn(doc_type="statement", status="draft", customer_name=cname[:200], cust_cd=cust.get("code") or "",
-                   title=(f"발주 {res['order_no']}" if res.get("order_no") else m["subject"])[:200],
-                   customer_contact=res.get("customer_contact") or cust.get("contact") or "",
-                   customer_phone=res.get("customer_phone") or cust.get("phone") or cust.get("mobile") or "",
-                   customer_email=res.get("customer_email") or cust.get("email") or m["from_addr"],
-                   customer_biz_no=cust.get("biz_no") or "", customer_ceo=cust.get("ceo") or "",
-                   customer_address=cust.get("address") or "", customer_fax=cust.get("fax") or "",
-                   quote_date=res["delivery_date"] if re.match(r"^\d{4}-\d{2}-\d{2}$", res.get("delivery_date") or "") and
-                   res["delivery_date"] >= today else today,
-                   delivery=res.get("delivery_date") or "", payment_terms=res.get("payment_terms") or cust.get("pay_term") or "",
-                   note="\n".join(notes)[:2000], items=[QuoteItemIn(**i) for i in items])
-    quote_no = next_quote_no(c, body.quote_date, "statement")
-    ts = now()
-    qid = c.execute(
-        f"INSERT INTO quotes (quote_no, doc_type, source_id, {', '.join(QUOTE_FIELDS)}, task_id, created_by,"
-        f" created_at, updated_at, mail_id) VALUES (?, 'statement', NULL, {', '.join('?' * len(QUOTE_FIELDS))}, NULL, ?, ?, ?, ?)",
-        (quote_no, *[str(getattr(body, f)).strip() for f in QUOTE_FIELDS], creator, ts, ts, mid)).lastrowid
-    save_quote_items(c, qid, body.items, body.vat_mode)
-    c.execute("UPDATE mail_items SET po_status = 'done', po_quote_id = ?, po_error = '' WHERE id = ?", (qid, mid))
-    # 일정이 없는 메일이라도 '확인할 것'에 남김 (30일 뒤 정리 대상에서도 빠짐)
-    c.execute("UPDATE mail_items SET status = 'new' WHERE thread_key = ? AND status = 'none'", (m["thread_key"],))
-    who = set(topic_members(c, "order")) | ({m["owner_id"]} if m["owner_id"] else set())
-    unknown = sum(1 for i in items if not i["unit_price"])
-    checks = ([f"단가 {unknown}건"] if unknown else []) + (["거래처"] if not cust else [])
-    msg = (f"📝 발주서 → 거래명세서 초안: {cname} · {items[0]['name']}{f' 외 {len(items) - 1}건' if len(items) > 1 else ''}"
-           f"{f' ({chr(183).join(checks)} 확인 필요)' if checks else ''} — 확인 후 발행하세요")
-    for uid in who:
-        notify(c, uid, msg, link=f"quote={qid}")
-    return qid
-
-
-def po_process(mid: int, force: bool = False) -> dict:
-    """메일 하나를 발주서로 읽어 거래명세서 초안을 만듦 (이미 만들었으면 그대로)."""
-    with db() as c:
-        m = c.execute("SELECT * FROM mail_items WHERE id = ?", (mid,)).fetchone()
-        if not m:
-            raise RuntimeError("메일이 없습니다.")
-        if m["po_quote_id"] and c.execute("SELECT 1 FROM quotes WHERE id = ?", (m["po_quote_id"],)).fetchone():
-            return {"quote_id": m["po_quote_id"], "existing": True}
-        m = dict(m)
-    files = po_load_files(mid)
-    try:
-        if ai_mail.enabled():
-            res = ai_mail.extract_po(m["subject"], f"{m['from_name']} <{m['from_addr']}>", m["sent_at"], m["body"], po_blocks(files))
-        else:
-            res = po_rule_extract(files)
-            if not res["items"]:
-                raise RuntimeError("AI 키가 없어 엑셀 발주서만 읽을 수 있습니다 (PDF·사진 발주서는 AI 필요). 직접 작성해 주세요.")
-        if not res.get("is_po") and not force:
-            with db() as c:
-                c.execute("UPDATE mail_items SET po_status = 'not_po', po_error = '' WHERE id = ?", (mid,))
-            return {"not_po": True}
-        with db() as c:
-            return {"quote_id": po_to_statement(c, mid, res)}
-    except Exception as e:
-        with db() as c:
-            c.execute("UPDATE mail_items SET po_status = 'error', po_error = ? WHERE id = ?", (str(e)[:300], mid))
-        raise
-
-
-def run_po_queue(ids: list):
-    time.sleep(1)
-    with AI_LOCK:
-        for mid in ids:
-            try:
-                po_process(mid)
-            except Exception:
-                pass
-
-
-@app.post("/api/mailin/{mid}/po")
-def mailin_po(mid: int, user: dict = Depends(current_user)):
-    """📝 이 메일(쓰레드)의 발주서로 거래명세서 초안 만들기 — 쓰레드에서 첨부가 있는 가장 최근 메일을 씀."""
-    with db() as c:
-        head = mail_item(c, mid, user)
-        rows = thread_rows(c, head["thread_key"])
-        done = next((r for r in rows if r["po_quote_id"] and
-                     c.execute("SELECT 1 FROM quotes WHERE id = ?", (r["po_quote_id"],)).fetchone()), None)
-        if done:
-            return {"quote_id": done["po_quote_id"], "existing": True}
-        target = next((r for r in reversed(rows) if (PO_DIR / str(r["id"])).is_dir()), None) or \
-            next((r for r in reversed(rows) if not is_our_mail(c, r["from_addr"])), None) or rows[-1]
-    try:
-        r = po_process(target["id"], force=True)
-    except Exception as e:
-        raise HTTPException(400, f"발주서를 읽지 못했습니다: {e}")
-    return r
-
-
-@app.get("/api/settings/po-auto")
-def get_po_auto(_: dict = Depends(current_user)):
-    with db() as c:
-        return {"on": po_auto_on(c), "ai": ai_mail.enabled()}
-
-
-@app.put("/api/settings/po-auto")
-def put_po_auto(body: dict, _: dict = Depends(admin_user)):
-    with db() as c:
-        set_setting(c, "po_auto", "1" if body.get("on") else "0")
-    return {"ok": True}
-
-
 @app.get("/api/mailin")
 def mailin_list(status: str = "new", q: str = "", topic: str = "", user: dict = Depends(current_user)):
     clause, params = mail_visible(user)
@@ -5698,12 +5395,6 @@ def mailin_get(mid: int, user: dict = Depends(current_user)):
         r["thread"] = [{"id": t["id"], "from_name": t["from_name"], "from_addr": t["from_addr"], "sent_at": t["sent_at"],
                         "subject": t["subject"], "body": t["body"]} for t in thread_rows(c, r["thread_key"])]
         r["candidates"] = match_shipments(c, json.loads(r["t_candidates"] or "[]"), r["subject"])
-        rows = thread_rows(c, r["thread_key"])
-        po = next((t for t in reversed(rows) if t["po_quote_id"]), None)
-        q = c.execute("SELECT id, quote_no, status FROM quotes WHERE id = ?", (po["po_quote_id"],)).fetchone() if po else None
-        st = next((t["po_status"] for t in reversed(rows) if t["po_status"]), "")
-        r["po"] = {"quote_id": q["id"], "quote_no": q["quote_no"], "status": q["status"]} if q else \
-            {"status": st, "error": next((t["po_error"] for t in reversed(rows) if t["po_error"]), "")}
     return r
 
 

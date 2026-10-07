@@ -440,7 +440,7 @@ async function refreshNotifs(renderPanel = false) {
   if (!renderPanel) return;
   const p = $('#notifPanel');
   // 알림 내용으로 갈 곳: 업무 / 메일 일정 / 입고예정
-  const target = i => i.link ? i.link : i.task_id ? 'task' : /^📥|^📩/.test(i.message) ? 'mailin' : /^(🚢|📦|🛳|✅|🚚|✈️)|입고|통관|UNI-PASS|B\/L/.test(i.message) ? 'shipments' : '';
+  const target = i => i.task_id ? 'task' : /^📥|^📩/.test(i.message) ? 'mailin' : /^(🚢|📦|🛳|✅|🚚|✈️)|입고|통관|UNI-PASS|B\/L/.test(i.message) ? 'shipments' : '';
   p.innerHTML = `<div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line)">
       <b>${showRead ? '읽은 알림' : '알림'}</b><span class="spacer"></span>
       <button class="btn sm" id="notifMode" style="margin-right:4px">${showRead ? '← 새 알림' : '읽은 알림'}</button>${showRead || !n.items.length ? '' : '<button class="btn sm" id="readAll">모두 읽음</button>'}</div>` +
@@ -458,9 +458,7 @@ async function refreshNotifs(renderPanel = false) {
   $$('.notif-item', p).forEach(el => el.onclick = async () => {
     p.classList.add('hidden');
     if (!showRead) { await api(`/api/notifications/${el.dataset.nid}/read`, {method: 'POST'}).catch(() => {}); refreshNotifs(); }
-    const q = /^quote=(\d+)/.exec(el.dataset.go || '');
     if (el.dataset.task) openTask(+el.dataset.task);
-    else if (q) { go('statements'); openQuoteView(+q[1]); }
     else if (el.dataset.go) go(el.dataset.go);
   });
 }
@@ -477,8 +475,6 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); instal
 function openFromHash() {   // 알림을 눌러 들어오면 #task=번호 → 그 업무 열기
   const m = location.hash.match(/task=(\d+)/);
   if (m && state.me) { history.replaceState(null, '', location.pathname); openTask(+m[1]); }
-  const q = location.hash.match(/quote=(\d+)/);
-  if (q && state.me) { history.replaceState(null, '', location.pathname); go('statements'); openQuoteView(+q[1]); }
 }
 window.addEventListener('hashchange', openFromHash);
 
@@ -674,8 +670,6 @@ async function openMailWatch() {
   openModal(`<h2>📮 받는 사람별 확인 담당</h2>
     <div class="muted" style="font-size:13px;margin-bottom:8px">받는 사람(To·Cc·전달한 메일함)에 이 이름이나 메일 주소가 있으면, 고른 직원에게 알림이 가고 ⭐ 내 담당에 모입니다. 일정이 없는 메일도 '확인할 것'에 남습니다.</div>
     <div id="wRules"></div><button type="button" class="btn sm" id="wAdd">+ 규칙 추가</button>
-    <div class="card" style="padding:10px;margin-top:12px"><label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="wPo" style="width:auto">📝 발주서 메일이 오면 거래명세서 초안(작성중) 자동으로 만들기</label>
-      <small class="muted" id="wPoNote">거래처가 보낸 발주 메일(제목·첨부 이름에 발주/주문서/PO)의 본문과 첨부(PDF·엑셀·사진)를 읽어 초안을 만들고 발주 문의 담당자에게 알림을 보냅니다.</small></div>
     <div class="err"></div><div class="actions"><button class="btn" data-close>취소</button><button class="btn primary" id="wSave">저장</button></div>`, (bg, close) => {
     const read = () => $$('[data-rule]', bg).map(el => ({label: $('[name=label]', el).value, match: $('[name=match]', el).value,
       users: $$('[name=u]', el).filter(x => x.checked).map(x => x.value).join(',')}));
@@ -685,11 +679,6 @@ async function openMailWatch() {
     };
     draw();
     $('#wAdd', bg).onclick = () => { list = read(); list.push({label: '', match: '', users: ''}); draw(); };
-    api('/api/settings/po-auto').then(r => {
-      $('#wPo', bg).checked = r.on;
-      if (!r.ai) $('#wPoNote', bg).textContent += ' ※ AI 키가 없어 지금은 엑셀 발주서만 읽습니다 (PDF·사진은 AI 필요).';
-    });
-    $('#wPo', bg).onchange = async e => { await api('/api/settings/po-auto', {method: 'PUT', body: {on: e.target.checked}}); toast(e.target.checked ? '발주서 자동 초안을 켰습니다.' : '발주서 자동 초안을 껐습니다.'); };
     $('#wSave', bg).onclick = async () => {
       try { await api('/api/mailin/watch', {method: 'PUT', body: {rules: read()}}); close(); toast('저장했습니다. 기존 메일에도 적용했습니다.'); renderMailin(); }
       catch (err) { $('.err', bg).textContent = err.message; }
@@ -774,11 +763,7 @@ async function openMailItem(id) {
       ${m.owner_id === state.me.id ? `<label style="display:flex;gap:4px;align-items:center;margin:0;font-weight:400;font-size:13px"><input type="checkbox" id="miPriv" style="width:auto" ${m.private ? 'checked' : ''}>🔒 나만 보기 (다른 직원과 공유 안 함)</label>`
         : ''}</div>
     ${m.candidates.length ? `<div class="row" style="gap:6px;margin:10px 0">${m.candidates.map((c, i) => candChip(c, `data-ci="${i}"`)).join('')}</div>` : '<div class="muted" style="margin:10px 0">찾은 날짜가 없습니다. 아래 버튼으로 직접 등록할 수 있습니다.</div>'}
-    <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn sm" data-mk="ship">🚢 입고예정으로</button><button class="btn sm" data-mk="event">📅 일정으로</button><button class="btn sm" data-mk="task">📋 업무로</button>
-      ${m.po && m.po.quote_id ? `<button class="btn sm primary" id="miPoOpen">📝 거래명세서 초안 ${esc(m.po.quote_no)}${m.po.status === 'draft' ? ' (작성중)' : ''}</button>`
-        : `<button class="btn sm" id="miPo" title="발주서(본문·첨부 PDF·엑셀·사진)를 읽어 거래명세서 초안을 만듭니다">📝 발주서 → 거래명세서</button>`}</div>
-    ${m.po && !m.po.quote_id && m.po.status === 'pending' ? '<div class="muted" style="font-size:12px;margin-bottom:6px">⏳ 발주서를 읽는 중입니다…</div>' : ''}
-    ${m.po && !m.po.quote_id && m.po.status === 'error' ? `<div class="err" style="margin-bottom:6px">발주서 자동 읽기 실패: ${esc(m.po.error)}</div>` : ''}
+    <div class="row" style="gap:6px;margin-bottom:8px"><button class="btn sm" data-mk="ship">🚢 입고예정으로</button><button class="btn sm" data-mk="event">📅 일정으로</button><button class="btn sm" data-mk="task">📋 업무로</button></div>
     ${m.summary ? `<div style="font-size:13px;margin-bottom:6px"><b>요약</b> ${esc(m.summary)}</div>` : ''}
     ${m.thread.length > 1 ? `<div style="font-size:13px;margin-bottom:4px"><b>💬 이 쓰레드의 메일 ${m.thread.length}통</b> <small class="muted">(오래된 것부터)</small></div>
       ${m.thread.slice(0, -1).map(t => `<details style="border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:4px"><summary style="cursor:pointer;font-size:13px">${esc(t.sent_at)} · ${esc(t.from_name || t.from_addr)} · <span class="muted">${esc(t.subject)}</span></summary>
@@ -790,14 +775,6 @@ async function openMailItem(id) {
     ${String(m.ai_status).startsWith('error') ? `<div class="err">${esc(m.ai_status)}</div>` : ''}
     <div class="actions">${m.owner_id === state.me.id || (!m.owner_id && state.me.role === 'admin') ? '<button class="btn danger" id="miDel">삭제</button>' : ''}<span class="spacer"></span>${state.miAi ? '<button class="btn" id="miAi">🤖 AI로 쓰레드 다시 읽기</button>' : ''}<button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
     $$('[data-v]', bg).forEach(b => b.onclick = () => { $$('[data-v]', bg).forEach(x => x.classList.toggle('active', x === b)); $('#miBody', bg).textContent = b.dataset.v === 'tr' ? m.translation : m.body; });
-    if ($('#miPoOpen', bg)) $('#miPoOpen', bg).onclick = () => { close(); openQuoteView(m.po.quote_id); };
-    if ($('#miPo', bg)) $('#miPo', bg).onclick = async e => {
-      e.target.disabled = true; e.target.textContent = '📝 발주서 읽는 중… (30초쯤)';
-      try {
-        const r = await api(`/api/mailin/${id}/po`, {method: 'POST'});
-        close(); toast(r.existing ? '이미 만든 거래명세서 초안을 엽니다.' : '거래명세서 초안을 만들었습니다. 확인 후 발행하세요.'); openQuoteView(r.quote_id);
-      } catch (err) { e.target.disabled = false; e.target.textContent = '📝 발주서 → 거래명세서'; alert(err.message); }
-    };
     if ($('#miAi', bg)) $('#miAi', bg).onclick = async () => { await api(`/api/mailin/${id}/analyze`, {method: 'POST'}); close(); toast('AI가 읽는 중입니다. 잠시 후 새로고침하세요.'); renderMailin(); };
     bg.firstElementChild.classList.add('wide');
     const done = () => api(`/api/mailin/${id}`, {method: 'PATCH', body: {status: 'done'}});
@@ -1858,7 +1835,6 @@ async function openQuoteView(id) {
       ${isSt ? `<dt>사업자번호</dt><dd>${esc(q.customer_biz_no || '-')}</dd><dt>주소</dt><dd>${esc(q.customer_address || '-')}</dd>`
         : `<dt>유효기간</dt><dd>${esc(q.valid_until || '-')}</dd><dt>납기</dt><dd>${esc(q.delivery || '-')}</dd>`}
       <dt>결제조건</dt><dd>${esc(q.payment_terms || '-')}</dd><dt>작성자</dt><dd>${esc(q.creator_name)}</dd>
-      ${q.mail_id ? `<dt>발주 메일</dt><dd><a href="#" id="qMail">📧 발주 메일 보기</a> <small class="muted">(메일에서 자동 작성 — 품목·수량·단가 확인 후 발행)</small></dd>` : ''}
     </dl>
     ${q.note ? `<div class="desc">${esc(q.note)}</div>` : ''}
     ${ecEnabled ? `<div class="ec-box"><div class="row"><b>🔗 이카운트</b><span class="muted">거래처 ${q.cust_cd ? esc((ec.customers.find(c => c.code === q.cust_cd) || {}).name || '') + ' ' + esc(q.cust_cd) : '<span class="code miss">미지정</span>'} · 품목 ${q.items.filter(i => i.prod_cd).length}/${q.items.length}개 연결</span></div>
@@ -1875,7 +1851,6 @@ async function openQuoteView(id) {
     </div>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
     $('#qPrint', bg).onclick = () => printQuote(id);
-    if ($('#qMail', bg)) $('#qMail', bg).onclick = e => { e.preventDefault(); close(); openMailItem(q.mail_id); };
     const ecQ = $('#ecQ', bg), ecS = $('#ecS', bg);
     if (ecQ) ecQ.onclick = () => { close(); openEcSend(q, 'quotation', ec); };
     if (ecS) ecS.onclick = () => { close(); openEcSend(q, 'sale', ec); };
