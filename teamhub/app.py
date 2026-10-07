@@ -465,7 +465,9 @@ def init_db():
                 ("ecount_products", "buy_price", "REAL NOT NULL DEFAULT 0"),
                 ("ecount_products", "updated_at", "TEXT NOT NULL DEFAULT ''"),
                 ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''"),
-                ("ledger", "company", "TEXT NOT NULL DEFAULT ''")):
+                ("ledger", "company", "TEXT NOT NULL DEFAULT ''"),
+                ("quote_items", "wh", "TEXT NOT NULL DEFAULT ''"),
+                ("quote_items", "lot", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
@@ -1144,6 +1146,11 @@ def next_quote_no(c, date: str, doc_type: str = "quote") -> str:
 
 
 def save_quote_items(c, qid: int, items, vat_mode: str):
+    # 이카운트에서 가져온 창고·통관(로트) 정보는 수정해도 유지 (같은 품명 줄에 이어 붙임)
+    keep = {}
+    for r in c.execute("SELECT name, wh, lot FROM quote_items WHERE quote_id = ? ORDER BY seq", (qid,)):
+        if r["wh"] or r["lot"]:
+            keep.setdefault(r["name"].strip(), []).append((r["wh"], r["lot"]))
     c.execute("DELETE FROM quote_items WHERE quote_id = ?", (qid,))
     supply_total = vat_total = 0
     for seq, it in enumerate(items, 1):
@@ -1152,9 +1159,9 @@ def save_quote_items(c, qid: int, items, vat_mode: str):
         vat_total += vat
         c.execute(
             "INSERT INTO quote_items (quote_id, seq, prod_cd, cas_no, origin, name, spec, unit, qty, unit_price, supply,"
-            " vat, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " vat, note, wh, lot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (qid, seq, it.prod_cd.strip(), it.cas_no.strip(), it.origin.strip(), it.name.strip(), it.spec.strip(), it.unit.strip(), it.qty, it.unit_price,
-             supply, vat, it.note.strip()),
+             supply, vat, it.note.strip(), *((keep.get(it.name.strip()) or [("", "")]).pop(0))),
         )
     c.execute("UPDATE quotes SET supply_total = ?, vat_total = ?, grand_total = ? WHERE id = ?",
               (supply_total, vat_total, supply_total + vat_total, qid))
@@ -2113,6 +2120,8 @@ CUST_WORDS = ("거래처", "판매처", "매출처", "고객")
 def _map_sale_cols(cells: list) -> dict:
     """열 이름 일부만 맞아도 인식 (예: 일자-No. / 견적일자 / 수량(kg) / 금액합계)."""
     rules = [
+        ("wh", lambda h: "창고" in h),
+        ("lot", lambda h: "통관" in h or h.startswith("lot") or "로트" in h),
         ("slip", lambda h: ("일자" in h and "no" in h) or h in ("월/일", "월일") or any(k in h for k in ("전표번호", "견적번호"))),
         ("vendor", lambda h: "구매처" in h),
         ("title", lambda h: "건명" in h or "제목" in h),
@@ -2205,7 +2214,8 @@ def parse_sales_sheet(rows: list, force_year: Optional[int] = None):
             parsed.append({"ymd": ymd, "no": no, "cust": cust, "cust_cd": get("cust_cd"), "title": get("title"),
                            "transport": get("transport"), "item": {
                 "prod_cd": get("prod_cd"), "cas_no": get("cas_no"), "origin": get("origin"), "name": name, "spec": get("spec"), "unit": get("unit"), "qty": qty,
-                "price": price, "supply": int(round(supply)), "vat": int(round(vat or 0)), "note": note}})
+                "price": price, "supply": int(round(supply)), "vat": int(round(vat or 0)), "note": note,
+                "wh": get("wh"), "lot": get("lot")}})
         # 연도 없는 날짜: 목록이 날짜순이라고 보고 아래(최근)에서 위로 올라가며 월/일이 커지면 한 해 전으로
         year = end_date[0] if end_date else datetime.now().year
         prev = None
@@ -2255,9 +2265,9 @@ def insert_import_items(c, qid: int, items: list):
     for seq, it in enumerate(items, 1):
         c.execute(
             "INSERT INTO quote_items (quote_id, seq, prod_cd, cas_no, origin, name, spec, unit, qty, unit_price, supply,"
-            " vat, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " vat, note, wh, lot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (qid, seq, it["prod_cd"], it.get("cas_no", ""), it.get("origin", ""), it["name"], it["spec"], it["unit"], it["qty"], it["price"],
-             it["supply"], it["vat"], it["note"]),
+             it["supply"], it["vat"], it["note"], it.get("wh", ""), it.get("lot", "")),
         )
 
 
@@ -3462,6 +3472,223 @@ def ledger_check(year: int = 0, month: int = 0, customer: str = "", user: dict =
                             "sales": r["supply"] or 0, "customer": r["customer_name"]}
                            for r in st if int(r["quote_date"][5:7]) == month and key(r["customer_name"]) == k]}
     return out
+
+
+# ---- 📒 거래명세서로 일계장(매출액 · 매출품목 · 매입매출장) 만들기
+COMPANIES = ("이알씨", "켐코스")
+
+
+def stmt_company(c) -> callable:
+    """거래명세서 줄 → 회사. 이카운트 창고명(이알씨창고/켐코스 창고) 또는 출고 창고 코드, 없으면 기본 회사."""
+    whs = {r["code"]: r["name"] for r in c.execute("SELECT code, name FROM ecount_warehouses")}
+    default = get_setting(c, "ledger_default_company", "이알씨")
+
+    def f(item_wh: str, quote_wh: str) -> str:
+        name = item_wh or whs.get(quote_wh, "")
+        for co in COMPANIES:
+            if co in name.replace(" ", ""):
+                return co
+        return default
+    return f
+
+
+def ledger_build(c, upto: str, company: str) -> dict:
+    """1월 1일 ~ upto 거래명세서(작성중 제외) → 일계장 줄. 매입쪽은 이미 올라온 일계장 → 재고 로트 → 같은 품목 최근 매입 순으로 채움."""
+    year = int(upto[:4])
+    comp = stmt_company(c)
+    canon = inv_customer_fn(c)
+    ckey = lambda n: _norm_company(canon(n) or n)
+    ikey = lambda n: _item_key(item_base(n))
+    other = [x for x in COMPANIES if x != company][0]
+    st = [dict(r) for r in c.execute(
+        "SELECT q.id, q.quote_date, q.customer_name, q.ecount_wh, qi.seq, qi.name, qi.spec, qi.qty, qi.unit, qi.unit_price,"
+        " qi.supply, qi.vat, qi.wh, qi.lot, qi.origin FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
+        " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ? AND qi.name != ''"
+        " ORDER BY q.quote_date, q.id, qi.seq", (f"{year}-01-01", upto))]
+    no_wh = sum(1 for r in st if not r["wh"] and not r["ecount_wh"])
+    st = [r for r in st if comp(r["wh"], r["ecount_wh"]) == company]
+    # 1) 이미 올라온 일계장의 같은 줄 (날짜·거래처·품목·수량) → 매입처·매입단가 그대로
+    old, loose, loose_m = {}, {}, {}
+    hist = {}
+    for r in c.execute("SELECT * FROM ledger WHERE company IN (?, '') ORDER BY date", (company,)):
+        r = dict(r)
+        old.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"]), round(r["qty"] or 0, 2)), []).append(r)
+        loose.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"])), []).append(r)
+        loose_m.setdefault((r["date"][:7], ckey(r["customer"])), []).append(r)
+        if r["buy_price"]:
+            hist[ikey(r["item"])] = r            # 같은 품목 가장 최근 매입
+    lots = {}
+    for r in c.execute("SELECT item, origin, customs_date, cost_krw FROM inv_lots WHERE cost_krw > 0"):
+        lots.setdefault(ikey(r["item"]), []).append(dict(r))
+    out = []
+    for r in st:
+        k = (r["quote_date"], ckey(r["customer_name"]), ikey(r["name"]), round(r["qty"] or 0, 2))
+        sales, vat, qty = float(r["supply"] or 0), float(r["vat"] or 0), float(r["qty"] or 0)
+        row = {"date": r["quote_date"], "item": r["name"] + (f" ({r['spec']})" if r["spec"] and r["spec"] not in r["name"] else ""),
+               "qty": qty, "customer": r["customer_name"], "sale_price": r["unit_price"], "sales": sales, "vat": vat,
+               "supplier": "", "buy_price": None, "origin": "", "note": "", "src": ""}
+        lk = k[:3]
+        pool = [o for o in loose.get(lk, []) if not o.get("_used")]
+        if old.get(k) and any(not o.get("_used") for o in old[k]):
+            o = next(o for o in old[k] if not o.get("_used"))
+            o["_used"] = True
+            row.update(supplier=o["supplier"], buy_price=o["buy_price"], origin=o["origin"], note=o["note"], src="ledger",
+                       purchase=o["purchase"])
+        elif pool and abs(sum(o["qty"] or 0 for o in pool) - qty) < 0.01:
+            # 일계장에서는 한 줄을 로트별로 나눠 적은 경우 (예: 100kg → 60kg + 40kg) → 합쳐서 매입
+            for o in pool:
+                o["_used"] = True
+            pur = sum(o["purchase"] or 0 for o in pool)
+            row.update(supplier=" / ".join(dict.fromkeys(o["supplier"] for o in pool if o["supplier"])),
+                       buy_price=round(pur / qty) if qty else None, origin=pool[0]["origin"],
+                       note=" / ".join(dict.fromkeys(o["note"] for o in pool if o["note"])), src="ledger", purchase=pur)
+        elif pool:
+            o = pool[0]                          # 같은 날·거래처·품목인데 수량이 다름 → 그 줄의 매입단가로
+            o["_used"] = True
+            row.update(supplier=o["supplier"], buy_price=o["buy_price"], origin=o["origin"], src="ledger",
+                       note=(o["note"] + " / " if o["note"] else "") + "수량 다름 — 확인")
+        elif (mp := [o for o in loose_m.get((k[0][:7], k[1]), []) if not o.get("_used")]) and \
+                abs(sum(o["sales"] for o in mp) - sales) <= max(1000, abs(sales) * 0.005):
+            # 이카운트에는 한 달치를 한 줄로(예: 관계사 '○○ 외'), 일계장에는 품목별로 적은 경우 → 그 달 그 거래처 줄을 합쳐서
+            for o in mp:
+                o["_used"] = True
+            pur = sum(o["purchase"] or 0 for o in mp)
+            row.update(supplier="(일계장 품목별 합계)", buy_price=round(pur / qty) if qty else None, src="ledger",
+                       purchase=pur, note=f"일계장 {len(mp)}줄 합계")
+        elif other in ckey(r["customer_name"]) or _norm_company(other) in _norm_company(r["customer_name"]):
+            # 관계사(켐코스↔이알씨) 넘김은 원가로 넘기므로 매입 = 매출 (이익 0) — 이카운트는 한 달치를 묶어 적어 줄이 안 맞음
+            row.update(supplier=f"{other} 이전분", buy_price=r["unit_price"], purchase=sales, src="internal",
+                       note="관계사 넘김 — 매입=매출로 봄")
+        else:
+            lot = (r["lot"] or "").strip()
+            tok = re.sub(r"(제품|서류|내자|ERC|이알씨|켐코스)", " ", lot).split()
+            m = re.search(r"(\d{6})", lot)
+            cd = f"20{m[1][:2]}-{m[1][2:4]}-{m[1][4:]}" if m else ""
+            cand = lots.get(ikey(r["name"]), [])
+            hit = next((x for x in cand if cd and x["customs_date"] == cd), None) or \
+                next((x for x in cand if tok and tok[0].lower() in (x["origin"] or "").lower()), None)
+            h = hist.get(ikey(r["name"]))
+            if hit:
+                row.update(supplier=(tok[0] if tok else hit["origin"]) + "(재고)", buy_price=hit["cost_krw"], src="lot")
+            elif h:
+                row.update(supplier=h["supplier"], buy_price=h["buy_price"], origin=h["origin"], src="recent")
+            else:
+                row.update(supplier=tok[0] if tok else "", note="매입단가 확인 필요", src="none")
+            if lot and not row["note"]:
+                row["note"] = lot
+        if "purchase" not in row:
+            row["purchase"] = round((row["buy_price"] or 0) * qty)
+        row["profit"] = row["sales"] - row["purchase"]
+        row["internal"] = other in ckey(row["customer"]) or _norm_company(other) in _norm_company(row["customer"])
+        out.append(row)
+    return {"rows": out, "other": other, "year": year, "no_wh": no_wh}
+
+
+@app.get("/api/ledger/make")
+def ledger_make(date: str = "", company: str = "이알씨", preview: bool = False, user: dict = Depends(current_user)):
+    """거래명세서로 그날 기준 일계장 엑셀(xlsx) — 매출액 · 매출품목 · 매입매출장 시트."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    date = date if re.match(r"^\d{4}-\d{2}-\d{2}$", date or "") else datetime.now().strftime("%Y-%m-%d")
+    if company not in COMPANIES:
+        raise HTTPException(400, "회사를 고르세요.")
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        b = ledger_build(c, date, company)
+        prev = [dict(r) for r in c.execute("SELECT * FROM ledger WHERE year = ? AND company IN (?, '')",
+                                           (b["year"] - 1, company))]
+    rows, other, y = b["rows"], b["other"], b["year"]
+    mon = int(date[5:7])
+    seoul = lambda n: "서울향료" in (n or "").replace(" ", "")
+    stat = {"rows": len(rows), "sales": sum(r["sales"] for r in rows),
+            "ledger": sum(r["src"] == "ledger" for r in rows), "lot": sum(r["src"] == "lot" for r in rows),
+            "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows),
+            "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"],
+            "purchase": sum(r["purchase"] for r in rows), "profit": sum(r["profit"] for r in rows),
+            "company": company, "date": date}
+    if preview:
+        return stat
+    wb = openpyxl.Workbook()
+    bold, yellow = Font(bold=True), PatternFill("solid", fgColor="FFF2CC")
+    # 매출액
+    ws = wb.active
+    ws.title = "매출액"
+    ws.append(["매출 집계표"])
+    ws.append([f"회사명 : 주식회사 {company}", "", "(부가세별도)", "", "", "", "작성일 :", date])
+    ws.append(["월", f"{y}년 매출", f"{y}년 {other}", f"{y}년 서울", f"{y}년 이익", f"{y - 1}년 매출", f"{y - 1}년 {other}",
+               f"{y - 1}년 서울", "", "월/일", "일 순매출액", "서울 1,2공장"])
+    days = {}
+    for r in rows:
+        if int(r["date"][5:7]) == mon:
+            d = days.setdefault(r["date"], [0, 0])
+            d[0] += r["sales"]
+            d[1] += r["sales"] if seoul(r["customer"]) else 0
+    import calendar
+    last_day = calendar.monthrange(y, mon)[1]
+    tot = [0] * 7
+    for m in range(1, 13):
+        cur = [x for x in rows if int(x["date"][5:7]) == m]
+        pv = [x for x in prev if x["month"] == m]
+        vals = [sum(x["sales"] for x in cur), sum(x["sales"] for x in cur if x["internal"]),
+                sum(x["sales"] for x in cur if seoul(x["customer"])), sum(x["profit"] for x in cur),
+                sum(x["sales"] for x in pv), sum(x["sales"] for x in pv if other in (x["customer"] or "")),
+                sum(x["sales"] for x in pv if seoul(x["customer"]))]
+        tot = [a + b2 for a, b2 in zip(tot, vals)]
+        dd = f"{y}-{mon:02d}-{m:02d}"
+        ws.append([m, *vals, "", f"{mon}/{m:02d}", *(days.get(dd, [0, 0]))])
+    ws.append(["합계", *tot])
+    for dnum in range(13, last_day + 1):  # 월/일 표는 그달 말일까지 오른쪽에 이어서
+        dd = f"{y}-{mon:02d}-{dnum:02d}"
+        ws.cell(row=3 + dnum, column=10, value=f"{mon}/{dnum:02d}")
+        ws.cell(row=3 + dnum, column=11, value=days.get(dd, [0, 0])[0])
+        ws.cell(row=3 + dnum, column=12, value=days.get(dd, [0, 0])[1])
+    ws.cell(row=4 + last_day, column=10, value="총")
+    ws.cell(row=4 + last_day, column=11, value=sum(v[0] for v in days.values()))
+    ws.cell(row=4 + last_day, column=12, value=sum(v[1] for v in days.values()))
+    # 매출품목 (이번 달)
+    w2 = wb.create_sheet("매출품목")
+    w2.append(["월", "일", "NO", "품          목", "수량(kg)", "매출 단가(\\)", "총매출액(\\)", "매입단가(\\)", "총매입액(\\)", "납품처",
+               "Origin", "비고"])
+    n = 0
+    for r in rows:
+        if int(r["date"][5:7]) == mon:
+            n += 1
+            w2.append([mon, int(r["date"][8:]), n, r["item"], r["qty"], r["sale_price"], r["sales"], r["buy_price"],
+                       r["purchase"], r["customer"], r["supplier"], r["note"]])
+    # 매입매출장 (1월부터)
+    w3 = wb.create_sheet("매입매출장")
+    w3.append([f"{y}년도 주식회사 {company} 매입매출장 (TeamHub 거래명세서로 작성, {date} 기준)"])
+    w3.append(["월", "일", "품     목", "수량(Kg)", "매 출 처", "매입처", "매출단가", "매입단가", "Origin", "총 매 출 액", "세액",
+               "총 매 입 액", "세액", "손익", f"{other} 매입 원가", "비고"])
+    for r in rows:
+        w3.append([int(r["date"][5:7]), int(r["date"][8:]), r["item"], r["qty"], r["customer"], r["supplier"],
+                   r["sale_price"], r["buy_price"], r["origin"], r["sales"], r["vat"], r["purchase"],
+                   round(r["purchase"] * 0.1), r["profit"], "", r["note"]])
+        if r["src"] == "none":
+            for cell in w3[w3.max_row]:
+                cell.fill = yellow
+    w3.append(["", "", "", sum(r["qty"] for r in rows), "", "", "", "", "", sum(r["sales"] for r in rows),
+               sum(r["vat"] for r in rows), sum(r["purchase"] for r in rows), round(sum(r["purchase"] for r in rows) * 0.1),
+               sum(r["profit"] for r in rows)])
+    for w in (ws, w2, w3):
+        for row in w.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, float) or isinstance(cell.value, int):
+                    cell.number_format = "#,##0" if not (isinstance(cell.value, float) and cell.value % 1) else "#,##0.##"
+        for cell in w[2 if w is ws else 1]:
+            cell.font = bold
+    ws.column_dimensions["A"].width = 6
+    w3.column_dimensions["C"].width = 42
+    w3.column_dimensions["E"].width = 18
+    w3.column_dimensions["F"].width = 22
+    w2.column_dimensions["D"].width = 42
+    buf = io.BytesIO()
+    wb.save(buf)
+    name = f"일계장_{company}_{date.replace('-', '.')}.xlsx"
+    return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
 
 
 @app.get("/api/inventory/profit")
