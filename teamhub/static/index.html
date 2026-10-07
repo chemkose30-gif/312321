@@ -2825,7 +2825,8 @@ function openLedgerMake() {
       $('#lmPrev', bg).textContent = '계산 중…';
       try {
         const r = await api(`/api/ledger/make?${q()}&preview=1`);
-        $('#lmPrev', bg).innerHTML = `<b>${esc(r.company)}</b> ${esc(r.date.slice(0, 4))}년 1월 1일 ~ ${esc(r.date.slice(5))} · <b>${r.rows}줄</b> · 매출 <b>${krw(r.sales)}원</b> · 매입 ${krw(r.purchase)}원 · 손익 ${krw(r.profit)}원
+        $('#lmPrev', bg).innerHTML = (r.template ? `양식: 마지막으로 올린 <b>${esc(r.company)}</b> 일계장 그대로 (매출액 · 매출품목 · 매입매출장 숫자만 바꿈, 받을어음·통장 잔액은 올린 파일 그대로)<br>`
+            : '<span class="down">아직 올린 일계장이 없어 기본 양식으로 만듭니다. 💰 매입매출장 올리기로 최신 일계장(.xls)을 올리면 같은 양식으로 나옵니다.</span><br>') + `<b>${esc(r.company)}</b> ${esc(r.date.slice(0, 4))}년 1월 1일 ~ ${esc(r.date.slice(5))} · <b>${r.rows}줄</b> · 매출 <b>${krw(r.sales)}원</b> · 매입 ${krw(r.purchase)}원 · 손익 ${krw(r.profit)}원
           <br>매입 채운 곳: 일계장 같은 줄 ${r.ledger} · 재고 로트 ${r.lot} · 최근 매입단가 ${r.recent} · 관계사 넘김 ${r.internal}${r.none ? ` · <span class="down">못 찾음 ${r.none}줄 (노란색)</span>` : ''}
           ${r.no_wh ? `<br><span class="down">창고 정보가 없는 거래명세서 ${r.no_wh}줄은 이알씨로 봤습니다.</span> 이카운트 판매현황(창고명·통관일자 포함)을 📄 거래명세서 → 📥 이카운트에서 가져오기로 <b>덮어쓰기</b>해서 다시 올리면 회사·로트가 채워집니다.` : ''}`;
       } catch (err) { $('#lmPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }

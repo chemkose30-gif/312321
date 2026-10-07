@@ -3409,6 +3409,9 @@ async def ledger_upload(file: UploadFile = File(...), dry_run: bool = False, yea
         c.executemany(f"INSERT INTO ledger ({', '.join(LEDGER_FIELDS)}) VALUES ({', '.join('?' * len(LEDGER_FIELDS))})",
                       [[{**r, "year": y, "date": f"{y}-{r['month']:02d}-{r['day']:02d}"}.get(f) for f in LEDGER_FIELDS]
                        for r in rows])
+        if company and data[:4] == b"\xd0\xcf\x11\xe0":   # 회사별 일계장 양식(틀)으로 보관 → 📒 일계장 만들기에 그대로 씀
+            LEDGER_TPL_DIR.mkdir(parents=True, exist_ok=True)
+            (LEDGER_TPL_DIR / f"{company}.xls").write_bytes(data)
         meta[str(y)] = meta[key] = {"filename": filename, "file_date": fd, "uploaded_at": now(), "by": user["name"],
                                     "rows": len(rows), "last": summary["last"], "company": company}
         set_setting(c, "ledger_meta", json.dumps(meta, ensure_ascii=False))
@@ -3476,6 +3479,76 @@ def ledger_check(year: int = 0, month: int = 0, customer: str = "", user: dict =
 
 # ---- 📒 거래명세서로 일계장(매출액 · 매출품목 · 매입매출장) 만들기
 COMPANIES = ("이알씨", "켐코스")
+LEDGER_TPL_DIR = Path(os.getenv("TEAMHUB_LEDGER_TPL_DIR", str(Path(DB_PATH).parent / "ledger_tpl")))
+
+
+def xls_to_openpyxl(data: bytes):
+    """.xls(옛 엑셀) → openpyxl 통합문서: 값 + 글꼴·배경색·테두리·정렬·숫자 형식·열 너비·행 높이·병합·틀 고정까지 복사."""
+    import xlrd
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    bk = xlrd.open_workbook(file_contents=data, formatting_info=True)
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    def rgb(idx):
+        c = bk.colour_map.get(idx)
+        return "%02X%02X%02X" % c if c else None
+    cache = {}
+
+    def style(xi):
+        if xi in cache:
+            return cache[xi]
+        xf = bk.xf_list[xi]
+        f = bk.font_list[xf.font_index]
+        fc = rgb(f.colour_index)
+        font = Font(name=f.name, size=f.height / 20, bold=bool(f.bold), italic=bool(f.italic),
+                    underline="single" if f.underline_type else None, color=fc and "FF" + fc)
+        bg = rgb(xf.background.pattern_colour_index) if xf.background.fill_pattern else None
+        fill = PatternFill("solid", fgColor="FF" + bg) if bg else PatternFill()
+        lines = {1: "thin", 2: "medium", 3: "dashed", 4: "dotted", 5: "thick", 6: "double", 7: "hair"}
+        b = xf.border
+        side = lambda ln, ci: Side(style=lines.get(ln), color=(rgb(ci) and "FF" + rgb(ci))) if ln else Side()
+        border = Border(left=side(b.left_line_style, b.left_colour_index), right=side(b.right_line_style, b.right_colour_index),
+                        top=side(b.top_line_style, b.top_colour_index), bottom=side(b.bottom_line_style, b.bottom_colour_index))
+        a = xf.alignment
+        align = Alignment(horizontal={1: "left", 2: "center", 3: "right", 4: "fill", 5: "justify", 6: "centerContinuous"}.get(a.hor_align),
+                          vertical={0: "top", 1: "center", 2: "bottom", 3: "justify"}.get(a.vert_align), wrap_text=bool(a.text_wrapped))
+        fmt = (bk.format_map[xf.format_key].format_str if xf.format_key in bk.format_map else "") or "General"
+        cache[xi] = (font, fill, border, align, fmt)
+        return cache[xi]
+    for sh in bk.sheets():
+        ws = wb.create_sheet(sh.name)
+        for r in range(sh.nrows):
+            for c in range(sh.ncols):
+                cell = ws.cell(row=r + 1, column=c + 1)
+                ct, v = sh.cell_type(r, c), sh.cell_value(r, c)
+                if ct in (xlrd.XL_CELL_NUMBER, xlrd.XL_CELL_DATE):
+                    cell.value = int(v) if float(v).is_integer() and abs(v) < 1e15 else v
+                elif ct == xlrd.XL_CELL_TEXT and v != "":
+                    cell.value = v
+                elif ct == xlrd.XL_CELL_BOOLEAN:
+                    cell.value = bool(v)
+                font, fill, border, align, fmt = style(sh.cell_xf_index(r, c))
+                cell.font, cell.fill, cell.border, cell.alignment, cell.number_format = font, fill, border, align, fmt
+        for c, ci in sh.colinfo_map.items():
+            ws.column_dimensions[get_column_letter(c + 1)].width = ci.width / 256
+            if ci.hidden:
+                ws.column_dimensions[get_column_letter(c + 1)].hidden = True
+        for r, ri in sh.rowinfo_map.items():
+            if ri.height and not ri.height_mismatch is None:
+                ws.row_dimensions[r + 1].height = ri.height / 20
+        for r1, r2, c1, c2 in sh.merged_cells:
+            ws.merge_cells(start_row=r1 + 1, end_row=r2, start_column=c1 + 1, end_column=c2)
+        if sh.horz_split_pos or sh.vert_split_pos:
+            ws.freeze_panes = ws.cell(row=sh.horz_split_pos + 1, column=sh.vert_split_pos + 1)
+    return wb
+
+
+def _copy_style(src, dst):
+    dst.font, dst.fill, dst.border, dst.alignment, dst.number_format = (
+        src.font.copy(), src.fill.copy(), src.border.copy(), src.alignment.copy(), src.number_format)
 
 
 def stmt_company(c) -> callable:
@@ -3584,6 +3657,122 @@ def ledger_build(c, upto: str, company: str) -> dict:
     return {"rows": out, "other": other, "year": year, "no_wh": no_wh}
 
 
+def _rewrite_rows(ws, first: int, values: list, mark=None):
+    """first 행부터 values 를 쓰되, 원래 첫 데이터 행의 서식을 모든 새 행에 입히고, 데이터 뒤에 있던 행(합계·색칠된 빈 행)은 그 아래로 옮김.
+    mark(i) 가 참인 행은 노란색."""
+    from openpyxl.styles import PatternFill
+    maxc = ws.max_column
+    isnum = lambda v: isinstance(v, (int, float))
+    last = first
+    for r in range(first, ws.max_row + 1):
+        if isnum(ws.cell(row=r, column=1).value):
+            last = r
+    proto = [ws.cell(row=first, column=c) for c in range(1, maxc + 1)]
+    proto_st = [(x.font.copy(), x.fill.copy(), x.border.copy(), x.alignment.copy(), x.number_format) for x in proto]
+    tail = []
+    for r in range(last + 1, ws.max_row + 1):
+        tail.append([(ws.cell(row=r, column=c).value, (ws.cell(row=r, column=c).font.copy(), ws.cell(row=r, column=c).fill.copy(),
+                      ws.cell(row=r, column=c).border.copy(), ws.cell(row=r, column=c).alignment.copy(),
+                      ws.cell(row=r, column=c).number_format)) for c in range(1, maxc + 1)])
+    tail_h = [ws.row_dimensions[r].height for r in range(last + 1, ws.max_row + 1)]
+    ws.delete_rows(first, ws.max_row - first + 1)
+    yellow = PatternFill("solid", fgColor="FFFFF2CC")
+    for i, vals in enumerate(values):
+        r = first + i
+        for c in range(1, maxc + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font, cell.fill, cell.border, cell.alignment, cell.number_format = proto_st[c - 1]
+            cell.value = vals[c - 1] if c - 1 < len(vals) else None
+            if mark and mark(i):
+                cell.fill = yellow
+    r0 = first + len(values)
+    for k, row in enumerate(tail):
+        for c, (v, st) in enumerate(row, 1):
+            cell = ws.cell(row=r0 + k, column=c)
+            cell.value = v
+            cell.font, cell.fill, cell.border, cell.alignment, cell.number_format = st
+        if tail_h[k]:
+            ws.row_dimensions[r0 + k].height = tail_h[k]
+    return r0, len(tail)
+
+
+def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
+    """보관한 일계장 양식에 거래명세서로 만든 숫자를 채움 (매출액 · 매출품목 · 매입매출장)."""
+    rows, other, y = b["rows"], b["other"], b["year"]
+    mon = int(date[5:7])
+    seoul = lambda n: "서울향료" in (n or "").replace(" ", "")
+    if "매출액" in wb.sheetnames:
+        ws = wb["매출액"]
+        hdr = next((r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "월"), 3)
+        tot = [0] * 7
+        for m in range(1, 13):
+            cur = [x for x in rows if int(x["date"][5:7]) == m]
+            pv = [x for x in prev if x["month"] == m]
+            vals = [sum(x["sales"] for x in cur), sum(x["sales"] for x in cur if x["internal"]),
+                    sum(x["sales"] for x in cur if seoul(x["customer"])), sum(x["profit"] for x in cur),
+                    sum(x["sales"] for x in pv), sum(x["sales"] for x in pv if other in (x["customer"] or "")),
+                    sum(x["sales"] for x in pv if seoul(x["customer"]))]
+            tot = [a + v for a, v in zip(tot, vals)]
+            for k, v in enumerate(vals[:4] if not prev else vals):   # 작년 일계장을 안 올렸으면 양식에 있던 작년 숫자 그대로
+                ws.cell(row=hdr + m, column=2 + k, value=round(v))
+        for k, v in enumerate(tot[:4] if not prev else tot):
+            ws.cell(row=hdr + 13, column=2 + k, value=round(v))
+        for c in range(1, 15):   # 작성일
+            if str(ws.cell(row=hdr - 1, column=c).value or "").replace(" ", "").startswith("작성일"):
+                ws.cell(row=hdr - 1, column=c + 1, value=datetime.strptime(date, "%Y-%m-%d"))
+                for k in range(c + 2, c + 7):
+                    if isinstance(ws.cell(row=hdr - 1, column=k).value, (int, float)):
+                        ws.cell(row=hdr - 1, column=k).value = None   # 뜻을 모르는 옛 숫자는 지움
+        dcol = next((c for c in range(8, 16) if str(ws.cell(row=hdr, column=c).value or "").replace(" ", "") == "월/일"), None)
+        if dcol:
+            end = next((r for r in range(hdr + 1, hdr + 60) if str(ws.cell(row=r, column=dcol).value or "").strip() == "총"), None)
+            if end:
+                import calendar
+                days = {}
+                for x in rows:
+                    if int(x["date"][5:7]) == mon:
+                        d = days.setdefault(int(x["date"][8:]), [0, 0])
+                        d[0] += x["sales"]
+                        d[1] += x["sales"] if seoul(x["customer"]) else 0
+                nd = calendar.monthrange(y, mon)[1]
+                for i, r in enumerate(range(hdr + 1, end)):
+                    day = i + 1
+                    if day <= nd:
+                        v = days.get(day, [0, 0])
+                        ws.cell(row=r, column=dcol, value=f"{mon}/{day:02d}")
+                        ws.cell(row=r, column=dcol + 1, value=round(v[0]))
+                        ws.cell(row=r, column=dcol + 2, value=round(v[1]))
+                    else:
+                        for k in range(3):
+                            ws.cell(row=r, column=dcol + k).value = None
+                ws.cell(row=end, column=dcol + 1, value=round(sum(v[0] for v in days.values())))
+                ws.cell(row=end, column=dcol + 2, value=round(sum(v[1] for v in days.values())))
+    if "매출품목" in wb.sheetnames:
+        ws = wb["매출품목"]
+        first = next((r for r in range(2, 10) if isinstance(ws.cell(row=r, column=1).value, (int, float))), 3)
+        cur = [x for x in rows if int(x["date"][5:7]) == mon]
+        _rewrite_rows(ws, first, [[mon, int(x["date"][8:]), i + 1, x["item"], x["qty"], x["sale_price"], round(x["sales"]),
+                                   x["buy_price"], round(x["purchase"]), x["customer"], x["supplier"], x["note"]]
+                                  for i, x in enumerate(cur)], mark=lambda i: cur[i]["src"] == "none")
+    if "매입매출장" in wb.sheetnames:
+        ws = wb["매입매출장"]
+        first = next((r for r in range(2, 10) if isinstance(ws.cell(row=r, column=1).value, (int, float))), 3)
+        r0, nt = _rewrite_rows(ws, first, [[int(x["date"][5:7]), int(x["date"][8:]), x["item"], x["qty"], x["customer"],
+                                             x["supplier"], x["sale_price"], x["buy_price"], x["origin"], round(x["sales"]),
+                                             round(x["vat"]), round(x["purchase"]), round(x["purchase"] * 0.1),
+                                             round(x["profit"]), None, x["note"]] for x in rows],
+                               mark=lambda i: rows[i]["src"] == "none")
+        sums = {4: sum(x["qty"] for x in rows), 10: sum(x["sales"] for x in rows), 11: sum(x["vat"] for x in rows),
+                12: sum(x["purchase"] for x in rows), 13: sum(x["purchase"] for x in rows) * 0.1,
+                14: sum(x["profit"] for x in rows)}
+        for k in range(nt):   # 데이터 아래 합계 줄이 있으면 새 합계로
+            if any(isinstance(ws.cell(row=r0 + k, column=c).value, (int, float)) for c in sums):
+                for c, v in sums.items():
+                    ws.cell(row=r0 + k, column=c, value=round(v, 2))
+                break
+    return wb
+
+
 @app.get("/api/ledger/make")
 def ledger_make(date: str = "", company: str = "이알씨", preview: bool = False, user: dict = Depends(current_user)):
     """거래명세서로 그날 기준 일계장 엑셀(xlsx) — 매출액 · 매출품목 · 매입매출장 시트."""
@@ -3602,7 +3791,8 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     rows, other, y = b["rows"], b["other"], b["year"]
     mon = int(date[5:7])
     seoul = lambda n: "서울향료" in (n or "").replace(" ", "")
-    stat = {"rows": len(rows), "sales": sum(r["sales"] for r in rows),
+    tpl = LEDGER_TPL_DIR / f"{company}.xls"
+    stat = {"template": tpl.exists(), "rows": len(rows), "sales": sum(r["sales"] for r in rows),
             "ledger": sum(r["src"] == "ledger" for r in rows), "lot": sum(r["src"] == "lot" for r in rows),
             "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows),
             "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"],
@@ -3610,6 +3800,13 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
             "company": company, "date": date}
     if preview:
         return stat
+    name = f"일계장_{company}_{date.replace('-', '.')}.xlsx"
+    if tpl.exists():
+        wb = ledger_fill_template(xls_to_openpyxl(tpl.read_bytes()), b, prev, company, date)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
     wb = openpyxl.Workbook()
     bold, yellow = Font(bold=True), PatternFill("solid", fgColor="FFF2CC")
     # 매출액
@@ -3686,7 +3883,6 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     w2.column_dimensions["D"].width = 42
     buf = io.BytesIO()
     wb.save(buf)
-    name = f"일계장_{company}_{date.replace('-', '.')}.xlsx"
     return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
 
