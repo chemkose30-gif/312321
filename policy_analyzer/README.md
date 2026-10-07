@@ -14,6 +14,24 @@
 - **할 일·알림**: 연락 예정 + 미납·실효 계약 + 90일 이내 만기·갱신 계약을 첫 화면에 표시. 납입 상태는 보험사에서 자동으로 가져오지 않으므로 고객 앱 캡처 등으로 확인한 내용을 직접 기록
 - 설계사 계정별로 자기 고객만 보임. 같은 이름+생년월일 고객에게 자동으로 묶임. 같은 증권번호를 다시 올리면 교체.
 
+## Vultr 등 직접 관리 서버(VPS)에 올리기 — 데이터를 국내에 두고 싶을 때
+Vultr에서 **Seoul 리전**으로 서버를 만들면 고객 데이터가 한국 안에만 머뭅니다(해외 전송 없음).
+Render보다 손이 더 가지만(SSH 명령 필요), `deploy_vultr.sh` 로 거의 자동화했습니다.
+
+1. Vultr에서 서버 생성: **Cloud Compute → Seoul → Ubuntu 24.04 → 요금제 $5~6/월(1GB 이상)**
+2. 생성 후 받은 **IP, root 비밀번호**로 접속 (윈도우는 PuTTY, 맥은 터미널에서 `ssh root@<IP>`)
+3. 코드를 서버에 올리기 (아래 셋 중 하나):
+   - GitHub 토큰으로 클론: `git clone https://<토큰>@github.com/chemkose30-gif/312321.git` 후 `cd 312321/policy_analyzer`
+   - 또는 PC에서 ZIP을 받아 `scp` 로 업로드
+4. 그 폴더에서 실행:  `bash deploy_vultr.sh`
+   (Docker 설치·빌드·실행까지 자동. 암호화 키는 `/root/ins_data/data.key` 에 생성·보관 → **따로 백업**)
+5. 첫 계정 생성: `docker exec -it ins-analyzer python manage.py add-planner myid "내이름"`
+6. 접속: `http://<서버IP>:8000`
+
+### HTTPS(암호화) — 실제 고객정보를 쓰기 전 필수
+http 는 암호화가 안 됩니다. 도메인이 있으면 Caddy로 자동 HTTPS를 붙일 수 있습니다(요청 시 설정 추가).
+도메인 없이 IP로 쓰는 것은 테스트까지만 하세요.
+
 ## 서버에 올리기 (PC에 설치 없이, 인터넷 주소로 접속)
 파이썬 설치가 번거로우면 서버(호스팅)에 올리면 됩니다. GitHub 저장소를 연결하면 자동 배포되는
 **Render(render.com)** 가 가장 쉽습니다. 저장소에 `Dockerfile` 과 `render.yaml` 이 들어 있어 거의 자동입니다.
