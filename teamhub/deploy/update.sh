@@ -12,6 +12,8 @@ fi
 echo "==> [2/4] 프로그램 복사"
 cp -r "$SRC"/*.py "$SRC/requirements.txt" "$SRC/static" /opt/teamhub/
 cp "$SRC/deploy/teamhub.service" /etc/systemd/system/teamhub.service
+# 화면 오른쪽 위 메뉴에 보이는 버전 (커밋 날짜·번호)
+git -C "$SRC" log -1 --format="%cd · %h" --date=format:"%Y-%m-%d %H:%M" > /opt/teamhub/VERSION 2>/dev/null || true
 systemctl daemon-reload
 
 echo "==> [3/4] 필요한 패키지 확인 (처음엔 1~2분 걸릴 수 있어요)"

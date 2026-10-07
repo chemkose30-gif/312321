@@ -680,6 +680,9 @@ def logout(authorization: str = Header(default="")):
 def _app_version() -> str:
     """서버에 올라간 코드 버전 (git 커밋 날짜·번호) — '업데이트 됐나?' 확인용."""
     import subprocess
+    vf = BASE_DIR / "VERSION"      # update.sh 가 복사할 때 적어 둠 (/opt/teamhub 에는 .git 이 없음)
+    if vf.exists():
+        return vf.read_text(encoding="utf-8").strip()
     try:
         return subprocess.run(["git", "-C", str(BASE_DIR), "log", "-1", "--format=%cd · %h", "--date=format:%Y-%m-%d %H:%M"],
                               capture_output=True, text=True, timeout=5).stdout.strip()
