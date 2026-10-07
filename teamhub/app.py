@@ -3815,57 +3815,8 @@ def cost_workbook(b: CostIn, r: dict):
     return wb
 
 
-# 만든 원가계산서를 사무실 원가계산 폴더로: 사무실 PC 자동 업로드 프로그램이 1시간마다 받아 감 (클라우드 서버는 Z: 드라이브에 못 씀)
-COST_OUT_DIR = Path(os.getenv("TEAMHUB_COST_OUT_DIR", str(Path(DB_PATH).parent / "cost_out")))
-
-
-def _outbox(c) -> list:
-    try:
-        return json.loads(get_setting(c, "cost_outbox", "[]")) or []
-    except ValueError:
-        return []
-
-
-def cost_outbox_add(c, company: str, name: str, data: bytes):
-    COST_OUT_DIR.mkdir(parents=True, exist_ok=True)
-    box = [x for x in _outbox(c) if not (x["name"] == name and not x.get("done"))]
-    oid = secrets.token_hex(6)
-    (COST_OUT_DIR / f"{oid}.xlsx").write_bytes(data)
-    box.append({"id": oid, "company": company, "name": name, "created": now(), "done": ""})
-    set_setting(c, "cost_outbox", json.dumps(box[-300:], ensure_ascii=False))
-
-
-@app.get("/api/costs/outbox")
-def cost_outbox_list(all: bool = False, user: dict = Depends(upload_user)):
-    """폴더로 보낼 원가계산서 (이름은 한글이 깨지지 않게 URL 인코딩도 같이)."""
-    with db() as c:
-        box = _outbox(c)
-    items = box if all else [x for x in box if not x.get("done")]
-    return [{**x, "name_enc": urllib.parse.quote(x["name"])} for x in items]
-
-
-@app.get("/api/costs/outbox/{oid}")
-def cost_outbox_file(oid: str, user: dict = Depends(upload_user)):
-    f = COST_OUT_DIR / f"{re.sub(r'[^0-9a-f]', '', oid)}.xlsx"
-    if not f.exists():
-        raise HTTPException(404, "파일이 없습니다.")
-    return Response(content=f.read_bytes(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-@app.post("/api/costs/outbox/{oid}/done")
-def cost_outbox_done(oid: str, user: dict = Depends(upload_user)):
-    with db() as c:
-        box = _outbox(c)
-        for x in box:
-            if x["id"] == oid:
-                x["done"] = now()
-        set_setting(c, "cost_outbox", json.dumps(box, ensure_ascii=False))
-    return {"ok": True}
-
-
 @app.post("/api/costs/make")
-def costs_make(body: CostIn, download: bool = False, save: bool = False, to_folder: bool = False,
-               user: dict = Depends(current_user)):
+def costs_make(body: CostIn, download: bool = False, save: bool = False, user: dict = Depends(current_user)):
     """원가계산서 계산(미리보기) / 엑셀 받기 / 저장(원가 체크·일계장 매입단가에 반영)."""
     import io
     with db() as c:
@@ -3881,14 +3832,9 @@ def costs_make(body: CostIn, download: bool = False, save: bool = False, to_fold
                           (r["filename"], body.company, body.supplier.strip(), r["doc_no"], body.remit_date, body.customs_date,
                            body.remit_rate, body.invoice, x["item"], x["qty"], x["unit_fx"], x["unit_krw"], x["landed"], now()))
         r["saved"] = True
-    if download or to_folder:
+    if download:
         buf = io.BytesIO()
         cost_workbook(body, r).save(buf)
-        if to_folder:
-            with db() as c:
-                cost_outbox_add(c, body.company, r["filename"], buf.getvalue())
-            r["queued"] = True
-    if download:
         return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(r["filename"])})
     r["fee_names"] = COST_FEES

@@ -2372,7 +2372,7 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir, inbDir, bankDir, costDir) => `param([switch]$Install, [switch]$Pull)
+  const script = (key, time, invDir, ledDir, inbDir, bankDir, costDir) => `param([switch]$Install)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
@@ -2389,35 +2389,12 @@ if ($Install) {
   schtasks.exe /Create /F /TN "TeamHub Inventory" /SC DAILY /ST ${time || '18:00'} /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\TeamHub\\teamhub_inventory.ps1" | Out-Null
   if ($LASTEXITCODE -eq 0) { Say "작업 스케줄러 등록 완료: 매일 ${time || '18:00'}" } else { Say "작업 스케줄러 등록 실패" }
   try { $t = Get-ScheduledTask -TaskName "TeamHub Inventory"; $t.Settings.StartWhenAvailable = $true; Set-ScheduledTask -InputObject $t | Out-Null } catch {}
-  # TeamHub 에서 만든 원가계산서를 원가계산 폴더에 저장 — 1시간마다
-  schtasks.exe /Create /F /TN "TeamHub Pull" /SC HOURLY /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\TeamHub\\teamhub_inventory.ps1 -Pull" | Out-Null
-  if ($LASTEXITCODE -eq 0) { Say "작업 스케줄러 등록 완료: 1시간마다 원가계산서 받기" }
 }
-$costDir = "${(costDir || '').replace(/"/g, '')}"
-function Pull-Costs {
-  if (-not $costDir) { return }
-  if (-not (Test-Path -LiteralPath $costDir)) { Say "[원가계산서 받기] 폴더를 찾을 수 없습니다: $costDir"; return }
-  try { $list = Invoke-RestMethod -Uri "${host}/api/costs/outbox" -Headers @{ 'X-Upload-Key' = $key } -TimeoutSec 60 } catch { Say "[원가계산서 받기] 실패: $($_.Exception.Message)"; return }
-  foreach ($x in @($list)) {
-    if (-not $x.id) { continue }
-    $name = [uri]::UnescapeDataString($x.name_enc)
-    $target = Join-Path $costDir $name
-    $tmp = Join-Path $env:TEMP ("teamhub_cost_" + $x.id + ".xlsx")
-    try {
-      Invoke-WebRequest -Uri ("${host}/api/costs/outbox/" + $x.id) -Headers @{ 'X-Upload-Key' = $key } -OutFile $tmp -UseBasicParsing -TimeoutSec 120
-      Move-Item -LiteralPath $tmp -Destination $target -Force
-      Invoke-RestMethod -Method Post -Uri ("${host}/api/costs/outbox/" + $x.id + "/done") -Headers @{ 'X-Upload-Key' = $key } | Out-Null
-      Say "[원가계산서 받기] 저장: $target"
-    } catch { Say "[원가계산서 받기] 실패($name): $($_.Exception.Message)" }
-  }
-}
-if ($Pull) { Pull-Costs; exit }
 function Get-FileDate($name) {
   if ($name -match '(20\\d{2})[.\\-_ ]?(\\d{1,2})[.\\-_ ]?(\\d{1,2})(?!\\d)') { return '{0}{1:D2}{2:D2}' -f [int]$Matches[1], [int]$Matches[2], [int]$Matches[3] }
   if ($name -match '(?<!\\d)(\\d{2})(\\d{2})(\\d{2})(?!\\d)') { return '20{0}{1}{2}' -f $Matches[1], $Matches[2], $Matches[3] }
   return '00000000'
 }
-Pull-Costs
 foreach ($job in $jobs) {
   if (-not $job.Dir) { continue }
   if (-not (Test-Path -LiteralPath $job.Dir)) { Say "[$($job.Name)] 폴더를 찾을 수 없습니다: $($job.Dir)  (이 PC에 나스 드라이브가 연결되어 있는지 확인)"; continue }
@@ -2845,10 +2822,7 @@ async function drawCostCheck(year) {
   const d = await api(`/api/costs/check?year=${year}&tol=${cc.tol}`);
   box.classList.remove('muted');
   const pct = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
-  const ob = state.me.role === 'admin' ? await api('/api/costs/outbox?all=1').catch(() => []) : [];
-  const waiting = ob.filter(x => !x.done);
-  box.innerHTML = `${ob.length ? `<div class="muted" style="font-size:12px;margin-bottom:4px">📁 원가계산 폴더로 보내기: ${waiting.length ? `<b>대기 ${waiting.length}개</b> (${waiting.slice(-3).map(x => esc(x.name)).join(', ')}) — 사무실 PC 프로그램이 1시간 안에 저장` : '모두 저장됨'}${ob.filter(x => x.done).length ? ` · 최근 저장 ${esc(ob.filter(x => x.done).slice(-1)[0].name)}` : ''}</div>` : ''}
-  <div class="row" style="margin-bottom:6px;gap:8px"><span class="muted" style="font-size:13px">원가계산서 <b>${d.sheets}</b>개 · 품목 ${d.items}개${d.first ? ` · 통관 ${esc(d.first)} ~ ${esc(d.last)}` : ''}</span>
+  box.innerHTML = `<div class="row" style="margin-bottom:6px;gap:8px"><span class="muted" style="font-size:13px">원가계산서 <b>${d.sheets}</b>개 · 품목 ${d.items}개${d.first ? ` · 통관 ${esc(d.first)} ~ ${esc(d.last)}` : ''}</span>
       <span class="spacer"></span><span class="muted" style="font-size:12px">차이</span><select id="ccTol" style="width:auto">${[0.5, 1, 3, 5, 10].map(v => `<option value="${v}" ${v === cc.tol ? 'selected' : ''}>${v}% 이상</option>`).join('')}</select>
       <button class="btn sm primary" id="ccMake">✏ 원가계산서 만들기</button><label class="btn sm" style="margin:0">🧮 원가계산서 올리기<input type="file" id="ccUp" accept=".xls,.xlsx" multiple hidden></label></div>
     <div class="muted" style="font-size:12px;margin-bottom:8px;line-height:1.6">일계장 줄마다 품목·매입처(공급사)·통관일로 원가계산서를 찾아 <b>매입단가 ↔ 수입단가(단가+통관비, 원/kg)</b>를 비교합니다.
@@ -2907,7 +2881,6 @@ async function openCostMake(after) {
     <label>품목</label><div class="qscroll"><table><thead><tr><th>품목</th><th>수량(kg)</th><th>단가(외화/kg)</th><th>관세(원)</th><th>식품검역인지대</th><th>화학물질인지대</th><th style="text-align:right">통관금액/kg</th><th style="text-align:right">수입단가</th><th></th></tr></thead><tbody id="cmItems">${itemRow()}</tbody></table></div>
     <button type="button" class="btn sm" id="cmAdd">+ 품목 추가</button>
     <label>통관수수료 내역 <small class="muted">(정산서·청구서 금액, 원)</small></label><div id="cmFees">${feeRows(def.fees)}</div><button type="button" class="btn sm" id="cmFeeAdd">+ 항목 추가</button>
-    <label style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:10px"><input type="checkbox" id="cmFolder" checked style="width:auto">📁 원가계산 폴더에도 저장 <small class="muted">— 사무실 PC 자동 업로드 프로그램이 1시간 안에 받아 ⚙ 원가계산서 폴더에 넣습니다</small></label>
     <div id="cmSum" style="margin-top:10px;font-size:14px"></div><div class="err"></div>
     <div class="actions"><button type="button" class="btn" data-close>닫기</button><button type="button" class="btn" id="cmSave">💾 저장만</button><button type="button" class="btn primary" id="cmGo">💾 저장 + 엑셀 받기</button></div></form>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
@@ -2945,9 +2918,8 @@ async function openCostMake(after) {
     const send = async dl => {
       if (!f.reportValidity()) return;
       try {
-        const tf = $('#cmFolder', bg).checked ? '&to_folder=1' : '';
-        if (!dl) { await api('/api/costs/make?save=1' + tf, {method: 'POST', body: body()}); close(); toast('원가계산서를 저장했습니다 (원가 체크·일계장에 반영' + (tf ? ', 원가계산 폴더로 보낼 예정' : '') + ').'); after && after(); return; }
-        const res = await fetch('/api/costs/make?save=1&download=1' + tf, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token, 'Content-Type': 'application/json'}, body: JSON.stringify(body())});
+        if (!dl) { await api('/api/costs/make?save=1', {method: 'POST', body: body()}); close(); toast('원가계산서를 저장했습니다 (원가 체크·일계장에 반영).'); after && after(); return; }
+        const res = await fetch('/api/costs/make?save=1&download=1', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token, 'Content-Type': 'application/json'}, body: JSON.stringify(body())});
         if (!res.ok) throw new Error((await res.json()).detail || '만들지 못했습니다.');
         const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || '원가계산.xlsx');
         const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
