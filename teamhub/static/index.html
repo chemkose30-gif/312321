@@ -1581,8 +1581,7 @@ async function renderQuoteReport(dt) {
       <input type="date" id="rFrom" value="${esc(r.from)}" style="width:auto"><span class="muted">~</span><input type="date" id="rTo" value="${esc(r.to)}" style="width:auto"></div>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
       <input id="rCust" placeholder="거래처" value="${esc(r.customer)}" style="max-width:180px">
-      <input id="rItem" list="rItemList" placeholder="품목 (이름·코드)" value="${esc(r.item)}" style="max-width:220px">
-      <datalist id="rItemList">${(d.item_names || []).map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <input id="rItem" placeholder="품목 (이름·코드) ▾" title="누르면 전체 품목 목록, 글자를 치면 좁혀집니다" value="${esc(r.item)}" style="max-width:240px">
       <label style="font-weight:400;font-size:13px;display:flex;align-items:center;gap:4px;margin:0" title="끄면 그 품목만 (vanillin → Ethyl vanillin·Vanillin PGA 제외), 켜면 이름에 들어간 것 모두"><input type="checkbox" id="rItemLike" ${r.itemLike ? 'checked' : ''} style="width:auto">포함 검색</label>
       <select id="rStatus" style="width:auto"><option value="">${dt === 'statement' ? '발행·출고완료 전체' : '전체 상태'}</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="rGroup" style="width:auto">${Object.entries(d.groups).map(([k, v]) => `<option value="${k}" ${r.group === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -1603,6 +1602,12 @@ async function renderQuoteReport(dt) {
   const read = () => { r.from = $('#rFrom').value; r.to = $('#rTo').value; r.customer = $('#rCust').value.trim(); r.item = $('#rItem').value.trim(); r.itemLike = $('#rItemLike').checked; r.status = $('#rStatus').value; r.group = $('#rGroup').value;
     if ($('#rSplit')) r.split = $('#rSplit').value; if ($('#rMeasure')) r.measure = $('#rMeasure').value; };
   $('#rGo').onclick = () => { read(); renderQuoteReport(dt); };
+  // 품목 칸: 누르면 전체 품목 목록(스크롤), 글자를 치면 좁혀짐 → 고르면 바로 검색
+  attachSearch($('#rItem'), v => {
+    const words = v.split(/\s+/).map(normText).filter(Boolean);
+    return (d.item_opts || []).filter(o => { const hay = normText(o.name + ' ' + o.codes.join(' ')); return words.every(w => hay.includes(w)); });
+  }, o => `${esc(o.name)}${o.codes.length ? ` <small>${esc(o.codes.join(', '))}</small>` : ''}`,
+  o => { $('#rItem').value = o.name; read(); renderQuoteReport(dt); });
   ['#rCust', '#rItem'].forEach(id => $(id).onkeydown = e => { if (e.key === 'Enter') { read(); renderQuoteReport(dt); } });
   ['#rStatus', '#rGroup', '#rFrom', '#rTo', '#rItemLike', '#rSplit', '#rMeasure'].filter(id => $(id)).forEach(id => $(id).onchange = () => { read(); renderQuoteReport(dt); });
   $$('[data-pre]').forEach(b => b.onclick = () => { read(); [r.from, r.to] = PRE[b.dataset.pre]; renderQuoteReport(dt); });

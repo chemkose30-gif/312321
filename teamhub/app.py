@@ -1372,8 +1372,14 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
             k, b = _item_key(item_base(n)), item_base(n)
             if k not in uniq or (uniq[k].isupper() and not b.isupper()):
                 uniq[k] = b
+        codes = {}
+        for r in c.execute("SELECT code, name FROM ecount_products"):  # 등록된 품목도 같이 (코드로도 검색)
+            k, b = _item_key(item_base(r["name"])), item_base(r["name"])
+            uniq.setdefault(k, b)
+            codes.setdefault(k, []).append(r["code"])
         names = sorted(uniq.values(), key=str.lower)
-    return {"item_names": names[:3000], "group": group, "groups": REPORT_GROUPS, "split": split, "splits": REPORT_SPLITS,
+        opts = [{"name": n, "codes": codes.get(_item_key(n), [])[:5]} for n in names]
+    return {"item_names": names, "item_opts": opts, "group": group, "groups": REPORT_GROUPS, "split": split, "splits": REPORT_SPLITS,
             "measure": measure, "measures": REPORT_MEASURES, "cols": [{"key": k, "label": h} for k, h in cols],
             "rows": rows[:3000], "total": tot, "truncated": len(rows) > 3000}
 
@@ -3195,16 +3201,35 @@ _PACK_RE = re.compile(
     r")\s*[\)\]]?\s*$", re.I)
 
 
+# 품목 이름 앞뒤에 붙는 메모성 표시: '9월', '10월분', '선납', '미납', '소분', '외화' 등
+_ITEM_TAG = r"(?:\d{1,2}\s*월\s*분?|선\s*납|미\s*납|소\s*분|외\s*화|선입금|미입금)"
+_TAG_BRACKET_RE = re.compile(rf"[\(\[\{{<【]\s*{_ITEM_TAG}(?:[\s,/·]*{_ITEM_TAG})*\s*[\)\]\}}>】]")
+_TAG_HEAD_RE = re.compile(rf"^\s*{_ITEM_TAG}(?=[\s_\-:/.,)\]]|[A-Za-z가-힣])[\s_\-:/.,)\]]*")
+_TAG_TAIL_RE = re.compile(rf"[\s_\-:/.,(\[]*{_ITEM_TAG}\s*$")
+
+
+def item_strip_tags(name: str) -> str:
+    n = _TAG_BRACKET_RE.sub(" ", str(name or ""))
+    for _ in range(4):
+        m = _TAG_HEAD_RE.sub("", n)
+        m = _TAG_TAIL_RE.sub("", m)
+        if m == n:
+            break
+        n = m
+    return re.sub(r"\s{2,}", " ", n).strip()
+
+
 def item_base(name: str) -> str:
     """'Heliotropine(Piperonal) (25kg *4)_향' → 'Heliotropine(Piperonal)',
-    'Vanillin 25kg x 4' · 'Vanillin 4X25KG' · 'Vanillin(25kg/drum)' → 'Vanillin' (포장·용도 표시 제거)."""
-    n = re.sub(r"_.*$", "", str(name or ""))
+    'Vanillin 25kg x 4' · '9월 Vanillin 4X25KG' · '[선납] Vanillin(소분)' → 'Vanillin' (포장·메모 표시 제거)."""
+    n = item_strip_tags(name)
+    n = re.sub(r"_.*$", "", n)
     n = re.sub(r"\s*\(\s*[\d.]+\s*(kg|g|l|ml|ea)\b[^)]*\).*$", "", n, flags=re.I)
     for _ in range(4):  # '25kg x 4 bags 2drums' 처럼 여러 개 붙은 것도 차례로 뗌
         m = _PACK_RE.search(n)
         if not m or m.start() == 0:
             break
-        n = n[:m.start()]
+        n = item_strip_tags(n[:m.start()])
     n = n.strip(" ,/-*x×")
     return n.strip() or str(name or "").strip()
 
