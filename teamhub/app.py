@@ -296,6 +296,24 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
             CREATE INDEX IF NOT EXISTS idx_inv_ships_lot ON inv_ships(lot_id);
+            CREATE TABLE IF NOT EXISTS cost_sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                company TEXT NOT NULL DEFAULT '',
+                supplier TEXT NOT NULL DEFAULT '',
+                doc_no TEXT NOT NULL DEFAULT '',
+                remit_date TEXT NOT NULL DEFAULT '',
+                customs_date TEXT NOT NULL DEFAULT '',
+                rate REAL,
+                invoice TEXT NOT NULL DEFAULT '',
+                item TEXT NOT NULL,
+                qty REAL NOT NULL DEFAULT 0,
+                unit_fx REAL,
+                unit_krw REAL,
+                landed REAL,
+                uploaded_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_cost_item ON cost_sheets(item);
             CREATE TABLE IF NOT EXISTS ledger (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 year INTEGER NOT NULL,
@@ -2904,7 +2922,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -2913,7 +2931,8 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
 def inv_settings(c) -> dict:
     return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1",
             "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", ""),
-            "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서"), "bank_dir": get_setting(c, "bank_dir", "")}
+            "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서"), "bank_dir": get_setting(c, "bank_dir", ""),
+            "cost_dir": get_setting(c, "cost_dir", "Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨")}
 
 
 @app.get("/api/inventory")
@@ -3477,6 +3496,168 @@ def ledger_check(year: int = 0, month: int = 0, customer: str = "", user: dict =
     return out
 
 
+# ---- 🧮 수입 통관 원가 계산서 → 품목별 kg당 원가 (일계장 매입단가 채우기·체크)
+def _xls_rows(filename: str, data: bytes) -> list:
+    if data[:4] == b"\xd0\xcf\x11\xe0":
+        sheets = read_xls_sheets(data)
+        name = next((n for n in sheets if "원가" in n), next(iter(sheets)))
+        return sheets[name]
+    names = xlsx_sheet_names(data)
+    return read_xlsx_values(data, next((n for n in names if "원가" in n), names[0]))
+
+
+def parse_cost_sheet(filename: str, data: bytes) -> dict:
+    """원가계산서: 회사(맨 위), 공급사('귀사에 납품한 ○○社'), 송금일·환율, 통관일, 품목별 수량·단가·수입단가(단가+통관금액 원/kg)."""
+    rows = [[str(v or "").strip() for v in r] for r in _xls_rows(filename, data)]
+    text = lambda r: " ".join(x for x in r if x)
+    out = {"company": "", "supplier": "", "doc_no": "", "remit_date": "", "customs_date": "", "rate": None, "invoice": "",
+           "items": []}
+    num = lambda v: _numn(v)
+    for r in rows[:5]:
+        m = re.search(r"(?:주식회사|\(주\)|㈜)\s*([가-힣A-Za-z]+)", text(r))
+        if m and not out["company"]:
+            out["company"] = m[1]
+    for i, r in enumerate(rows):
+        t = text(r)
+        if not out["doc_no"] and "문서번호" in t:
+            out["doc_no"] = t.split(":", 1)[-1].strip()
+        m = re.search(r"납품한\s*(.+?)\s*社", t)
+        if m and not out["supplier"]:
+            out["supplier"] = m[1].strip()
+        d = re.search(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", t)
+        if d and "송금" in t and not out["remit_date"]:
+            out["remit_date"] = f"{d[1]}-{int(d[2]):02d}-{int(d[3]):02d}"
+            out["rate"] = next((num(v) for v in r[1:] if num(v) and 100 < num(v) < 3000), None)
+        if d and "통관" in t and not out["customs_date"]:
+            out["customs_date"] = f"{d[1]}-{int(d[2]):02d}-{int(d[3]):02d}"
+        m = re.search(r"INVOICE\s*NO\.?\s*:?\s*(\S+)", t, re.I)
+        if m and not out["invoice"]:
+            out["invoice"] = m[1]
+    # 첫 표(송금): 품목 | 수량 | 단가(외화/kg)… | 단가(원/kg)
+    def table(start_word):
+        for i, r in enumerate(rows):
+            if r and r[0].replace(" ", "") == "품목" and any(start_word in x.replace(" ", "") for x in rows[i] + rows[min(i + 2, len(rows) - 1)]):
+                hdr = [" ".join(x) for x in zip(*[(rows[k] + [""] * 20)[:20] for k in range(i, min(i + 3, len(rows)))])]
+                body = []
+                for r2 in rows[i + 1:]:
+                    if r2 and r2[0].replace(" ", "") in ("합계", "계"):
+                        break
+                    if r2 and r2[0] and num(r2[1] if len(r2) > 1 else ""):
+                        body.append(r2)
+                return hdr, body
+        return None, []
+    h1, b1 = table("단가")
+    h2, b2 = table("수입단가")
+    landed_col = next((k for k, h in enumerate(h2 or []) if "수입단가" in h.replace(" ", "")), None)
+    krw_col = next((k for k, h in enumerate(h1 or []) if "원/kg" in h.replace(" ", "").lower() and "단가" in h), None)
+    fx_col = next((k for k, h in enumerate(h1 or []) if re.search(r"(usd|eur|gbp|jpy|cny|chf)\S*/kg", h.replace(" ", "").lower())
+                   and num(next((r[k] for r in b1 if k < len(r) and num(r[k])), ""))), None)
+    landed = {r[0].strip().lower(): num(r[landed_col]) for r in b2 if landed_col is not None and landed_col < len(r)}
+    for r in b1:
+        name = r[0].strip()
+        out["items"].append({"item": name, "qty": num(r[1]) or 0,
+                             "unit_fx": num(r[fx_col]) if fx_col is not None and fx_col < len(r) else None,
+                             "unit_krw": num(r[krw_col]) if krw_col is not None and krw_col < len(r) else None,
+                             "landed": landed.get(name.lower())})
+    if not out["items"]:   # 송금 표가 없으면 통관 표만으로
+        out["items"] = [{"item": r[0].strip(), "qty": num(r[1]) or 0, "unit_fx": None, "unit_krw": None,
+                         "landed": num(r[landed_col]) if landed_col is not None and landed_col < len(r) else None} for r in b2]
+    for it in out["items"]:
+        if not it["landed"]:
+            it["landed"] = it["unit_krw"]
+    return out
+
+
+@app.post("/api/costs/upload")
+async def costs_upload(file: UploadFile = File(...), user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    if not filename.lower().endswith((".xls", ".xlsx", ".xlsm")):
+        raise HTTPException(400, "엑셀 파일(xls, xlsx)만 올릴 수 있습니다.")
+    try:
+        cs = parse_cost_sheet(filename, data)
+    except Exception as e:
+        raise HTTPException(400, f"{filename}: 읽지 못했습니다 ({e})")
+    items = [i for i in cs["items"] if i["landed"]]
+    if not items:
+        raise HTTPException(400, f"{filename}: 원가계산서 표(품목·수량·수입단가)를 찾지 못했습니다.")
+    with db() as c:
+        c.execute("DELETE FROM cost_sheets WHERE filename = ?", (filename,))
+        for it in items:
+            c.execute("INSERT INTO cost_sheets (filename, company, supplier, doc_no, remit_date, customs_date, rate, invoice,"
+                      " item, qty, unit_fx, unit_krw, landed, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (filename, cs["company"], cs["supplier"], cs["doc_no"], cs["remit_date"], cs["customs_date"], cs["rate"],
+                       cs["invoice"], it["item"], it["qty"], it["unit_fx"], it["unit_krw"], it["landed"], now()))
+    return {"ok": True, "filename": filename, "company": cs["company"], "supplier": cs["supplier"],
+            "customs_date": cs["customs_date"], "items": [{"item": i["item"], "qty": i["qty"], "landed": i["landed"]} for i in items]}
+
+
+def cost_index(c) -> dict:
+    """품목 → [원가계산서 줄] (통관일 순)."""
+    idx = {}
+    for r in c.execute("SELECT * FROM cost_sheets ORDER BY customs_date, id"):
+        idx.setdefault(_item_key(item_base(r["item"])), []).append(dict(r))
+    return idx
+
+
+def cost_lookup(idx: dict, item: str, sale_date: str, hint: str = "") -> Optional[dict]:
+    """판매 줄 → 원가계산서 줄. hint(이카운트 통관일자 'Hocheng 260102' / 일계장 매입처 'LYS 260915')의 날짜가 맞으면 그것,
+    아니면 공급사 이름이 맞고 판매일 전에 통관된 것 중 가장 최근."""
+    cand = idx.get(_item_key(item_base(item)), [])
+    if not cand:
+        return None
+    m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", hint or "")
+    if m:
+        cd = f"20{m[1]}-{m[2]}-{m[3]}"
+        hit = [x for x in cand if x["customs_date"] == cd]
+        if hit:
+            return {**hit[-1], "exact": True}
+    word = re.sub(r"\(.*?\)|재고|제품|서류|내자|ERC|이알씨|켐코스|[-_/]", " ", hint or "", flags=re.I).split()
+    sup = word[0].lower() if word else ""
+    # 날짜 표시가 없으면: 판매일 전 1년 안에 통관된 것만 (몇 년 전 원가계산서와 엮이지 않게)
+    lo = (datetime.strptime(sale_date, "%Y-%m-%d") - timedelta(days=366)).strftime("%Y-%m-%d") if sale_date else ""
+    before = [x for x in cand if (not sale_date or lo <= (x["customs_date"] or "0") <= sale_date)]
+    pool = [x for x in before if sup and sup[:4] in (x["supplier"] or "").lower()] or (before if not sup else [])
+    return {**pool[-1], "exact": False} if pool else None
+
+
+@app.get("/api/costs/check")
+def costs_check(year: int = 0, tol: float = 1.0, user: dict = Depends(current_user)):
+    """일계장 매입단가 ↔ 원가계산서 수입단가 대조: 다른 줄 / 원가계산서를 못 찾은 줄."""
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        idx = cost_index(c)
+        n_sheets = c.execute("SELECT COUNT(DISTINCT filename), MAX(customs_date), MIN(customs_date) FROM cost_sheets").fetchone()
+        years = [r[0] for r in c.execute("SELECT DISTINCT year FROM ledger ORDER BY year")]
+        year = year if year in years else (years[-1] if years else datetime.now().year)
+        led = [dict(r) for r in c.execute("SELECT * FROM ledger WHERE year = ? ORDER BY date, src_row", (year,))]
+    diff, missing, ok = [], [], 0
+    skip = lambda r: not r["buy_price"] or not r["supplier"] or any(w in r["supplier"] for w in ("켐코스", "이알씨")) \
+        and not re.search(r"\d{6}", r["supplier"])
+    for r in led:
+        if skip(r):
+            continue
+        hit = cost_lookup(idx, r["item"], r["date"], r["supplier"])
+        if not hit:
+            missing.append({"date": r["date"], "company": r["company"], "item": r["item"], "customer": r["customer"],
+                            "supplier": r["supplier"], "buy_price": r["buy_price"], "qty": r["qty"]})
+            continue
+        pct = (r["buy_price"] - hit["landed"]) / hit["landed"] * 100 if hit["landed"] else 0
+        if abs(pct) >= tol:
+            diff.append({"date": r["date"], "company": r["company"], "item": r["item"], "customer": r["customer"],
+                         "supplier": r["supplier"], "qty": r["qty"], "buy_price": r["buy_price"], "landed": hit["landed"],
+                         "pct": pct, "amount": (r["buy_price"] - hit["landed"]) * (r["qty"] or 0),
+                         "sheet": hit["filename"], "customs_date": hit["customs_date"], "exact": hit["exact"],
+                         "cost_supplier": hit["supplier"]})
+        else:
+            ok += 1
+    diff.sort(key=lambda x: -abs(x["amount"]))
+    return {"year": year, "years": years, "sheets": n_sheets[0], "first": n_sheets[2], "last": n_sheets[1],
+            "items": len(idx), "ok": ok, "diff": diff[:500], "missing": missing[:500], "n_diff": len(diff),
+            "n_missing": len(missing), "tol": tol}
+
+
 # ---- 📒 거래명세서로 일계장(매출액 · 매출품목 · 매입매출장) 만들기
 COMPANIES = ("이알씨", "켐코스")
 LEDGER_TPL_DIR = Path(os.getenv("TEAMHUB_LEDGER_TPL_DIR", str(Path(DB_PATH).parent / "ledger_tpl")))
@@ -3590,6 +3771,7 @@ def ledger_build(c, upto: str, company: str) -> dict:
         loose_m.setdefault((r["date"][:7], ckey(r["customer"])), []).append(r)
         if r["buy_price"]:
             hist[ikey(r["item"])] = r            # 같은 품목 가장 최근 매입
+    cidx = cost_index(c)
     lots = {}
     for r in c.execute("SELECT item, origin, customs_date, cost_krw FROM inv_lots WHERE cost_krw > 0"):
         lots.setdefault(ikey(r["item"]), []).append(dict(r))
@@ -3628,6 +3810,10 @@ def ledger_build(c, upto: str, company: str) -> dict:
             pur = sum(o["purchase"] or 0 for o in mp)
             row.update(supplier="(일계장 품목별 합계)", buy_price=round(pur / qty) if qty else None, src="ledger",
                        purchase=pur, note=f"일계장 {len(mp)}줄 합계")
+        elif (ch := cost_lookup(cidx, r["name"], r["quote_date"], r["lot"])) and not (
+                other in ckey(r["customer_name"]) or _norm_company(other) in _norm_company(r["customer_name"])):
+            row.update(supplier=f"{ch['supplier']} {ch['customs_date'][2:].replace('-', '')}".strip(), buy_price=ch["landed"],
+                       src="cost", note=f"원가계산서 {ch['customs_date']}")
         elif other in ckey(r["customer_name"]) or _norm_company(other) in _norm_company(r["customer_name"]):
             # 관계사(켐코스↔이알씨) 넘김은 원가로 넘기므로 매입 = 매출 (이익 0) — 이카운트는 한 달치를 묶어 적어 줄이 안 맞음
             row.update(supplier=f"{other} 이전분", buy_price=r["unit_price"], purchase=sales, src="internal",
@@ -3796,6 +3982,7 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
             "ledger": sum(r["src"] == "ledger" for r in rows), "lot": sum(r["src"] == "lot" for r in rows),
             "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows),
             "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"],
+            "cost": sum(r["src"] == "cost" for r in rows),
             "purchase": sum(r["purchase"] for r in rows), "profit": sum(r["profit"] for r in rows),
             "company": company, "date": date}
     if preview:

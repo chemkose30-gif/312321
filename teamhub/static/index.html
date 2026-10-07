@@ -2370,14 +2370,15 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir, inbDir, bankDir) => `param([switch]$Install)
+  const script = (key, time, invDir, ledDir, inbDir, bankDir, costDir) => `param([switch]$Install)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
   @{ Name = "재고";       Dir = "${(invDir || '').replace(/"/g, '')}"; Url = "${host}/api/inventory/upload"; Ext = @('.xlsx', '.xlsm'); Like = '*'; Depth = 2 },
   @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "인바운딩";   Dir = "${(inbDir || '').replace(/"/g, '')}"; Url = "${host}/api/inbound/upload";   Ext = @('.xlsx', '.xlsm'); Like = '*Inbound*'; Depth = 0 },
-  @{ Name = "은행입금";   Dir = "${(bankDir || '').replace(/"/g, '')}"; Url = "${host}/api/bank/upload";      Ext = @('.xls', '.xlsx', '.csv'); Like = '*'; Depth = 1 }
+  @{ Name = "은행입금";   Dir = "${(bankDir || '').replace(/"/g, '')}"; Url = "${host}/api/bank/upload";      Ext = @('.xls', '.xlsx', '.csv'); Like = '*'; Depth = 1 },
+  @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -2419,7 +2420,7 @@ foreach ($job in $jobs) {
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#bankDir').value).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#bankDir').value, $('#costDir').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
@@ -2437,6 +2438,7 @@ foreach ($job in $jobs) {
       <label style="margin-top:6px">📦 재고리스트 폴더</label><input id="invDir" value="${esc(s.inv_dir || '')}">
       <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
       <label>💳 은행 거래내역 폴더 <small class="muted">— 인터넷뱅킹에서 받은 거래내역 엑셀을 저장하는 곳, 비워 두면 안 올림</small></label><input id="bankDir" value="${esc(s.bank_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\은행">
+      <label>🧮 원가계산서 폴더 <small class="muted">— 수입 통관 원가 계산서 엑셀, 새 파일이 생기면 올림 (비워 두면 안 올림)</small></label><input id="costDir" value="${esc(s.cost_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨">
       <label>📋 인바운딩(수입 예정) 파일이 있는 곳 <small class="muted">— 공유문서 폴더(이름에 'Inbound' 가 들어간 엑셀을 찾음) 또는 파일 경로 그대로</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
@@ -2473,10 +2475,10 @@ foreach ($job in $jobs) {
       await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
-    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', bankDir: 'bank_dir'};
+    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', bankDir: 'bank_dir', costDir: 'cost_dir'};
     Object.keys(DIRK).forEach(id => $('#' + id, bg).onchange = e => save({[DIRK[id]]: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#bankDir', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#bankDir', bg).value, $('#costDir', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
@@ -2811,6 +2813,45 @@ async function drawLedgerCheck(year) {
   });
 }
 
+// ---- 🧮 원가 체크: 일계장 매입단가 ↔ 수입 통관 원가계산서 수입단가(단가+통관비, 원/kg)
+async function drawCostCheck(year) {
+  const box = $('#pfCheck'); if (!box) return;
+  const cc = state.cc ||= {tol: 1, miss: false};
+  const d = await api(`/api/costs/check?year=${year}&tol=${cc.tol}`);
+  box.classList.remove('muted');
+  const pct = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
+  box.innerHTML = `<div class="row" style="margin-bottom:6px;gap:8px"><span class="muted" style="font-size:13px">원가계산서 <b>${d.sheets}</b>개 · 품목 ${d.items}개${d.first ? ` · 통관 ${esc(d.first)} ~ ${esc(d.last)}` : ''}</span>
+      <span class="spacer"></span><span class="muted" style="font-size:12px">차이</span><select id="ccTol" style="width:auto">${[0.5, 1, 3, 5, 10].map(v => `<option value="${v}" ${v === cc.tol ? 'selected' : ''}>${v}% 이상</option>`).join('')}</select>
+      <label class="btn sm" style="margin:0">🧮 원가계산서 올리기<input type="file" id="ccUp" accept=".xls,.xlsx" multiple hidden></label></div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px;line-height:1.6">일계장 줄마다 품목·매입처(공급사)·통관일로 원가계산서를 찾아 <b>매입단가 ↔ 수입단가(단가+통관비, 원/kg)</b>를 비교합니다.
+      매입처에 날짜(예: LYS 260915)가 있으면 그 통관 건, 없으면 같은 공급사의 판매일 전 1년 안 가장 최근 통관 건과 비교합니다(<i>추정</i>). 관계사 넘김은 뺍니다.
+      <br>맞음 <b>${d.ok}</b>줄 · <span class="${d.n_diff ? 'down' : ''}">다름 <b>${d.n_diff}</b>줄</span> · 원가계산서 없음 ${d.n_missing}줄</div>
+    <div class="qscroll" style="max-height:520px;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>품목</th><th>매출처</th><th>매입처</th><th class="num">수량</th><th class="num">일계장 매입단가</th><th class="num">원가계산서</th><th class="num">차이</th><th class="num">금액 차이</th><th>원가계산서</th></tr></thead><tbody>
+      ${d.diff.map(x => `<tr><td>${esc(x.date.slice(5))}<br><small class="muted">${esc(x.company)}</small></td><td>${esc(x.item)}</td><td>${esc(x.customer)}</td><td>${esc(x.supplier)}</td><td class="num">${kg(x.qty)}</td>
+        <td class="num">${won(x.buy_price)}</td><td class="num">${won(x.landed)}</td><td class="num ${Math.abs(x.pct) >= 3 ? 'down' : ''}"><b>${pct(x.pct)}</b></td><td class="num">${won(x.amount)}</td>
+        <td><small>${esc(x.cost_supplier)} ${esc(x.customs_date)} 통관${x.exact ? '' : ' <i class="muted">추정</i>'}<br><span class="muted">${esc(x.sheet)}</span></small></td></tr>`).join('')
+        || `<tr><td colspan="10" class="empty">${d.sheets ? '원가계산서와 다른 매입단가가 없습니다. 👍' : '아직 올린 원가계산서가 없습니다. 🧮 원가계산서 올리기로 원가계산 폴더의 파일을 한꺼번에(Ctrl+A) 올려 주세요.'}</td></tr>`}
+    </tbody></table></div>
+    ${d.n_missing ? `<details style="margin-top:10px" ${cc.miss ? 'open' : ''} id="ccMiss"><summary style="cursor:pointer;font-size:13px">원가계산서를 못 찾은 줄 ${d.n_missing}개 <small class="muted">(매입 금액 큰 순)</small></summary>
+      <div class="qscroll" style="max-height:400px;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>품목</th><th>매출처</th><th>매입처</th><th class="num">수량</th><th class="num">매입단가</th></tr></thead><tbody>
+      ${d.missing.slice().sort((a, b) => b.buy_price * b.qty - a.buy_price * a.qty).slice(0, 300).map(x => `<tr><td>${esc(x.date.slice(5))}</td><td>${esc(x.item)}</td><td>${esc(x.customer)}</td><td>${esc(x.supplier)}</td><td class="num">${kg(x.qty)}</td><td class="num">${won(x.buy_price)}</td></tr>`).join('')}
+      </tbody></table></div></details>` : ''}`;
+  $('#ccTol').onchange = e => { cc.tol = +e.target.value; drawCostCheck(year); };
+  if ($('#ccMiss')) $('#ccMiss').ontoggle = e => { cc.miss = e.target.open; };
+  $('#ccUp').onchange = async e => {
+    const files = [...e.target.files]; let ok = 0; const errs = [];
+    for (const [i, f] of files.entries()) {
+      box.querySelector('.muted').textContent = `올리는 중… ${i + 1}/${files.length} ${f.name}`;
+      const fd = new FormData(); fd.append('file', f);
+      const res = await fetch('/api/costs/upload', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      if (res.ok) ok++; else errs.push((await res.json()).detail || f.name);
+    }
+    toast(`원가계산서 ${ok}개 반영${errs.length ? `, 못 읽음 ${errs.length}개` : ''}`);
+    if (errs.length) alert('못 읽은 파일:\n' + errs.slice(0, 20).join('\n'));
+    drawCostCheck(year);
+  };
+}
+
 // ---- 📒 거래명세서로 일계장 만들기 (매출액 · 매출품목 · 매입매출장 시트, 회사별)
 function openLedgerMake() {
   openModal(`<h2>📒 일계장 만들기</h2>
@@ -2827,7 +2868,7 @@ function openLedgerMake() {
         const r = await api(`/api/ledger/make?${q()}&preview=1`);
         $('#lmPrev', bg).innerHTML = (r.template ? `양식: 마지막으로 올린 <b>${esc(r.company)}</b> 일계장 그대로 (매출액 · 매출품목 · 매입매출장 숫자만 바꿈, 받을어음·통장 잔액은 올린 파일 그대로)<br>`
             : '<span class="down">아직 올린 일계장이 없어 기본 양식으로 만듭니다. 💰 매입매출장 올리기로 최신 일계장(.xls)을 올리면 같은 양식으로 나옵니다.</span><br>') + `<b>${esc(r.company)}</b> ${esc(r.date.slice(0, 4))}년 1월 1일 ~ ${esc(r.date.slice(5))} · <b>${r.rows}줄</b> · 매출 <b>${krw(r.sales)}원</b> · 매입 ${krw(r.purchase)}원 · 손익 ${krw(r.profit)}원
-          <br>매입 채운 곳: 일계장 같은 줄 ${r.ledger} · 재고 로트 ${r.lot} · 최근 매입단가 ${r.recent} · 관계사 넘김 ${r.internal}${r.none ? ` · <span class="down">못 찾음 ${r.none}줄 (노란색)</span>` : ''}
+          <br>매입 채운 곳: 일계장 같은 줄 ${r.ledger} · 원가계산서 ${r.cost} · 재고 로트 ${r.lot} · 최근 매입단가 ${r.recent} · 관계사 넘김 ${r.internal}${r.none ? ` · <span class="down">못 찾음 ${r.none}줄 (노란색)</span>` : ''}
           ${r.no_wh ? `<br><span class="down">창고 정보가 없는 거래명세서 ${r.no_wh}줄은 이알씨로 봤습니다.</span> 이카운트 판매현황(창고명·통관일자 포함)을 📄 거래명세서 → 📥 이카운트에서 가져오기로 <b>덮어쓰기</b>해서 다시 올리면 회사·로트가 채워집니다.` : ''}`;
       } catch (err) { $('#lmPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }
     };
@@ -2869,7 +2910,7 @@ async function renderProfit() {
   const list = src.filter(e => !ql || e.name.toLowerCase().includes(ql));
   const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item + ' ' + e.supplier).toLowerCase().includes(ql));
   let table;
-  if (pf.tab === 'check') table = '<div id="pfCheck" class="muted">불러오는 중…</div>';
+  if (pf.tab === 'check' || pf.tab === 'cost') table = '<div id="pfCheck" class="muted">불러오는 중…</div>';
   else if (pf.tab === 'month') table = `<div class="qscroll"><table class="an-table"><thead><tr><th>월</th><th class="num">매출</th><th class="num">매입</th><th class="num">이익</th><th class="num">이익률</th><th class="num">${P}년 이익</th><th class="num">전년 대비</th></tr></thead><tbody>
       ${months.map((mn, i) => `<tr><td>${mn}</td><td class="num">${man(cm.rev[i])}</td><td class="num">${man(cm.cost[i])}</td><td class="num"><b>${man(cm.profit[i])}</b></td><td class="num">${rate(cm.profit[i], cm.rev[i])}</td><td class="num">${man(pm.profit[i])}</td><td class="num">${cm.rev[i] ? deltaHtml(cm.profit[i], pm.profit[i]) : '-'}</td></tr>`).join('')}
       <tr><td><b>합계</b></td><td class="num"><b>${man(sum(cm.rev))}</b></td><td class="num"><b>${man(sum(cm.cost))}</b></td><td class="num"><b>${man(sum(cm.profit))}</b></td><td class="num"><b>${rate(sum(cm.profit), sum(cm.rev))}</b></td><td class="num">${man(sum(pm.profit))}</td><td class="num">${deltaHtml(ytd('profit'), pytd('profit'))}</td></tr>
@@ -2898,7 +2939,7 @@ async function renderProfit() {
     </div>
     <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b>${d.monthly[P] && !sum(pm.rev) ? `<span class="muted" style="font-size:12px">${P}년 매입매출장을 올리면 전년과 비교됩니다</span>` : ''}</div>
     <div id="pfChart"></div>
-    <div class="tabs" style="margin-top:12px"><button data-t="month">월별</button><button data-t="cust">매출처별</button><button data-t="item">품목별</button><button data-t="sup">매입처별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button><button data-t="check">🧾 거래명세서 대조</button></div>
+    <div class="tabs" style="margin-top:12px"><button data-t="month">월별</button><button data-t="cust">매출처별</button><button data-t="item">품목별</button><button data-t="sup">매입처별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button><button data-t="check">🧾 거래명세서 대조</button><button data-t="cost">🧮 원가 체크</button></div>
     ${table}
     <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.7">
       계산: 매입매출장의 줄마다 총 매출액 − 총 매입액(= 총 손익), 부가세 별도. 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
@@ -2906,6 +2947,7 @@ async function renderProfit() {
     </div>
   </div>`;
   if (pf.tab === 'check') drawLedgerCheck(Y);
+  if (pf.tab === 'cost') drawCostCheck(Y);
   const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
   $('#pfChart').dataset.cum = '1';
   lineChart($('#pfChart'), months, [
