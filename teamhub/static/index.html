@@ -2375,7 +2375,7 @@ async function openInvSettings() {
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
   @{ Name = "재고";       Dir = "${(invDir || '').replace(/"/g, '')}"; Url = "${host}/api/inventory/upload"; Ext = @('.xlsx', '.xlsm'); Like = '*'; Depth = 2 },
-  @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2 },
+  @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "인바운딩";   Dir = "${(inbDir || '').replace(/"/g, '')}"; Url = "${host}/api/inbound/upload";   Ext = @('.xlsx', '.xlsm'); Like = '*Inbound*'; Depth = 0 },
   @{ Name = "은행입금";   Dir = "${(bankDir || '').replace(/"/g, '')}"; Url = "${host}/api/bank/upload";      Ext = @('.xls', '.xlsx', '.csv'); Like = '*'; Depth = 1 }
 )
@@ -2411,7 +2411,7 @@ foreach ($job in $jobs) {
     Copy-Item -LiteralPath $f.FullName $tmp -Force
     $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" $job.Url
     $code = ("$out" -split '\\|')[-1]
-    if ($code -eq '200') { Say "[$($job.Name)] 올림 성공: $($f.Name)"; $done = $true; break }
+    if ($code -eq '200') { Say "[$($job.Name)] 올림 성공: $($f.Name)"; $done = $true; if (-not $job.All) { break } else { continue } }
     Say "[$($job.Name)] 실패($code): $($f.Name)  $out"
   }
 }`;
@@ -2629,32 +2629,42 @@ function openInvItem(lots, canCost, today) {
 // ===================================================== 💰 이익 분석 (재고 엑셀 출고 기록 × 원가)
 function openLedgerUpload(after) {
   const y0 = new Date().getFullYear();
-  openModal(`<h2>💰 매입매출장 올리기</h2>
-    <div class="muted" style="font-size:13px">일계장 엑셀(xls/xlsx)의 <b>매입매출장</b> 시트를 읽습니다. 같은 연도는 올릴 때마다 이 파일 내용으로 바뀝니다.</div>
-    <label>엑셀 파일</label><input type="file" id="ldFile" accept=".xls,.xlsx,.xlsm">
+  openModal(`<h2>💰 매입매출장(일계장) 올리기</h2>
+    <div class="muted" style="font-size:13px;line-height:1.6">일계장 엑셀(xls/xlsx)의 <b>매입매출장</b> 시트를 읽습니다. <b>이알씨·켐코스는 따로</b> 보관되고, 같은 회사·같은 연도는 <b>파일 이름 날짜가 가장 최근인 것</b>으로 바뀝니다.
+      <br>여러 파일을 한꺼번에 골라도 됩니다 (Ctrl+A) — 회사마다 가장 최근 파일만 남습니다.</div>
+    <label>엑셀 파일</label><input type="file" id="ldFile" accept=".xls,.xlsx,.xlsm" multiple>
     <label>연도 <small class="muted">(시트 제목의 "2026년도"를 자동으로 읽음)</small></label>
     <select id="ldYear"><option value="0">자동</option>${[0, 1, 2, 3, 4, 5].map(k => `<option>${y0 - k}</option>`).join('')}</select>
-    <div id="ldPrev" class="muted" style="margin-top:8px"></div><div class="err"></div>
+    <div id="ldPrev" class="muted" style="margin-top:8px;max-height:40vh;overflow:auto"></div><div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ldGo" disabled>올리기</button></div>`, (bg, close) => {
-    const send = async dry => {
-      const fd = new FormData(); fd.append('file', $('#ldFile', bg).files[0]);
+    const fdate = f => { const m = f.name.match(/(20\d{2})[.\-_ ]?(\d{1,2})[.\-_ ]?(\d{1,2})(?!\d)/); return m ? `${m[1]}${m[2].padStart(2, '0')}${m[3].padStart(2, '0')}` : '0'; };
+    const files = () => [...$('#ldFile', bg).files].sort((x, y) => fdate(x).localeCompare(fdate(y)));   // 옛날 것부터 → 최신이 마지막에 남음
+    const send = async (file, dry) => {
+      const fd = new FormData(); fd.append('file', file);
       const res = await fetch(`/api/ledger/upload?dry_run=${dry}&year=${$('#ldYear', bg).value}`, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || '업로드 실패');
+      if (!res.ok) throw new Error(`${file.name}: ${data.detail || '업로드 실패'}`);
       return data;
     };
     $('#ldFile', bg).onchange = $('#ldYear', bg).onchange = async () => {
-      if (!$('#ldFile', bg).files[0]) return;
+      const fs = files(); if (!fs.length) return;
       $('.err', bg).textContent = ''; $('#ldGo', bg).disabled = true; $('#ldPrev', bg).textContent = '읽는 중…';
-      try {
-        const r = await send(true);
-        $('#ldPrev', bg).innerHTML = `시트 <b>${esc(r.sheet)}</b> · <b>${r.year}년</b> ${r.rows}줄 (마지막 ${esc(r.last)}) · 매출 ${krw(r.sales)}원 · 손익 ${krw(r.profit)}원`;
-        $('#ldGo', bg).disabled = false;
-      } catch (err) { $('#ldPrev', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+      const lines = [];
+      for (const f of fs) {
+        try { const r = await send(f, true); lines.push(`${esc(f.name)} — <b>${esc(r.company || '회사 ?')}</b> ${r.year}년 ${r.rows}줄 (마지막 ${esc(r.last)}) · 매출 ${krw(r.sales)}원`); }
+        catch (err) { lines.push(`<span class="down">${esc(err.message)}</span>`); }
+      }
+      $('#ldPrev', bg).innerHTML = lines.join('<br>');
+      $('#ldGo', bg).disabled = false;
     };
     $('#ldGo', bg).onclick = async () => {
-      try { const r = await send(false); close(); toast(`${r.year}년 ${r.rows}줄을 반영했습니다.`); after && after(); }
-      catch (err) { $('.err', bg).textContent = err.message; }
+      $('#ldGo', bg).disabled = true;
+      const done = [], skipped = [];
+      for (const f of files()) {
+        try { const r = await send(f, false); (r.skipped ? skipped : done).push(`${r.company || ''} ${f.name}`); }
+        catch (err) { $('.err', bg).textContent = err.message; }
+      }
+      close(); toast(`반영 ${done.length}개${skipped.length ? `, 더 옛날 파일이라 건너뜀 ${skipped.length}개` : ''}`); after && after();
     };
   });
 }
@@ -2758,6 +2768,49 @@ function openBankUpload() {
   });
 }
 
+// ---- 🧾 일계장(매입매출장) ↔ 거래명세서 대조: 월별 → 거래처별 차이 → 줄 단위
+async function drawLedgerCheck(year) {
+  const box = $('#pfCheck'); if (!box) return;
+  const d = await api(`/api/ledger/check?year=${year}`);
+  if (!d.months) { box.textContent = '매입매출장이 없습니다.'; return; }
+  const co = d.companies.filter(Boolean), open = state.pfOpen ||= {};
+  const files = co.map(c => d.meta[`${d.year}|${c}`]).filter(Boolean);
+  box.classList.remove('muted');
+  box.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px;line-height:1.6">일계장 매출(부가세 별도)과 TeamHub 거래명세서 공급가액(작성중 제외)을 달마다 비교합니다. 관계사(켐코스↔이알씨) 거래도 양쪽 다 포함한 금액입니다.
+      ${files.length ? '<br>올라온 일계장: ' + files.map(m => `<b>${esc(m.company)}</b> ${esc(m.filename)} (${esc(m.last)}까지)`).join(' · ') : ''}
+      ${d.legacy ? '<br><span class="down">회사 구분 전에 올린 일계장이 섞여 있습니다. 이알씨·켐코스 최신 파일을 다시 올려 주세요.</span>' : ''}
+      ${co.length < 2 ? '<br><span class="down">지금 한 회사 일계장만 있습니다. 다른 회사 파일도 올려야 합계가 맞습니다.</span>' : ''}</div>
+    <div class="qscroll"><table class="an-table"><thead><tr><th>월</th>${co.map(c => `<th class="num">일계장 ${esc(c)}</th>`).join('')}<th class="num">일계장 합계</th><th class="num">거래명세서</th><th class="num">차이</th><th class="num">차이 나는 거래처</th></tr></thead><tbody>
+    ${d.months.map(m => { const diff = m.ledger - m.statements; return `<tr data-cm="${m.month}" style="cursor:pointer"><td>${m.month}월 ${open[m.month] ? '▴' : '▾'}</td>${co.map(c => `<td class="num">${man(m.by_company[c] || 0)}</td>`).join('')}
+      <td class="num"><b>${man(m.ledger)}</b></td><td class="num"><b>${man(m.statements)}</b></td><td class="num ${Math.abs(diff) >= 1e6 ? 'down' : ''}"><b>${diff > 0 ? '+' : ''}${man(diff)}</b></td><td class="num">${m.diffs.length}곳</td></tr>
+      ${open[m.month] ? `<tr><td colspan="${co.length + 5}" style="background:#fafafa;white-space:normal"><table style="width:auto;min-width:70%"><thead><tr><th>거래처</th><th class="num">일계장</th><th class="num">거래명세서</th><th class="num">차이</th><th class="num">줄 수 (일계장/명세서)</th></tr></thead><tbody>
+        ${m.diffs.map(x => `<tr data-cc="${esc(x.name)}" data-cmo="${m.month}" style="cursor:pointer"><td>${esc(x.name)}${x.excluded ? ' <span class="tag">관계사</span>' : ''}</td><td class="num">${won(x.ledger)}</td><td class="num">${won(x.statements)}</td>
+          <td class="num ${x.diff ? 'down' : ''}">${x.diff > 0 ? '+' : ''}${won(x.diff)}</td><td class="num">${x.ledger_lines} / ${x.st_lines}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">거래처별로 다 맞습니다. 👍</td></tr>'}
+        </tbody></table></td></tr>` : ''}`; }).join('')}
+    <tr><td><b>합계</b></td>${co.map(c => `<td class="num"><b>${man(sum(d.months.map(m => m.by_company[c] || 0)))}</b></td>`).join('')}<td class="num"><b>${man(sum(d.months.map(m => m.ledger)))}</b></td><td class="num"><b>${man(sum(d.months.map(m => m.statements)))}</b></td>
+      <td class="num"><b>${man(sum(d.months.map(m => m.ledger - m.statements)))}</b></td><td></td></tr>
+    </tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:4px">단위: 만원 · 차이 = 일계장 − 거래명세서 (+ 면 거래명세서에 없는 매출) · 월을 누르면 거래처별, 거래처를 누르면 줄 단위로 비교합니다.</div>`;
+  $$('[data-cm]', box).forEach(tr => tr.onclick = () => { open[tr.dataset.cm] = !open[tr.dataset.cm]; drawLedgerCheck(year); });
+  $$('[data-cc]', box).forEach(tr => tr.onclick = async () => {
+    const r = await api(`/api/ledger/check?year=${year}&month=${tr.dataset.cmo}&customer=${encodeURIComponent(tr.dataset.cc)}`);
+    const L = r.lines;
+    openModal(`<h2>${esc(tr.dataset.cc)} <small class="muted">${year}년 ${tr.dataset.cmo}월</small></h2>
+      <div class="grid2" style="align-items:start">
+        <div><b>일계장</b> <small class="muted">${L.ledger.length}줄 · ${won(sum(L.ledger.map(x => x.sales)))}원</small>
+          <div class="qscroll" style="max-height:55vh;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>품목</th><th class="num">수량</th><th class="num">매출</th></tr></thead><tbody>
+          ${L.ledger.map(x => `<tr><td>${esc(x.date.slice(5))}<br><small class="muted">${esc(x.company)}</small></td><td>${esc(x.item)}</td><td class="num">${kg(x.qty)}</td><td class="num">${won(x.sales)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">없음</td></tr>'}</tbody></table></div></div>
+        <div><b>거래명세서</b> <small class="muted">${L.statements.length}줄 · ${won(sum(L.statements.map(x => x.sales)))}원</small>
+          <div class="qscroll" style="max-height:55vh;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>품목</th><th class="num">수량</th><th class="num">공급가액</th></tr></thead><tbody>
+          ${L.statements.map(x => `<tr data-open-doc="${x.id}" style="cursor:pointer"><td>${esc(x.date.slice(5))}<br><small class="muted">${esc(x.no)}</small></td><td>${esc(x.item)}</td><td class="num">${kg(x.qty)}</td><td class="num">${won(x.sales)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">없음</td></tr>'}</tbody></table></div></div>
+      </div>
+      <div class="actions"><span class="spacer"></span><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+      bg.firstElementChild.classList.add('wide');
+      $$('[data-open-doc]', bg).forEach(t => t.onclick = () => { close(); openQuoteView(+t.dataset.openDoc); });
+    });
+  });
+}
+
 async function renderProfit() {
   const pf = state.pf ||= {year: 0, tab: 'cust', low: 10, q: '', inc: false};
   const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}&include_ex=${pf.inc}`), excludeNote()]);
@@ -2781,7 +2834,8 @@ async function renderProfit() {
   const list = src.filter(e => !ql || e.name.toLowerCase().includes(ql));
   const lows = d.low.filter(e => !ql || (e.customer + ' ' + e.item + ' ' + e.supplier).toLowerCase().includes(ql));
   let table;
-  if (pf.tab === 'month') table = `<div class="qscroll"><table class="an-table"><thead><tr><th>월</th><th class="num">매출</th><th class="num">매입</th><th class="num">이익</th><th class="num">이익률</th><th class="num">${P}년 이익</th><th class="num">전년 대비</th></tr></thead><tbody>
+  if (pf.tab === 'check') table = '<div id="pfCheck" class="muted">불러오는 중…</div>';
+  else if (pf.tab === 'month') table = `<div class="qscroll"><table class="an-table"><thead><tr><th>월</th><th class="num">매출</th><th class="num">매입</th><th class="num">이익</th><th class="num">이익률</th><th class="num">${P}년 이익</th><th class="num">전년 대비</th></tr></thead><tbody>
       ${months.map((mn, i) => `<tr><td>${mn}</td><td class="num">${man(cm.rev[i])}</td><td class="num">${man(cm.cost[i])}</td><td class="num"><b>${man(cm.profit[i])}</b></td><td class="num">${rate(cm.profit[i], cm.rev[i])}</td><td class="num">${man(pm.profit[i])}</td><td class="num">${cm.rev[i] ? deltaHtml(cm.profit[i], pm.profit[i]) : '-'}</td></tr>`).join('')}
       <tr><td><b>합계</b></td><td class="num"><b>${man(sum(cm.rev))}</b></td><td class="num"><b>${man(sum(cm.cost))}</b></td><td class="num"><b>${man(sum(cm.profit))}</b></td><td class="num"><b>${rate(sum(cm.profit), sum(cm.rev))}</b></td><td class="num">${man(sum(pm.profit))}</td><td class="num">${deltaHtml(ytd('profit'), pytd('profit'))}</td></tr>
       </tbody></table></div><div class="muted" style="font-size:12px;margin-top:4px">금액 단위: 만원</div>`;
@@ -2809,13 +2863,14 @@ async function renderProfit() {
     </div>
     <div class="row" style="margin-bottom:4px"><b>이익 · 1월부터 누계</b>${d.monthly[P] && !sum(pm.rev) ? `<span class="muted" style="font-size:12px">${P}년 매입매출장을 올리면 전년과 비교됩니다</span>` : ''}</div>
     <div id="pfChart"></div>
-    <div class="tabs" style="margin-top:12px"><button data-t="month">월별</button><button data-t="cust">매출처별</button><button data-t="item">품목별</button><button data-t="sup">매입처별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button></div>
+    <div class="tabs" style="margin-top:12px"><button data-t="month">월별</button><button data-t="cust">매출처별</button><button data-t="item">품목별</button><button data-t="sup">매입처별</button><button data-t="low">⚠ 마진 낮은 판매 (${d.low.length})</button><button data-t="check">🧾 거래명세서 대조</button></div>
     ${table}
     <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.7">
       계산: 매입매출장의 줄마다 총 매출액 − 총 매입액(= 총 손익), 부가세 별도. 판관비(인건비·운반비 등)는 빠진 매출총이익입니다.
       <br>· 품목은 포장 표시(예: "(25kg *4)_식")를 빼고 묶었습니다. 매출처 이름은 매출분석의 "같은 회사 이름 합치기"와 (주)·띄어쓰기 차이를 같이 맞춥니다.
     </div>
   </div>`;
+  if (pf.tab === 'check') drawLedgerCheck(Y);
   const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
   $('#pfChart').dataset.cum = '1';
   lineChart($('#pfChart'), months, [

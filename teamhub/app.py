@@ -464,7 +464,8 @@ def init_db():
                 ("ecount_products", k, "TEXT NOT NULL DEFAULT ''") for k in PROD_TEXT_FIELDS if k not in ("spec", "unit")) + (
                 ("ecount_products", "buy_price", "REAL NOT NULL DEFAULT 0"),
                 ("ecount_products", "updated_at", "TEXT NOT NULL DEFAULT ''"),
-                ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''")):
+                ("ecount_customers", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+                ("ledger", "company", "TEXT NOT NULL DEFAULT ''")):
             if col not in {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         # 성능: 동시 읽기/쓰기(WAL) + 자주 찾는 열 색인
@@ -3014,8 +3015,11 @@ def inventory_forecast(user: dict = Depends(current_user)):
         src = {"ledger": {}, "inv": {}}
         unmatched = {}
         # 매입매출장은 재고에서 나간 줄(매입처에 '(재고)' 표시)만 — 나머지는 수입해서 바로 넘긴 건이라 재고와 무관
-        for r in c.execute("SELECT item, item_base, date, qty FROM ledger WHERE year IN (?, ?) AND supplier LIKE '%재고%'",
-                           (y, ly)):
+        is_ex_led = exclude_matcher(c)
+        for r in c.execute("SELECT item, item_base, date, qty, customer FROM ledger WHERE year IN (?, ?)"
+                           " AND supplier LIKE '%재고%'", (y, ly)):
+            if is_ex_led(r["customer"]):
+                continue                         # 켐코스↔이알씨 관계사 넘김은 판매가 아님 (두 회사 일계장을 같이 쓰므로)
             it = match(r["item_base"])
             if not it:
                 if match.links.get(r["item_base"]) == "":
@@ -3315,6 +3319,9 @@ def parse_ledger_rows(rows: list):
     title = " ".join(" ".join(r) for r in rows[:hi])
     m = re.search(r"(20\d{2})\s*년", title)
     year = int(m[1]) if m else None
+    # 회사: 제목 '2026년도 주식회사 이알씨 매입매출장' → 이알씨 (켐코스·이알씨 일계장을 따로 보관)
+    cm = re.search(r"(?:주식회사|\(주\)|㈜)\s*([^\s(]+?)\s*매입", title)
+    company = cm[1].strip() if cm else ""
     g = lambda r, f: (r[col[f]] if col[f] is not None and col[f] < len(r) else "")
     out = []
     for i, r in enumerate(rows[hi + 1:], hi + 2):
@@ -3330,7 +3337,7 @@ def parse_ledger_rows(rows: list):
                     "buy_price": _numn(g(r, "buy_price")), "origin": str(g(r, "origin")).strip(),
                     "sales": sales, "purchase": purchase,
                     "profit": profit if profit is not None else sales - purchase,
-                    "note": str(g(r, "note")).strip(), "src_row": i})
+                    "note": str(g(r, "note")).strip(), "src_row": i, "company": company})
     return year, out
 
 
@@ -3349,7 +3356,7 @@ def parse_ledger(filename: str, data: bytes):
 
 
 LEDGER_FIELDS = ("year", "month", "day", "date", "item", "item_base", "qty", "customer", "supplier", "sale_price",
-                 "buy_price", "origin", "sales", "purchase", "profit", "note", "src_row")
+                 "buy_price", "origin", "sales", "purchase", "profit", "note", "src_row", "company")
 
 
 def ledger_meta(c) -> dict:
@@ -3375,24 +3382,86 @@ async def ledger_upload(file: UploadFile = File(...), dry_run: bool = False, yea
     y = year or y or int((file_date(filename) or "0")[:4]) or None
     if not y:
         raise HTTPException(400, "연도를 알 수 없습니다. 연도를 골라 다시 올려 주세요.")
-    summary = {"sheet": sheet, "year": y, "rows": len(rows), "sales": sum(r["sales"] for r in rows),
+    company = rows[0].get("company", "")
+    summary = {"sheet": sheet, "year": y, "rows": len(rows), "sales": sum(r["sales"] for r in rows), "company": company,
                "profit": sum(r["profit"] for r in rows), "last": max(f"{r['month']:02d}-{r['day']:02d}" for r in rows)}
     if dry_run:
         return summary
     with db() as c:
         meta = ledger_meta(c)
-        cur = meta.get(str(y), {})
+        key = f"{y}|{company}"
+        cur = meta.get(key) or ({} if company else meta.get(str(y), {}))
         fd = file_date(filename)
-        if user["role"] == "auto" and fd and cur.get("file_date") and fd < cur["file_date"]:
-            return {**summary, "skipped": f"이미 {cur['file_date']} 파일이 올라가 있어 건너뜀"}
-        c.execute("DELETE FROM ledger WHERE year = ?", (y,))
+        if fd and cur.get("file_date") and fd < cur["file_date"]:   # 더 옛날 파일은 건너뜀 (여러 개 한꺼번에 올려도 최신만 남게)
+            return {**summary, "skipped": f"{company or ''} {cur['file_date']} 파일이 이미 있어 건너뜀 (더 옛날 파일)".strip()}
+        # 회사별로 바꿈 (이알씨 파일을 올려도 켐코스 줄은 그대로). 회사 구분 전에 올린 줄은 이번에 지움.
+        c.execute("DELETE FROM ledger WHERE year = ? AND (company = ? OR company = '')", (y, company))
         c.executemany(f"INSERT INTO ledger ({', '.join(LEDGER_FIELDS)}) VALUES ({', '.join('?' * len(LEDGER_FIELDS))})",
                       [[{**r, "year": y, "date": f"{y}-{r['month']:02d}-{r['day']:02d}"}.get(f) for f in LEDGER_FIELDS]
                        for r in rows])
-        meta[str(y)] = {"filename": filename, "file_date": fd, "uploaded_at": now(), "by": user["name"],
-                        "rows": len(rows), "last": summary["last"]}
+        meta[str(y)] = meta[key] = {"filename": filename, "file_date": fd, "uploaded_at": now(), "by": user["name"],
+                                    "rows": len(rows), "last": summary["last"], "company": company}
         set_setting(c, "ledger_meta", json.dumps(meta, ensure_ascii=False))
     return summary
+
+
+@app.get("/api/ledger/check")
+def ledger_check(year: int = 0, month: int = 0, customer: str = "", user: dict = Depends(current_user)):
+    """일계장(매입매출장) 매출 ↔ TeamHub 거래명세서(공급가액) 대조. 월별 → 거래처별 → (month·customer 주면) 줄 단위."""
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        is_ex, canon = exclude_matcher(c), inv_customer_fn(c)
+        years = [r[0] for r in c.execute("SELECT DISTINCT year FROM ledger ORDER BY year")]
+        if not years:
+            return {"years": []}
+        year = year if year in years else years[-1]
+        led = [dict(r) for r in c.execute("SELECT * FROM ledger WHERE year = ? ORDER BY date, src_row", (year,))]
+        st = [dict(r) for r in c.execute(
+            "SELECT q.id, q.quote_no, q.quote_date, q.customer_name, qi.name, qi.qty, qi.supply FROM quote_items qi"
+            " JOIN quotes q ON q.id = qi.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft'"
+            " AND q.quote_date BETWEEN ? AND ? ORDER BY q.quote_date, q.id, qi.seq", (f"{year}-01-01", f"{year}-12-31"))]
+        meta = ledger_meta(c)
+    key = lambda n: _norm_company(canon(n) or n)
+    companies = sorted({r["company"] for r in led})
+    months = []
+    for m in range(1, 13):
+        lm = [r for r in led if r["month"] == m]
+        sm = [r for r in st if int(r["quote_date"][5:7]) == m]
+        if not lm and not sm:
+            continue
+        row = {"month": m, "ledger": sum(r["sales"] for r in lm), "statements": sum(r["supply"] or 0 for r in sm),
+               "by_company": {co: sum(r["sales"] for r in lm if r["company"] == co) for co in companies},
+               "ledger_ex": sum(r["sales"] for r in lm if is_ex(canon(r["customer"]) or r["customer"])),
+               "statements_ex": sum(r["supply"] or 0 for r in sm if is_ex(canon(r["customer_name"]) or r["customer_name"]))}
+        # 거래처별 차이
+        agg = {}
+        for r in lm:
+            a = agg.setdefault(key(r["customer"]), {"name": canon(r["customer"]) or r["customer"], "ledger": 0, "statements": 0,
+                                                    "ledger_lines": 0, "st_lines": 0})
+            a["ledger"] += r["sales"]
+            a["ledger_lines"] += 1
+        for r in sm:
+            a = agg.setdefault(key(r["customer_name"]), {"name": r["customer_name"], "ledger": 0, "statements": 0,
+                                                        "ledger_lines": 0, "st_lines": 0})
+            a["statements"] += r["supply"] or 0
+            a["st_lines"] += 1
+        diffs = [{**a, "diff": a["ledger"] - a["statements"], "excluded": is_ex(a["name"])} for a in agg.values()
+                 if abs(a["ledger"] - a["statements"]) >= 1000]
+        diffs.sort(key=lambda a: -abs(a["diff"]))
+        row["diffs"] = diffs
+        months.append(row)
+    out = {"years": years, "year": year, "companies": companies, "months": months, "meta": meta,
+           "legacy": any(not r["company"] for r in led)}
+    if month and customer:
+        k = _norm_company(customer)
+        out["lines"] = {
+            "ledger": [{"date": r["date"], "item": r["item"], "qty": r["qty"], "sales": r["sales"], "company": r["company"],
+                        "customer": r["customer"]} for r in led if r["month"] == month and key(r["customer"]) == k],
+            "statements": [{"id": r["id"], "no": r["quote_no"], "date": r["quote_date"], "item": r["name"], "qty": r["qty"],
+                            "sales": r["supply"] or 0, "customer": r["customer_name"]}
+                           for r in st if int(r["quote_date"][5:7]) == month and key(r["customer_name"]) == k]}
+    return out
 
 
 @app.get("/api/inventory/profit")
