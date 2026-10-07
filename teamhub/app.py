@@ -1,5 +1,6 @@
 """TeamHub - 사내 캘린더 & 업무지시 시스템 (FastAPI + SQLite)."""
 import email
+import functools
 import hashlib
 import re
 import json
@@ -3211,35 +3212,40 @@ def _item_key(s: str) -> str:
     return re.sub(r"[\s\-_.,·]", "", str(s or "")).lower()
 
 
-_PACK_UNIT = r"(?:kgs?|g|l|lt|ltr|ml|ea|lbs?|mt|tons?|kilos?)"
-_PACK_CNT = r"(?:ea|pcs?|bags?|drums?|boxe?s?|cans?|btls?|bottles?|pails?|ctns?|cartons?|개|포|통|드럼|박스|병|캔)"
-_PACK_RE = re.compile(
-    r"[\s,/_-]*[\(\[]?\s*(?:(?<![A-Za-z])in\s+)?(?:"
-    rf"\d+(?:\.\d+)?\s*{_PACK_UNIT}\.?(?:\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_CNT}?)?(?:\s*/\s*{_PACK_CNT})?"  # 25kg, 25kg*4, 25kg x 40bags, 25kg/drum
-    rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}?\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_UNIT}"  # 4x25kg, 4 drums x 200kg
-    rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}"  # 40bags, 4드럼
-    r")\s*[\)\]]?\s*$", re.I)
-
-
-# 품목 이름 앞뒤에 붙는 메모성 표시: '9월', '10월분', '선납', '미납', '소분', '외화' 등
-_ITEM_TAG_WORDS = ("선납", "미납", "소분", "외화", "차액", "선지급", "선급", "미지급", "선입금", "미입금", "잔금", "잔액",
-                   "정산", "계약금", "추가청구", "재청구", "환불", "반품", "할인", "운임", "운송비", "택배비", "샘플비",
-                   "패킹", "포장", "packing", "package", "packed", "pack",
-                   "drums", "drum", "bags", "bag", "pails", "pail", "드럼", "백")
-# 단어 + '분/금/건' (미납분·선납분·차액분 등), 'N월(분)', 'N차'
+# 품목 이름 앞뒤에 붙는 메모성 표시: '9월', '선납', '미납분', '차액', '식향', '14.97*4', '01/07' 등
+_ITEM_TAG_WORDS = (
+    "선납", "미납", "소분", "외화", "원화", "차액", "선지급", "선급", "미지급", "선입금", "미입금", "선결제", "잔금", "잔액",
+    "정산", "계약금", "추가청구", "재청구", "환불", "반품", "교환", "할인", "운임", "운송비", "택배비", "샘플비",
+    "유상견본", "무상견본", "견본", "완제품", "정기발주", "정기납품목", "정기납품", "정기납", "식향용", "식향", "향장용", "향장",
+    "산업용", "산업", "일반", "담배", "식", "향", "패킹", "포장", "드럼", "백",
+    "packing", "package", "packed", "pack", "drums", "drum", "bags", "bag", "pails", "pail", "dr", "ea", "kg", "LYS",
+)
+_SEP = r"[\s_\-:/.,·+]"
 _TAG_RES = ()
 
 
 def set_item_tags(extra: str = ""):
-    """품목 이름에서 뗄 메모 단어 정규식을 만듦. extra = 관리자가 더 넣은 단어(쉼표·줄바꿈 구분)."""
+    """품목 이름에서 뗄 메모 단어 정규식을 만듦. extra = 관리자가 더 넣은 단어(쉼표·줄바꿈 구분).
+    한글 단어는 영문 이름에 바로 붙어 있어도(미납Vanillin) 떼고, 한글끼리 붙은 건(사과향·식물성) 안 뗌.
+    영문 단어는 뒤에서만, 숫자는 띄어쓰기 등으로 떨어져 있을 때만 뗌 (Vitamin B12 의 12 는 그대로)."""
     global _TAG_RES
     words = list(_ITEM_TAG_WORDS) + [w.strip() for w in re.split(r"[,\n]", extra or "") if w.strip()]
-    alt = "|".join(r"\s*".join(re.escape(ch) for ch in w.replace(" ", "")) for w in sorted(set(words), key=len, reverse=True))
-    # 단어 + '분/건' (미납분·선납분·차액분 등), 'N월(분)', 'N차'
-    tag = rf"(?:\d{{1,2}}\s*월\s*분?|\d{{1,2}}\s*차|(?:{alt})\s*(?:분|건)?)"
-    _TAG_RES = (re.compile(rf"[\(\[\{{<【]\s*{tag}(?:[\s,/·]*{tag})*\s*[\)\]\}}>】]", re.I),
-                re.compile(rf"^\s*{tag}(?=[\s_\-:/.,)\]]|[A-Za-z가-힣])[\s_\-:/.,)\]]*", re.I),
-                re.compile(rf"[\s_\-:/.,(\[]*{tag}\s*$", re.I))
+    words = sorted({w.replace(" ", "") for w in words}, key=len, reverse=True)
+    pat = lambda ws: "|".join(r"\s*".join(re.escape(ch) for ch in w) for w in ws) or "(?!)"
+    ko = rf"(?:\d{{1,2}}\s*월\s*분?|\d{{1,2}}\s*차|(?:{pat([w for w in words if not w[0].isascii()])})\s*(?:분|건)?)"
+    en = rf"(?:{pat([w for w in words if w[0].isascii()])})\b"
+    num = (r"(?:\d{1,2}\s*/\s*\d{1,2}(?:\s*/\s*\d{2,4})?"          # 01/07 같은 날짜
+           r"|\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?"              # 14.97*4
+           r"|\d+\.\d+|0\d)(?![\d.])")                            # 14.97, 02·03
+    anyt = f"(?:{ko}|{en}|{num})"
+    _TAG_RES = (
+        re.compile(rf"[\(\[\{{<【]\s*{anyt}(?:{_SEP}*{anyt})*\s*[\)\]\}}>】]", re.I),
+        # 앞쪽은 한글 표시·숫자만 (영문 단어는 'Drum cleaner' 처럼 진짜 이름일 수 있어 뒤쪽에서만 뗌)
+        re.compile(rf"^\s*(?:{ko}(?={_SEP}|[A-Za-z(\[]|$)|{num}(?={_SEP}|[(\[]|$)){_SEP}*", re.I),
+        re.compile(rf"(?:{_SEP}+|(?<=[A-Za-z0-9)\]]))(?:{ko})\s*$|{_SEP}+(?:{en}|{num})\s*$", re.I),
+    )
+    if "item_base" in globals():
+        item_base.cache_clear()
 
 
 set_item_tags()
@@ -3247,34 +3253,48 @@ set_item_tags()
 
 def item_strip_tags(name: str) -> str:
     bracket_re, head_re, tail_re = _TAG_RES
-    n = bracket_re.sub(" ", str(name or ""))
-    for _ in range(4):
-        m = head_re.sub("", n)
-        m = tail_re.sub("", m)
-        if m == n:
+    n = str(name or "")
+    for _ in range(8):
+        m = bracket_re.sub(" ", n).strip()
+        m = head_re.sub("", m)
+        m = tail_re.sub("", m).strip()
+        if m == n or not m:
             break
         n = m
     return re.sub(r"\s{2,}", " ", n).strip()
 
 
-_PACK_HEAD_RE = re.compile(_PACK_RE.pattern.replace(r"\s*$", "").replace(r"[\s,/_-]*", "^\\s*", 1) + r"[\s,/_-]+",
-                           re.I)
+_PACK_UNIT = r"(?:kgs?|g|l|lt|ltr|ml|ea|lbs?|mt|tons?|kilos?)"
+_PACK_CNT = r"(?:ea|pcs?|bags?|drums?|dr|boxe?s?|cans?|btls?|bottles?|pails?|ctns?|cartons?|개|포|통|드럼|박스|병|캔)"
+_PACK_BODY = (r"(?:(?<![A-Za-z])in\s+)?(?:"
+              rf"\d+(?:\.\d+)?\s*{_PACK_UNIT}\.?(?:\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_CNT}?)?(?:\s*/\s*{_PACK_CNT})?"  # 25kg, 25kg*4, 25kg/drum
+              rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}?\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_UNIT}"  # 4x25kg, 4 drums x 200kg
+              rf"|(?<![A-Za-z]){_PACK_UNIT}\s*[x×*]\s*\d*(?:\.\d+)?"  # kg*4, kg * (숫자 빠진 것)
+              rf"|\d+(?:\.\d+)?\s*{_PACK_CNT})")  # 40bags, 4드럼
+_PACK_RE = re.compile(rf"[\s,/_-]*[\(\[]?\s*{_PACK_BODY}\s*[\)\]]?\s*$", re.I)
+_PACK_HEAD_RE = re.compile(rf"^\s*[\(\[]?\s*{_PACK_BODY}\s*[\)\]]?[\s,/_-]+", re.I)
 
 
+@functools.lru_cache(maxsize=20000)
 def item_base(name: str) -> str:
     """'Heliotropine(Piperonal) (25kg *4)_향' → 'Heliotropine(Piperonal)',
-    'Vanillin 25kg x 4' · '9월 Vanillin 4X25KG' · '[선납] Vanillin(소분)' → 'Vanillin' (포장·메모 표시 제거)."""
-    n = item_strip_tags(name)
-    n = re.sub(r"_.*$", "", n)
+    'Vanillin 25kg x 4' · '9월 Vanillin 4X25KG' · '[선납] Vanillin(14.97*4) 식향' → 'Vanillin' (포장·메모 표시 제거)."""
+    orig = str(name or "").strip()
+    n = re.sub(r"_.*$", "", item_strip_tags(orig)) or orig
     n = re.sub(r"\s*\(\s*[\d.]+\s*(kg|g|l|ml|ea)\b[^)]*\).*$", "", n, flags=re.I)
-    for _ in range(4):  # '25kg x 4 bags 2drums' 처럼 여러 개 붙은 것도 차례로 뗌
+    for _ in range(6):  # '25kg x 4 bags 식향 2drums' 처럼 여러 개 붙은 것도 차례로 뗌
+        before = n
         m = _PACK_RE.search(n)
-        if not m or m.start() == 0:
+        if m and m.start() > 0:
+            n = n[:m.start()]
+        h = _PACK_HEAD_RE.sub("", n)
+        if h.strip():
+            n = h
+        n = re.sub(r"(?:\s+[x×*]|[,/\-*×])+\s*$", "", n).strip()
+        n = item_strip_tags(n) or n
+        if n == before:
             break
-        n = item_strip_tags(n[:m.start()])
-    n = re.sub(r"(?:\s+[x×*]|[,/\-*×])+\s*$", "", n).strip()
-    n = _PACK_HEAD_RE.sub("", n) if _PACK_HEAD_RE.sub("", n).strip() else n  # '4X25KG Vanillin' 처럼 앞에 붙은 포장
-    return item_strip_tags(n).strip() or n.strip() or str(name or "").strip()
+    return n.strip() or orig
 
 
 def parse_ledger_rows(rows: list):
