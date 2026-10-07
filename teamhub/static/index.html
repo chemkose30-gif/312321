@@ -2995,11 +2995,15 @@ async function renderProfit() {
   const [d, exNote] = await Promise.all([api(`/api/inventory/profit?year=${pf.year}&low=${pf.low}&include_ex=${pf.inc}`), excludeNote()]);
   const admin = state.me.role === 'admin';
   const tools = (admin ? '<button class="btn" id="pfSet" title="자동 업로드 설정">⚙</button><button class="btn" id="pfUp">매입매출장 올리기</button>' : '')
+    + '<button class="btn" id="pfCost" title="원가계산서 만들기 · 올리기 · 일계장 매입단가 체크">🧮 원가계산서</button>'
     + '<button class="btn primary" id="pfMake" title="거래명세서로 그날 기준 일계장 엑셀 만들기">📒 일계장 만들기</button>';
-  if (!d.years.length) {
-    $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>${tools}</div><div class="empty">${admin ? '일계장 엑셀(매입매출장 시트)을 올려 주세요. ⚙ 에서 폴더를 정하면 매일 자동으로 올라옵니다.' : '아직 매입매출장이 올라오지 않았습니다.'}</div></div>`;
+  if (!d.years.length) {   // 일계장이 아직 없어도 원가계산서는 쓸 수 있게
+    $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>${tools}</div>
+      ${pf.tab === 'cost' ? '<div id="pfCheck" class="muted" style="margin-top:12px">불러오는 중…</div>' : `<div class="empty">${admin ? '일계장 엑셀(매입매출장 시트)을 올려 주세요. ⚙ 에서 폴더를 정하면 매일 자동으로 올라옵니다.' : '아직 매입매출장이 올라오지 않았습니다.'}</div>`}</div>`;
     if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
     $('#pfMake').onclick = openLedgerMake;
+    $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit(); };
+    if (pf.tab === 'cost') drawCostCheck(new Date().getFullYear());
     return;
   }
   const Y = d.year, P = Y - 1, months = Array.from({length: 12}, (_, i) => `${i + 1}월`);
@@ -3064,6 +3068,7 @@ async function renderProfit() {
   if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
   if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
   $('#pfMake').onclick = openLedgerMake;
+  $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit().then(() => { const t = $('#pfCheck'); if (t) t.scrollIntoView({behavior: 'smooth'}); }); };
   let timer;
   $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   bindExcludeEdit();
