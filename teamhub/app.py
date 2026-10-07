@@ -1240,7 +1240,7 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
 REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월별", "year": "연별", "customer": "거래처별",
                  "item": "품목별", "customer_item": "거래처·품목별", "creator": "담당자별"}
 REPORT_SPLITS = {"": "기간 나눔 없음", "year": "연도별로 나눠 보기", "month": "월별로 나눠 보기"}
-REPORT_MEASURES = {"supply": "공급가액", "total": "합계(VAT 포함)", "qty": "수량"}
+REPORT_MEASURES = {"qty": "수량", "supply": "공급가액", "total": "합계(VAT 포함)"}
 
 
 @app.get("/api/settings/item-tags")
@@ -1265,7 +1265,7 @@ def put_item_tags(body: ItemTagsIn, _: dict = Depends(admin_user)):
 @app.get("/api/quotes/report")
 def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str = "", customer: str = "", item: str = "",
                   item_mode: str = "exact", status: str = "", group: str = "line", split: str = "",
-                  measure: str = "supply", format: str = "", user: dict = Depends(current_user)):
+                  measure: str = "qty", format: str = "", user: dict = Depends(current_user)):
     """판매현황·견적서현황: 기간·거래처·품목·상태로 걸러 품목 줄을 모으거나(일자·월·거래처·품목·담당자별) 그대로 보여줌.
     format=csv 면 엑셀로 열 수 있는 CSV 로 내려줌."""
     if group not in REPORT_GROUPS:
@@ -1273,7 +1273,7 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
     if split not in REPORT_SPLITS or group in ("line", "date", "month", "year"):
         split = ""
     if measure not in REPORT_MEASURES:
-        measure = "supply"
+        measure = "qty"
     where, params = ["q.doc_type = ?"], [doc_type]
     if date_from:
         where.append("q.quote_date >= ?")

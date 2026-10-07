@@ -1554,7 +1554,7 @@ async function renderQuotes() {
 async function renderQuoteReport(dt) {
   const D = DOC[dt], today = todayStr();
   const r = (state.qr ||= {})[dt] ||= {from: today.slice(0, 8) + '01', to: today, customer: '', item: '', status: '', group: 'customer'};
-  const params = () => new URLSearchParams({doc_type: dt, date_from: r.from, date_to: r.to, customer: r.customer, item: r.item, item_mode: r.itemLike ? 'contains' : 'exact', status: r.status, group: r.group, split: r.split || '', measure: r.measure || 'supply'});
+  const params = () => new URLSearchParams({doc_type: dt, date_from: r.from, date_to: r.to, customer: r.customer, item: r.item, item_mode: r.itemLike ? 'contains' : 'exact', status: r.status, group: r.group, split: r.split || '', measure: r.measure || 'qty'});
   const d = await api('/api/quotes/report?' + params());
   const ymd = x => x.toISOString().slice(0, 10);
   const now = new Date(Date.now() + 9 * 36e5);
