@@ -62,6 +62,12 @@
   .shot .s { font-size:12px; color:var(--muted); margin-top:4px; }
   .shot .s.ok { color:var(--ok); }
   .shot button { padding:9px 12px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  h3.sub { font-size:15px; margin:26px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3.sub small { color:var(--muted); font-weight:normal; font-size:13px; }
+  #vid { width:100%; max-height:360px; background:#000; border-radius:8px; display:block; }
+  .vidbar { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  .vidbar button { flex:1; padding:10px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:14px; cursor:pointer; }
+  .vidbar span { flex:1.2; text-align:center; font-variant-numeric:tabular-nums; font-size:14px; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -109,6 +115,21 @@
         <button id="clipBtn" hidden>📋 클립보드에서 가져오기</button>
         <label><input type="checkbox" id="autoSave"> 붙여넣으면 바로 저장</label>
       </div>
+
+      <h3 class="sub">🎬 영상에서 장면 저장 <small>· 원본 해상도 그대로</small></h3>
+      <input type="file" id="vidFile" accept="video/*,.mkv,.mov,.m4v" hidden>
+      <div class="drop" id="vidDrop">영상 파일을 끌어다 놓거나 클릭해서 선택<br><small>서버로 올리지 않고 브라우저에서 바로 열려요</small></div>
+      <div id="vidBox" hidden>
+        <video id="vid" controls playsinline preload="auto"></video>
+        <div class="vidbar">
+          <button id="fPrev" title="← 키">◀ 1프레임</button>
+          <span id="vidTime">0:00.000</span>
+          <button id="fNext" title="→ 키">1프레임 ▶</button>
+        </div>
+        <button class="go" id="grab">📸 이 장면 PNG 저장</button>
+        <div class="msg" id="vidInfo"></div>
+      </div>
+
       <div class="shots" id="shots"></div>
     </section>
 
@@ -388,7 +409,7 @@ function savePng(blob, name, statusEl) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   statusEl.className = 's ok'; statusEl.textContent = statusEl.dataset.base + ' · 저장됨 ✓';
 }
-async function addImage(file) {
+async function addImage(file, forceSave = false) {
   if (!file || !file.type.startsWith('image/')) return;
   const png = await toPng(file).catch(() => null);
   if (!png) return;
@@ -403,7 +424,7 @@ async function addImage(file) {
   st.textContent = st.dataset.base = `${dims} · ${(png.size / 1048576).toFixed(1)} MB`;
   btn.onclick = () => savePng(png, nameIn.value, st);
   $('shots').prepend(row);
-  if ($('autoSave').checked) savePng(png, nameIn.value, st);
+  if (forceSave || $('autoSave').checked) savePng(png, nameIn.value, st);
 }
 try { $('autoSave').checked = localStorage.getItem('autoSave') !== '0'; } catch { $('autoSave').checked = true; }
 $('autoSave').onchange = () => { try { localStorage.setItem('autoSave', $('autoSave').checked ? '1' : '0'); } catch {} };
@@ -432,6 +453,80 @@ if (navigator.clipboard && navigator.clipboard.read) {
     } catch { alert('클립보드 접근이 거부됐어요. Ctrl+V로 붙여넣어 주세요.'); }
   };
 }
+
+// ---------- 영상에서 장면 저장 (브라우저 안에서 원본 해상도로 프레임 추출)
+const vid = $('vid');
+let vidUrl = '', vidBase = '', frameDur = 1 / 30;
+const fmtClock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${String(Math.floor((t % 1) * 1000)).padStart(3, '0')}`;
+
+function openVideo(f) {
+  if (!f || !(f.type.startsWith('video/') || /\.(mkv|mov|m4v|mp4|webm|avi|wmv|ts)$/i.test(f.name))) return;
+  if (vidUrl) URL.revokeObjectURL(vidUrl);
+  vidUrl = URL.createObjectURL(f);
+  vidBase = f.name.replace(/\.[^.]+$/, '');
+  frameDur = 1 / 30;
+  $('vidInfo').className = 'msg'; $('vidInfo').textContent = '영상을 여는 중...';
+  $('vidDrop').innerHTML = `<strong></strong><br><small>다른 영상을 열려면 클릭</small>`;
+  $('vidDrop').querySelector('strong').textContent = f.name;
+  vid.src = vidUrl;
+  $('vidBox').hidden = false;
+}
+function vidError() {
+  $('vidInfo').className = 'msg err';
+  $('vidInfo').textContent = '이 브라우저에서 열 수 없는 영상 형식이에요. "MP4 변환" 탭에서 MP4로 바꾼 뒤 다시 열어주세요.';
+}
+vid.addEventListener('error', () => vidUrl && vidError());
+vid.addEventListener('loadedmetadata', () => {
+  if (!vid.videoWidth) return vidError();  // 소리만 재생되는 경우 (지원 안 되는 영상 코덱)
+  $('vidInfo').className = 'msg';
+  $('vidInfo').textContent = `원본 해상도 ${vid.videoWidth}×${vid.videoHeight} · 길이 ${fmtClock(vid.duration)} · ← → 키로 한 프레임씩 이동`;
+});
+vid.addEventListener('timeupdate', () => { $('vidTime').textContent = fmtClock(vid.currentTime); });
+vid.addEventListener('seeked', () => { $('vidTime').textContent = fmtClock(vid.currentTime); });
+// 재생 중 실제 프레임 간격을 측정해 1프레임 이동 정확도를 높임
+if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+  let last = null;
+  const onFrame = (_, m) => {
+    if (last !== null) { const d = m.mediaTime - last; if (d > 0.004 && d < 0.1) frameDur = Math.min(frameDur, d); }
+    last = m.mediaTime;
+    vid.requestVideoFrameCallback(onFrame);
+  };
+  vid.addEventListener('loadedmetadata', () => { last = null; });
+  vid.requestVideoFrameCallback(onFrame);
+}
+function stepFrame(dir) {
+  if (!vid.videoWidth) return;
+  vid.pause();
+  // 프레임 경계에 정확히 맞추면 이전 프레임이 잡힐 수 있어 목표 프레임의 가운데로 이동
+  const target = Math.max(0, Math.floor(vid.currentTime / frameDur + 1e-3) + dir);
+  vid.currentTime = Math.min((target + 0.5) * frameDur, Math.max(0, (vid.duration || 0) - frameDur / 2));
+}
+$('fPrev').onclick = () => stepFrame(-1);
+$('fNext').onclick = () => stepFrame(1);
+document.addEventListener('keydown', e => {
+  if (!$('img').classList.contains('active') || $('vidBox').hidden) return;
+  if (e.target.matches && e.target.matches('input, textarea')) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); stepFrame(e.key === 'ArrowLeft' ? -1 : 1); }
+});
+$('grab').onclick = async () => {
+  if (!vid.videoWidth || $('grab').disabled) return;
+  vid.pause();
+  // 장면 이동(특히 4K)이 끝나기 전에 저장하면 이전 장면이 찍히므로 이동 완료까지 대기
+  $('grab').disabled = true;
+  while (vid.seeking) await new Promise(r => vid.addEventListener('seeked', r, {once: true}));
+  $('grab').disabled = false;
+  const c = document.createElement('canvas');
+  c.width = vid.videoWidth; c.height = vid.videoHeight;  // 화면 크기가 아니라 영상 원본 크기
+  c.getContext('2d').drawImage(vid, 0, 0, c.width, c.height);
+  const t = vid.currentTime;
+  const name = `${vidBase}_${Math.floor(t / 60)}분${String(Math.floor(t % 60)).padStart(2, '0')}초${String(Math.floor((t % 1) * 1000)).padStart(3, '0')}`;
+  c.toBlob(b => addImage(new File([b], name + '.png', {type: 'image/png'}), true), 'image/png');
+};
+$('vidDrop').onclick = () => $('vidFile').click();
+$('vidFile').onchange = e => { openVideo(e.target.files[0]); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => $('vidDrop').addEventListener(ev, e => { e.preventDefault(); $('vidDrop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('vidDrop').addEventListener(ev, e => { e.preventDefault(); $('vidDrop').classList.remove('over'); }));
+$('vidDrop').addEventListener('drop', e => openVideo(e.dataTransfer.files[0]));
 
 $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   // 업로드 진행률 표시를 위해 XHR 사용
