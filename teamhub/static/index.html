@@ -3132,6 +3132,23 @@ async function renderProducts(an) {
   bindExcludeEdit();
 }
 
+// 거래처 하나의 거래명세서 목록 (최근 것부터) → 누르면 그 명세서가 열림
+async function openCustDocs(name) {
+  const d = await api('/api/quotes/report?' + new URLSearchParams({doc_type: 'statement', canon_customer: name, group: 'customer', date_from: '', date_to: ''}));
+  const docs = d.rows.flatMap(r => r.doc_list).sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id));
+  openModal(`<h2>📄 ${esc(name)} <small class="muted">거래명세서 ${docs.length}건</small></h2>
+    <div class="qscroll" style="max-height:62vh;overflow:auto"><table class="an-table"><thead><tr><th>거래일자</th><th>거래처</th><th>품목</th><th class="num">합계</th><th>상태</th></tr></thead><tbody>
+      ${docs.map(o => `<tr data-open-doc="${o.id}" style="cursor:pointer"><td>${esc(o.date)}</td><td>${esc(o.customer)}</td>
+        <td>${esc(o.items[0] || '')}${o.items.length > 1 ? ` <small class="muted">외 ${o.items.length - 1}건</small>` : ''}</td><td class="money">${won(o.total)}</td><td>${qTag(o.status, 'statement')}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="empty">거래명세서를 찾지 못했습니다.</td></tr>'}
+    </tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:6px">최근 것부터 (거래처당 최대 200건). 줄을 누르면 거래명세서가 열립니다.</div>
+    <div class="actions"><span class="spacer"></span><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    $$('[data-open-doc]', bg).forEach(t => t.onclick = () => { close(); openQuoteView(+t.dataset.openDoc); });
+  });
+}
+
 async function renderDecline(an) {
   const [d, exNote] = await Promise.all([api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`), excludeNote()]);
   const ql = an.q.toLowerCase(), f = r => !ql || r.name.toLowerCase().includes(ql);
@@ -3155,14 +3172,14 @@ async function renderDecline(an) {
     <div class="stats stats4">
       <div class="stat" style="cursor:default"><span class="muted">이번 기간 납품</span><b>${krw(d.cur_total)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${cmpLabel}</span><b>${krw(d.cmp_total)}원</b></div>
-      <div class="stat red" style="cursor:default"><span class="muted">구매 주기가 지난 거래처</span><b>${(d.patterns || []).length}곳</b></div>
-      <div class="stat red" style="cursor:default"><span class="muted">주문이 끊긴 거래처</span><b>${d.dormant.length}곳</b></div>
+      <div class="stat red" data-dl="patterns" title="눌러서 거래처 보기"><span class="muted">구매 주기가 지난 거래처 ›</span><b>${(d.patterns || []).length}곳</b></div>
+      <div class="stat red" data-dl="dormant" title="눌러서 거래처 보기"><span class="muted">주문이 끊긴 거래처 ›</span><b>${d.dormant.length}곳</b></div>
     </div>
     <h3 style="margin:18px 0 4px">🔔 구매 주기가 지난 품목</h3>
     <div class="muted" style="font-size:12px;margin-bottom:6px">거래처마다 품목별로 <b>평소 사가는 주기</b>(최근 5년 기록, 3번 이상 구매)를 계산해서, 그 주기가 지났는데 아직 주문이 없는 품목입니다.
       오래전에 끊긴 품목은 빼고 <b>최근에 늦어진 것</b>만 보여줍니다. 연간 거래 규모가 큰 거래처부터 나옵니다.</div>
     ${patterns.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래처</th><th class="num">늦어진 품목</th><th>품목 (주기 · 마지막 구매)</th><th class="num">이 품목들 연평균</th></tr></thead><tbody>
-      ${patterns.map((r, k) => `<tr data-p="${k}" style="cursor:pointer;vertical-align:top"><td title="${esc(r.name)}"><b>${esc(r.name)}</b>${r.stopped ? '<br><span class="tag p-urgent">주문 끊김</span>' : ''}</td>
+      ${patterns.map((r, k) => `<tr data-p="${k}" style="cursor:pointer;vertical-align:top"><td title="${esc(r.name)}"><b>${esc(r.name)}</b>${r.stopped ? '<br><span class="tag p-urgent">주문 끊김</span>' : ''}<br><a href="#" data-cdoc="${esc(r.name)}" style="font-size:12px">📄 명세서 보기</a></td>
         <td class="num">${r.items.length}개</td>
         <td style="white-space:normal;min-width:340px">${r.items.slice(0, 2).map(patItem).join('')}
           ${r.items.length > 2 ? `<div class="pmore hidden">${r.items.slice(2).map(patItem).join('')}</div><span class="muted pm-btn" style="font-size:12px">외 ${r.items.length - 2}개 품목 ▾</span>` : ''}</td>
@@ -3171,7 +3188,7 @@ async function renderDecline(an) {
     <h3 style="margin:18px 0 4px">⏸ 주문이 끊긴 거래처</h3>
     <div class="muted" style="font-size:12px;margin-bottom:6px">최근 3년 주문 기록으로 계산한 <b>평소 주문 간격</b>보다 훨씬 오래(2.5배 이상, 최소 45일) 주문이 없는 거래처입니다.</div>
     ${dormant.length ? `<div class="qscroll"><table class="an-table"><thead><tr><th>거래처</th><th class="num">평소 주문 간격</th><th class="num">마지막 주문</th><th class="num">주문 없음</th><th class="num">최근 1년 납품</th><th class="num">그 전 1년</th><th class="num">변화</th></tr></thead><tbody>
-      ${dormant.map(r => `<tr><td title="${esc(r.name)}">${esc(r.name)}</td><td class="num">약 ${r.typical_gap}일마다</td><td class="num">${esc(r.last)}</td>
+      ${dormant.map(r => `<tr data-cust="${esc(r.name)}" style="cursor:pointer" title="눌러서 거래명세서 보기"><td title="${esc(r.name)}">${esc(r.name)}</td><td class="num">약 ${r.typical_gap}일마다</td><td class="num">${esc(r.last)}</td>
         <td class="num"><span class="down">${r.days}일째</span> <small class="muted">(평소의 ${r.ratio.toFixed(1)}배)</small></td>
         <td class="num">${man(r.year_amt)}만</td><td class="num">${man(r.prev_year_amt)}만</td><td class="num">${deltaHtml(r.year_amt, r.prev_year_amt)}</td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty">주문이 끊긴 거래처가 없습니다.</div>'}
@@ -3195,6 +3212,27 @@ async function renderDecline(an) {
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   bindExcludeEdit();
   $$('tr[data-k]').forEach(tr => tr.onclick = () => $(`tr[data-detail="${tr.dataset.k}"]`).classList.toggle('hidden'));
+  $$('tr[data-cust]').forEach(tr => tr.onclick = () => openCustDocs(tr.dataset.cust));
+  $$('[data-cdoc]').forEach(a => a.onclick = e => { e.preventDefault(); e.stopPropagation(); openCustDocs(a.dataset.cdoc); });
+  // 위 숫자 칸을 누르면 그 거래처 목록 → 거래처를 누르면 거래명세서 목록 → 명세서를 누르면 열림
+  $$('[data-dl]').forEach(card => card.onclick = () => {
+    const pat = card.dataset.dl === 'patterns', list = pat ? (d.patterns || []) : d.dormant;
+    openModal(`<h2>${pat ? '🔔 구매 주기가 지난 거래처' : '⏸ 주문이 끊긴 거래처'} <small class="muted">${list.length}곳</small></h2>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">${pat ? '평소 사가는 주기가 지났는데 아직 주문이 없는 품목이 있는 거래처입니다.' : '평소 주문 간격보다 훨씬 오래 주문이 없는 거래처입니다.'} 거래처를 누르면 그동안의 거래명세서가 나옵니다.</div>
+      <div class="qscroll" style="max-height:62vh;overflow:auto"><table class="an-table"><thead><tr>${pat
+        ? '<th>거래처</th><th class="num">늦어진 품목</th><th>품목 (마지막 구매 · 늦어진 날)</th><th class="num">연평균</th>'
+        : '<th>거래처</th><th class="num">마지막 주문</th><th class="num">주문 없음</th><th class="num">평소 간격</th><th class="num">최근 1년</th><th class="num">그 전 1년</th>'}</tr></thead><tbody>
+        ${list.map(r => `<tr data-cust="${esc(r.name)}" style="cursor:pointer;vertical-align:top">${pat
+          ? `<td><b>${esc(r.name)}</b>${r.stopped ? ' <span class="tag p-urgent">주문 끊김</span>' : ''}</td><td class="num">${r.items.length}개</td>
+             <td style="white-space:normal;font-size:12px">${r.items.map(i => `${esc(i.item)} <span class="muted">${esc(i.last)} ·</span> <span class="down">${i.late}일 늦음</span>`).join('<br>')}</td><td class="num">${man(r.value)}만</td>`
+          : `<td><b>${esc(r.name)}</b></td><td class="num">${esc(r.last)}</td><td class="num"><span class="down">${r.days}일째</span></td><td class="num">약 ${r.typical_gap}일</td>
+             <td class="num">${man(r.year_amt)}만</td><td class="num">${man(r.prev_year_amt)}만</td>`}</tr>`).join('') || '<tr><td colspan="6" class="empty">없습니다.</td></tr>'}
+      </tbody></table></div>
+      <div class="actions"><span class="spacer"></span><button class="btn primary" data-close>닫기</button></div>`, (bg, close) => {
+      bg.firstElementChild.classList.add('wide');
+      $$('[data-cust]', bg).forEach(tr => tr.onclick = () => openCustDocs(tr.dataset.cust));
+    });
+  });
   $$('tr[data-p]').forEach(tr => tr.onclick = () => { const m = $('.pmore', tr); if (m) { m.classList.toggle('hidden'); $('.pm-btn', tr).textContent = m.classList.contains('hidden') ? $('.pm-btn', tr).textContent.replace('▴', '▾') : $('.pm-btn', tr).textContent.replace('▾', '▴'); } });
 }
 

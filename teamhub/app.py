@@ -1265,7 +1265,7 @@ def put_item_tags(body: ItemTagsIn, _: dict = Depends(admin_user)):
 @app.get("/api/quotes/report")
 def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str = "", customer: str = "", item: str = "",
                   item_mode: str = "exact", status: str = "", group: str = "line", split: str = "",
-                  measure: str = "qty", format: str = "", user: dict = Depends(current_user)):
+                  measure: str = "qty", canon_customer: str = "", format: str = "", user: dict = Depends(current_user)):
     """판매현황·견적서현황: 기간·거래처·품목·상태로 걸러 품목 줄을 모으거나(일자·월·거래처·품목·담당자별) 그대로 보여줌.
     format=csv 면 엑셀로 열 수 있는 CSV 로 내려줌."""
     if group not in REPORT_GROUPS:
@@ -1284,6 +1284,9 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
     if customer.strip():
         where.append("q.customer_name LIKE ?")
         params.append(f"%{customer.strip()}%")
+    if canon_customer.strip():  # 매출분석의 '같은 회사 이름 합치기' 기준 거래처 (합쳐진 이름 전부)
+        where.append("canon(q.customer_name) = ?")
+        params.append(canon_customer.strip())
     if item.strip():
         where.append("(i.name LIKE ? OR i.spec LIKE ? OR i.prod_cd LIKE ?)")
         params += [f"%{item.strip()}%"] * 3
@@ -1294,6 +1297,7 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
         where.append("q.status != 'draft'")
     w = " AND ".join(where)
     with db() as c:
+        c.create_function("canon", 1, canon_fn(c), deterministic=True)
         lines = [dict(r) for r in c.execute(
             "SELECT q.id AS doc_id, q.quote_date, q.quote_no, q.customer_name, q.status, u.name AS creator,"
             " i.name, i.spec, i.prod_cd, i.unit, i.qty, i.unit_price, i.supply, i.vat"
