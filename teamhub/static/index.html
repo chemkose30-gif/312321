@@ -1554,7 +1554,7 @@ async function renderQuotes() {
 async function renderQuoteReport(dt) {
   const D = DOC[dt], today = todayStr();
   const r = (state.qr ||= {})[dt] ||= {from: today.slice(0, 8) + '01', to: today, customer: '', item: '', status: '', group: 'customer'};
-  const params = () => new URLSearchParams({doc_type: dt, date_from: r.from, date_to: r.to, customer: r.customer, item: r.item, status: r.status, group: r.group});
+  const params = () => new URLSearchParams({doc_type: dt, date_from: r.from, date_to: r.to, customer: r.customer, item: r.item, item_mode: r.itemLike ? 'contains' : 'exact', status: r.status, group: r.group});
   const d = await api('/api/quotes/report?' + params());
   const ymd = x => x.toISOString().slice(0, 10);
   const now = new Date(Date.now() + 9 * 36e5);
@@ -1575,7 +1575,9 @@ async function renderQuoteReport(dt) {
       <input type="date" id="rFrom" value="${esc(r.from)}" style="width:auto"><span class="muted">~</span><input type="date" id="rTo" value="${esc(r.to)}" style="width:auto"></div>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">
       <input id="rCust" placeholder="거래처" value="${esc(r.customer)}" style="max-width:180px">
-      <input id="rItem" placeholder="품목 (이름·규격·코드)" value="${esc(r.item)}" style="max-width:200px">
+      <input id="rItem" list="rItemList" placeholder="품목 (이름·코드)" value="${esc(r.item)}" style="max-width:220px">
+      <datalist id="rItemList">${(d.item_names || []).map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <label style="font-weight:400;font-size:13px;display:flex;align-items:center;gap:4px;margin:0" title="끄면 그 품목만 (vanillin → Ethyl vanillin·Vanillin PGA 제외), 켜면 이름에 들어간 것 모두"><input type="checkbox" id="rItemLike" ${r.itemLike ? 'checked' : ''} style="width:auto">포함 검색</label>
       <select id="rStatus" style="width:auto"><option value="">${dt === 'statement' ? '발행·출고완료 전체' : '전체 상태'}</option>${Object.entries(D.status).map(([k, v]) => `<option value="${k}" ${r.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <select id="rGroup" style="width:auto">${Object.entries(d.groups).map(([k, v]) => `<option value="${k}" ${r.group === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <button class="btn" id="rGo">🔍 검색</button><span class="spacer"></span><button class="btn" id="rXls">📥 엑셀 받기</button></div>
@@ -1590,10 +1592,10 @@ async function renderQuoteReport(dt) {
     </tbody></table></div>
     ${d.truncated ? '<div class="muted" style="font-size:12px">3,000줄까지만 보여 줍니다. 전체는 엑셀로 받으세요.</div>' : ''}
   </div>`;
-  const read = () => { r.from = $('#rFrom').value; r.to = $('#rTo').value; r.customer = $('#rCust').value.trim(); r.item = $('#rItem').value.trim(); r.status = $('#rStatus').value; r.group = $('#rGroup').value; };
+  const read = () => { r.from = $('#rFrom').value; r.to = $('#rTo').value; r.customer = $('#rCust').value.trim(); r.item = $('#rItem').value.trim(); r.itemLike = $('#rItemLike').checked; r.status = $('#rStatus').value; r.group = $('#rGroup').value; };
   $('#rGo').onclick = () => { read(); renderQuoteReport(dt); };
   ['#rCust', '#rItem'].forEach(id => $(id).onkeydown = e => { if (e.key === 'Enter') { read(); renderQuoteReport(dt); } });
-  ['#rStatus', '#rGroup', '#rFrom', '#rTo'].forEach(id => $(id).onchange = () => { read(); renderQuoteReport(dt); });
+  ['#rStatus', '#rGroup', '#rFrom', '#rTo', '#rItemLike'].forEach(id => $(id).onchange = () => { read(); renderQuoteReport(dt); });
   $$('[data-pre]').forEach(b => b.onclick = () => { read(); [r.from, r.to] = PRE[b.dataset.pre]; renderQuoteReport(dt); });
   $$('[data-qm]').forEach(b => b.onclick = () => { state.qMode[dt] = b.dataset.qm; renderQuotes(); });
   $$('[data-doc]').forEach(tr => tr.onclick = () => openQuoteView(+tr.dataset.doc));

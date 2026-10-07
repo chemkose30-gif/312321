@@ -1241,7 +1241,8 @@ REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월�
 
 @app.get("/api/quotes/report")
 def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str = "", customer: str = "", item: str = "",
-                  status: str = "", group: str = "line", format: str = "", user: dict = Depends(current_user)):
+                  item_mode: str = "exact", status: str = "", group: str = "line", format: str = "",
+                  user: dict = Depends(current_user)):
     """판매현황·견적서현황: 기간·거래처·품목·상태로 걸러 품목 줄을 모으거나(일자·월·거래처·품목·담당자별) 그대로 보여줌.
     format=csv 면 엑셀로 열 수 있는 CSV 로 내려줌."""
     if group not in REPORT_GROUPS:
@@ -1268,9 +1269,15 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
     with db() as c:
         lines = [dict(r) for r in c.execute(
             "SELECT q.id AS doc_id, q.quote_date, q.quote_no, q.customer_name, q.status, u.name AS creator,"
-            " i.name, i.spec, i.unit, i.qty, i.unit_price, i.supply, i.vat"
+            " i.name, i.spec, i.prod_cd, i.unit, i.qty, i.unit_price, i.supply, i.vat"
             " FROM quote_items i JOIN quotes q ON q.id = i.quote_id JOIN users u ON u.id = q.created_by"
             f" WHERE {w} AND i.name != '' ORDER BY q.quote_date, q.id, i.seq", params)]
+    if item.strip() and item_mode != "contains":
+        # 정확히 그 품목만: 'vanillin' 이 'Ethyl vanillin', 'Vanillin PGA' 까지 잡지 않게
+        # (대소문자·띄어쓰기, '(25kg*4)'·'_향' 같은 포장 표시는 무시, 품목코드·규격이 같아도 인정)
+        key = _item_key(item)
+        lines = [l for l in lines if key in (_item_key(item_base(l["name"])), _item_key(l["name"]),
+                                             _item_key(l["prod_cd"]), _item_key(f'{l["name"]} {l["spec"]}'))]
     for l in lines:
         l["total"] = (l["supply"] or 0) + (l["vat"] or 0)
     tot = {"qty": sum(l["qty"] or 0 for l in lines), "supply": sum(l["supply"] or 0 for l in lines),
@@ -1331,7 +1338,13 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
         label = ("판매현황" if doc_type == "statement" else "견적서현황") + f"_{REPORT_GROUPS[group]}_{date_from or '처음'}~{date_to or '끝'}.csv"
         return Response(content=("\ufeff" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(label)})
-    return {"group": group, "groups": REPORT_GROUPS, "cols": [{"key": k, "label": h} for k, h in cols],
+    with db() as c:
+        uniq = {}
+        for (n,) in c.execute("SELECT DISTINCT i.name FROM quote_items i JOIN quotes q ON q.id = i.quote_id"
+                              " WHERE q.doc_type = ? AND i.name != ''", (doc_type,)):
+            uniq.setdefault(_item_key(item_base(n)), item_base(n))
+        names = sorted(uniq.values(), key=str.lower)
+    return {"item_names": names[:3000], "group": group, "groups": REPORT_GROUPS, "cols": [{"key": k, "label": h} for k, h in cols],
             "rows": rows[:3000], "total": tot, "truncated": len(rows) > 3000}
 
 
@@ -3136,6 +3149,10 @@ def read_xls_sheets(data: bytes) -> dict:
             rows.append(vals)
         out[sh.name] = rows
     return out
+
+
+def _item_key(s: str) -> str:
+    return re.sub(r"[\s\-_.,·]", "", str(s or "")).lower()
 
 
 def item_base(name: str) -> str:
