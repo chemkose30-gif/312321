@@ -11,7 +11,7 @@
   main { max-width:560px; margin:0 auto; padding:40px 16px; }
   h1 { font-size:24px; margin:0 0 24px; }
   .tabs { display:flex; gap:8px; margin-bottom:16px; }
-  .tab { flex:1; padding:12px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:15px; cursor:pointer; }
+  .tab { flex:1; padding:12px 6px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:14px; cursor:pointer; }
   .tab.active { background:var(--card); color:var(--text); border-color:var(--accent); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
   .panel { display:none; } .panel.active { display:block; }
@@ -50,6 +50,18 @@
   details.admin a { color:var(--text); }
   .adminrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
   .adminrow button { padding:9px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
+  .card.img-mode .status { display:none !important; }
+  .pastebar { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center; }
+  .pastebar button { padding:10px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:14px; cursor:pointer; }
+  .pastebar label { margin:0; display:flex; align-items:center; gap:6px; font-size:14px; color:var(--text); cursor:pointer; }
+  .shots { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+  .shot { display:flex; gap:12px; align-items:center; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); }
+  .shot img { width:110px; max-height:80px; object-fit:contain; border-radius:6px; background:#000; flex-shrink:0; }
+  .shot .meta { flex:1; min-width:0; }
+  .shot input { width:100%; padding:7px 8px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:13px; }
+  .shot .s { font-size:12px; color:var(--muted); margin-top:4px; }
+  .shot .s.ok { color:var(--ok); }
+  .shot button { padding:9px 12px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -57,8 +69,9 @@
 <main>
   <h1>🎬 영상 변환기</h1>
   <div class="tabs">
-    <button class="tab active" data-tab="yt">유튜브 다운로드</button>
-    <button class="tab" data-tab="conv">파일 → MP4 변환</button>
+    <button class="tab active" data-tab="yt">유튜브</button>
+    <button class="tab" data-tab="conv">MP4 변환</button>
+    <button class="tab" data-tab="img">캡처 → PNG</button>
   </div>
 
   <div class="card">
@@ -87,6 +100,16 @@
       </select>
       <div class="msg" id="serverInfo"></div>
       <button class="go" id="convGo" disabled>MP4로 변환</button>
+    </section>
+
+    <section class="panel" id="img">
+      <input type="file" id="imgFile" accept="image/*" multiple hidden>
+      <div class="drop" id="imgDrop"><strong>Ctrl+V</strong>로 스크린샷 붙여넣기<br><small>끌어다 놓거나 클릭해서 이미지 선택도 돼요 · 원본 해상도 그대로 PNG로 저장</small></div>
+      <div class="pastebar">
+        <button id="clipBtn" hidden>📋 클립보드에서 가져오기</button>
+        <label><input type="checkbox" id="autoSave"> 붙여넣으면 바로 저장</label>
+      </div>
+      <div class="shots" id="shots"></div>
     </section>
 
     <div class="status" id="status">
@@ -166,11 +189,17 @@ fetch('/api/config').then(r => r.json()).then(c => {
     + ' · H.264 영상은 재인코딩 없이 즉시 변환';
 }).catch(() => {});
 
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === name));
+  $('yt').closest('.card').classList.toggle('img-mode', name === 'img');
+}
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
-  if (busy) return;
-  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
-  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === t.dataset.tab));
-  $('status').style.display = 'none';
+  // 캡처 탭은 서버를 쓰지 않으므로 변환 중에도 오갈 수 있음
+  const current = document.querySelector('.tab.active').dataset.tab;
+  if (busy && t.dataset.tab !== 'img' && current !== 'img') return;
+  if (!busy) $('status').style.display = 'none';
+  showTab(t.dataset.tab);
 });
 let ytChoice = null, ytInfoUrl = '';
 
@@ -332,6 +361,77 @@ $('logout').onclick = async e => {
   await fetch('/api/logout', {method: 'POST'});
   location.href = '/login.html';
 };
+
+// ---------- 캡처 → PNG (모두 브라우저 안에서 처리, 서버로 보내지 않음)
+const pad = n => String(n).padStart(2, '0');
+let lastStamp = '', stampCount = 0;
+function shotName() {
+  const d = new Date();
+  const stamp = `캡처_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+  stampCount = stamp === lastStamp ? stampCount + 1 : 1;
+  lastStamp = stamp;
+  return stampCount > 1 ? `${stamp}_${stampCount}` : stamp;
+}
+async function toPng(blob) {
+  if (blob.type === 'image/png') return blob;  // 이미 PNG면 그대로 (바이트 하나 안 바뀜)
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  return new Promise(r => c.toBlob(r, 'image/png'));
+}
+function savePng(blob, name, statusEl) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (name.trim() || shotName()).replace(/[\\/:*?"<>|]+/g, '_').replace(/\.png$/i, '') + '.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  statusEl.className = 's ok'; statusEl.textContent = statusEl.dataset.base + ' · 저장됨 ✓';
+}
+async function addImage(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const png = await toPng(file).catch(() => null);
+  if (!png) return;
+  const url = URL.createObjectURL(png);
+  const dims = await new Promise(r => { const i = new Image(); i.onload = () => r(`${i.naturalWidth}×${i.naturalHeight}`); i.onerror = () => r(''); i.src = url; });
+  const row = document.createElement('div');
+  row.className = 'shot';
+  row.innerHTML = `<img alt=""><div class="meta"><input type="text"><div class="s"></div></div><button>PNG 저장</button>`;
+  const [img, meta, btn] = row.children, [nameIn, st] = meta.children;
+  img.src = url;
+  nameIn.value = file.name && !/^image\.png$/i.test(file.name) ? file.name.replace(/\.[^.]+$/, '') : shotName();
+  st.textContent = st.dataset.base = `${dims} · ${(png.size / 1048576).toFixed(1)} MB`;
+  btn.onclick = () => savePng(png, nameIn.value, st);
+  $('shots').prepend(row);
+  if ($('autoSave').checked) savePng(png, nameIn.value, st);
+}
+try { $('autoSave').checked = localStorage.getItem('autoSave') !== '0'; } catch { $('autoSave').checked = true; }
+$('autoSave').onchange = () => { try { localStorage.setItem('autoSave', $('autoSave').checked ? '1' : '0'); } catch {} };
+
+document.addEventListener('paste', e => {
+  const files = [...(e.clipboardData?.items || [])].filter(i => i.type.startsWith('image/')).map(i => i.getAsFile());
+  if (!files.length) return;
+  e.preventDefault();
+  showTab('img');
+  files.forEach(addImage);
+});
+$('imgDrop').onclick = () => $('imgFile').click();
+$('imgFile').onchange = e => { [...e.target.files].forEach(addImage); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => $('imgDrop').addEventListener(ev, e => { e.preventDefault(); $('imgDrop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('imgDrop').addEventListener(ev, e => { e.preventDefault(); $('imgDrop').classList.remove('over'); }));
+$('imgDrop').addEventListener('drop', e => [...e.dataTransfer.files].forEach(addImage));
+if (navigator.clipboard && navigator.clipboard.read) {
+  $('clipBtn').hidden = false;
+  $('clipBtn').onclick = async () => {
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find(t => t.startsWith('image/'));
+        if (type) { addImage(new File([await item.getType(type)], 'image.png', {type})); return; }
+      }
+      alert('클립보드에 이미지가 없어요. 먼저 스크린샷을 찍어주세요.');
+    } catch { alert('클립보드 접근이 거부됐어요. Ctrl+V로 붙여넣어 주세요.'); }
+  };
+}
 
 $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   // 업로드 진행률 표시를 위해 XHR 사용
