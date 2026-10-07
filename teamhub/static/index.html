@@ -2372,7 +2372,7 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir, inbDir, bankDir, costDir) => `param([switch]$Install, [switch]$Pull)
+  const script = (key, time, invDir, ledDir, inbDir, bankDir, costDir, settleDir) => `param([switch]$Install, [switch]$Pull)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
@@ -2380,7 +2380,8 @@ $jobs = @(
   @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "인바운딩";   Dir = "${(inbDir || '').replace(/"/g, '')}"; Url = "${host}/api/inbound/upload";   Ext = @('.xlsx', '.xlsm'); Like = '*Inbound*'; Depth = 0 },
   @{ Name = "은행입금";   Dir = "${(bankDir || '').replace(/"/g, '')}"; Url = "${host}/api/bank/upload";      Ext = @('.xls', '.xlsx', '.csv'); Like = '*'; Depth = 1 },
-  @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true }
+  @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true },
+  @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 2; All = $true }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -2445,7 +2446,7 @@ foreach ($job in $jobs) {
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#bankDir').value, $('#costDir').value).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#bankDir').value, $('#costDir').value, $('#settleDir').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
@@ -2464,6 +2465,7 @@ foreach ($job in $jobs) {
       <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
       <label>💳 은행 거래내역 폴더 <small class="muted">— 인터넷뱅킹에서 받은 거래내역 엑셀을 저장하는 곳, 비워 두면 안 올림</small></label><input id="bankDir" value="${esc(s.bank_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\은행">
       <label>🧮 원가계산서 폴더 <small class="muted">— 수입 통관 원가 계산서 엑셀, 새 파일이 생기면 올림 (비워 두면 안 올림)</small></label><input id="costDir" value="${esc(s.cost_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨">
+      <label>📑 통관 정산서·청구서 폴더 <small class="muted">— 관세사 정산서 PDF, 원가계산서 없는 건 찾기용 (비워 두면 안 올림)</small></label><input id="settleDir" value="${esc(s.settle_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서">
       <label>📋 인바운딩(수입 예정) 파일이 있는 곳 <small class="muted">— 공유문서 폴더(이름에 'Inbound' 가 들어간 엑셀을 찾음) 또는 파일 경로 그대로</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
@@ -2500,10 +2502,10 @@ foreach ($job in $jobs) {
       await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
-    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', bankDir: 'bank_dir', costDir: 'cost_dir'};
+    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', bankDir: 'bank_dir', costDir: 'cost_dir', settleDir: 'settle_dir'};
     Object.keys(DIRK).forEach(id => $('#' + id, bg).onchange = e => save({[DIRK[id]]: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#bankDir', bg).value, $('#costDir', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#bankDir', bg).value, $('#costDir', bg).value, $('#settleDir', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
@@ -2854,6 +2856,7 @@ async function drawCostCheck(year) {
     <div class="muted" style="font-size:12px;margin-bottom:8px;line-height:1.6">일계장 줄마다 품목·매입처(공급사)·통관일로 원가계산서를 찾아 <b>매입단가 ↔ 수입단가(단가+통관비, 원/kg)</b>를 비교합니다.
       매입처에 날짜(예: LYS 260915)가 있으면 그 통관 건, 없으면 같은 공급사의 판매일 전 1년 안 가장 최근 통관 건과 비교합니다(<i>추정</i>). 관계사 넘김은 뺍니다.
       <br>맞음 <b>${d.ok}</b>줄 · <span class="${d.n_diff ? 'down' : ''}">다름 <b>${d.n_diff}</b>줄</span> · 원가계산서 없음 ${d.n_missing}줄</div>
+    <div id="ccSettle" style="margin-bottom:12px"></div>
     <div class="qscroll" style="max-height:520px;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>품목</th><th>매출처</th><th>매입처</th><th class="num">수량</th><th class="num">일계장 매입단가</th><th class="num">원가계산서</th><th class="num">차이</th><th class="num">금액 차이</th><th>원가계산서</th></tr></thead><tbody>
       ${d.diff.map(x => `<tr><td>${esc(x.date.slice(5))}<br><small class="muted">${esc(x.company)}</small></td><td>${esc(x.item)}</td><td>${esc(x.customer)}</td><td>${esc(x.supplier)}</td><td class="num">${kg(x.qty)}</td>
         <td class="num">${won(x.buy_price)}</td><td class="num">${won(x.landed)}</td><td class="num ${Math.abs(x.pct) >= 3 ? 'down' : ''}"><b>${pct(x.pct)}</b></td><td class="num">${won(x.amount)}</td>
@@ -2865,6 +2868,7 @@ async function drawCostCheck(year) {
       ${d.missing.slice().sort((a, b) => b.buy_price * b.qty - a.buy_price * a.qty).slice(0, 300).map(x => `<tr><td>${esc(x.date.slice(5))}</td><td>${esc(x.item)}</td><td>${esc(x.customer)}</td><td>${esc(x.supplier)}</td><td class="num">${kg(x.qty)}</td><td class="num">${won(x.buy_price)}</td></tr>`).join('')}
       </tbody></table></div></details>` : ''}`;
   $('#ccTol').onchange = e => { cc.tol = +e.target.value; drawCostCheck(year); };
+  drawSettlements($('#ccSettle'), () => drawCostCheck(year));
   $('#ccMake').onclick = () => openCostMake(() => drawCostCheck(year));
   if ($('#ccMiss')) $('#ccMiss').ontoggle = e => { cc.miss = e.target.open; };
   $('#ccUp').onchange = async e => {
@@ -2881,8 +2885,49 @@ async function drawCostCheck(year) {
   };
 }
 
+// ---- 📑 정산서는 있는데 원가계산서가 없는 건 → 🤖 AI 로 읽어 원가계산서 만들기
+async function drawSettlements(box, refresh) {
+  if (!box) return;
+  const d = await api('/api/settlements').catch(() => null);
+  if (!d) return;
+  box.innerHTML = `<div class="card" style="padding:10px;background:var(--bg)">
+    <div class="row" style="gap:8px"><b>📑 정산서는 있는데 원가계산서가 없는 건 ${d.todo.length}개</b>
+      <span class="muted" style="font-size:12px">올린 정산서 ${d.total}개 · 원가계산서 있음 ${d.matched} · 필요 없음 ${d.skipped}</span><span class="spacer"></span>
+      <label class="btn sm" style="margin:0">📑 정산서 올리기<input type="file" id="stUp" accept=".pdf" multiple hidden></label></div>
+    <div class="muted" style="font-size:12px;margin:4px 0">'통관 청구서 및 정산서' 폴더의 PDF(파일 이름 예: 260901_Sunlong_정산서.pdf)를 올리면, 같은 공급사·통관일(±10일)의 원가계산서가 없는 건을 찾아 줍니다.
+      🤖 만들기를 누르면 AI가 정산서를 읽어 원가계산서 칸을 채웁니다 — 송금일·송금환율만 확인하고 저장하세요.${d.ai ? '' : ' <span class="down">(AI 키가 없어 지금은 읽기가 안 됩니다)</span>'}</div>
+    ${d.todo.length ? `<div class="qscroll" style="max-height:300px;overflow:auto"><table class="an-table"><thead><tr><th>날짜</th><th>공급사</th><th>정산서 파일</th><th></th></tr></thead><tbody>
+      ${d.todo.map(x => `<tr><td>${esc(x.doc_date)}</td><td>${esc(x.supplier)}</td><td><a href="#" data-pdf="${x.id}">${esc(x.filename)}</a>${x.error ? `<br><small class="down">${esc(x.error)}</small>` : x.has_extract ? ' <small class="muted">· 읽음</small>' : ''}</td>
+        <td style="white-space:nowrap"><button class="btn sm primary" data-mk="${x.id}">🤖 만들기</button> <button class="btn sm" data-skip="${x.id}" title="원가계산서가 필요 없는 건(샘플·반송 등)">필요 없음</button></td></tr>`).join('')}
+    </tbody></table></div>` : `<div class="muted" style="font-size:13px">${d.total ? '모든 정산서에 원가계산서가 있습니다. 👍' : '아직 올린 정산서가 없습니다.'}</div>`}</div>`;
+  $$('[data-pdf]', box).forEach(a => a.onclick = async e => {
+    e.preventDefault();
+    const res = await fetch(`/api/settlements/${a.dataset.pdf}/pdf`, {headers: {Authorization: 'Bearer ' + state.token}});
+    if (res.ok) window.open(URL.createObjectURL(await res.blob()), '_blank');
+  });
+  $$('[data-skip]', box).forEach(b => b.onclick = async () => { await api(`/api/settlements/${b.dataset.skip}/skip`, {method: 'POST', body: {skip: true}}); refresh(); });
+  $$('[data-mk]', box).forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = '🤖 읽는 중… (1분쯤)';
+    try { const r = await api(`/api/settlements/${b.dataset.mk}/read`, {method: 'POST'}); openCostMake(refresh, r, +b.dataset.mk); }
+    catch (err) { alert(err.message); }
+    b.disabled = false; b.textContent = '🤖 만들기';
+  });
+  $('#stUp', box).onchange = async e => {
+    const files = [...e.target.files]; let ok = 0; const errs = [];
+    for (const [i, f] of files.entries()) {
+      box.querySelector('b').textContent = `📑 정산서 올리는 중… ${i + 1}/${files.length}`;
+      const fd = new FormData(); fd.append('file', f);
+      const res = await fetch('/api/settlements/upload', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      if (res.ok) ok++; else errs.push(`${f.name}: ${(await res.json()).detail || ''}`);
+    }
+    toast(`정산서 ${ok}개 올림${errs.length ? `, 실패 ${errs.length}개` : ''}`);
+    if (errs.length) alert(errs.slice(0, 10).join('\n'));
+    refresh();
+  };
+}
+
 // ---- ✏ 원가계산서 만들기 (받은 원가계산서와 같은 계산: 원 단위 올림, 통관수수료는 수량 비율로 나눔)
-async function openCostMake(after) {
+async function openCostMake(after, prefill, settleId) {
   let co = '이알씨', def = await api(`/api/costs/defaults?company=${encodeURIComponent(co)}`);
   const itemRow = (it = {}) => `<tr><td><input name="item" value="${esc(it.item || '')}" placeholder="품목 (원문)"></td><td style="width:80px"><input name="qty" class="num" inputmode="decimal" value="${it.qty || ''}"></td>
       <td style="width:90px"><input name="unit_fx" class="num" inputmode="decimal" value="${it.unit_fx || ''}"></td><td style="width:100px"><input name="duty" class="num" inputmode="decimal" value="${it.duty || ''}" placeholder="0"></td>
@@ -2945,7 +2990,7 @@ async function openCostMake(after) {
     const send = async dl => {
       if (!f.reportValidity()) return;
       try {
-        const tf = $('#cmFolder', bg).checked ? '&to_folder=1' : '';
+        const tf = ($('#cmFolder', bg).checked ? '&to_folder=1' : '') + (settleId ? `&settle_id=${settleId}` : '');
         if (!dl) { await api('/api/costs/make?save=1' + tf, {method: 'POST', body: body()}); close(); toast('원가계산서를 저장했습니다 (원가 체크·일계장에 반영' + (tf ? ', 원가계산 폴더로 보낼 예정' : '') + ').'); after && after(); return; }
         const res = await fetch('/api/costs/make?save=1&download=1' + tf, {method: 'POST', headers: {Authorization: 'Bearer ' + state.token, 'Content-Type': 'application/json'}, body: JSON.stringify(body())});
         if (!res.ok) throw new Error((await res.json()).detail || '만들지 못했습니다.');
@@ -2954,13 +2999,8 @@ async function openCostMake(after) {
         close(); toast('저장하고 엑셀을 받았습니다.'); after && after();
       } catch (err) { $('.err', bg).textContent = err.message; }
     };
-    $('#cmPdf', bg).onchange = async e => {
-      const files = [...e.target.files]; if (!files.length) return;
-      const note = $('#cmPdfNote', bg); note.textContent = '📎 서류를 읽는 중… (1분쯤 걸릴 수 있어요)'; $('.err', bg).textContent = '';
-      const fd = new FormData(); files.forEach(x => fd.append('files', x));
-      try {
-        const res = await fetch('/api/costs/extract', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
-        const d = await res.json(); if (!res.ok) throw new Error(d.detail || '읽지 못했습니다.');
+    const fillFrom = d => {
+      const note = $('#cmPdfNote', bg);
         const set = (k, v) => { if (v !== undefined && v !== null && v !== '' && v !== 0 && f[k]) f[k].value = v; };
         set('supplier', d.supplier); set('invoice', d.invoice); set('customs_date', d.customs_date); set('customs_rate', d.customs_rate);
         set('remit_date', d.remit_date || d.customs_date); set('remit_rate', d.remit_rate || d.customs_rate);
@@ -2976,10 +3016,21 @@ async function openCostMake(after) {
           else { $('#cmFees', bg).insertAdjacentHTML('beforeend', feeRows([fe.name])); $('[name=famt]', $$('#cmFees .row', bg).pop()).value = fe.amount; }
         }
         note.innerHTML = `✅ 읽었습니다${d.bl_no ? ` (B/L ${esc(d.bl_no)})` : ''} — <b>숫자를 한 번 확인하세요.</b>${d.notes ? ' ' + esc(d.notes) : ''}${!d.remit_rate ? ' <span class="down">송금 환율이 서류에 없어 신고 환율을 넣었습니다.</span>' : ''}`;
+      calc();
+    };
+    $('#cmPdf', bg).onchange = async e => {
+      const files = [...e.target.files]; if (!files.length) return;
+      const note = $('#cmPdfNote', bg); note.textContent = '📎 서류를 읽는 중… (1분쯤 걸릴 수 있어요)'; $('.err', bg).textContent = '';
+      const fd = new FormData(); files.forEach(x => fd.append('files', x));
+      try {
+        const res = await fetch('/api/costs/extract', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+        const d = await res.json(); if (!res.ok) throw new Error(d.detail || '읽지 못했습니다.');
+        fillFrom(d);
         calc();
       } catch (err) { note.textContent = ''; $('.err', bg).textContent = err.message; }
       e.target.value = '';
     };
+    if (prefill) fillFrom(prefill);
     $('#cmSave', bg).onclick = () => send(false);
     $('#cmGo', bg).onclick = () => send(true);
   });

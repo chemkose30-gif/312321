@@ -297,6 +297,18 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
             CREATE INDEX IF NOT EXISTS idx_inv_ships_lot ON inv_ships(lot_id);
+            CREATE TABLE IF NOT EXISTS settlements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT UNIQUE NOT NULL,
+                doc_date TEXT NOT NULL DEFAULT '',
+                supplier TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'new',
+                extract TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                cost_filename TEXT NOT NULL DEFAULT '',
+                uploaded_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS cost_sheets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT NOT NULL,
@@ -2937,7 +2949,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir", "settle_dir"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -2947,7 +2959,8 @@ def inv_settings(c) -> dict:
     return {"upload_key": get_setting(c, "inv_upload_key", ""), "profit_public": get_setting(c, "profit_public", "0") == "1",
             "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", ""),
             "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서"), "bank_dir": get_setting(c, "bank_dir", ""),
-            "cost_dir": get_setting(c, "cost_dir", "Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨")}
+            "cost_dir": get_setting(c, "cost_dir", "Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨"),
+            "settle_dir": get_setting(c, "settle_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서")}
 
 
 @app.get("/api/inventory")
@@ -3864,7 +3877,7 @@ def cost_outbox_done(oid: str, user: dict = Depends(upload_user)):
 
 
 @app.post("/api/costs/make")
-def costs_make(body: CostIn, download: bool = False, save: bool = False, to_folder: bool = False,
+def costs_make(body: CostIn, download: bool = False, save: bool = False, to_folder: bool = False, settle_id: int = 0,
                user: dict = Depends(current_user)):
     """원가계산서 계산(미리보기) / 엑셀 받기 / 저장(원가 체크·일계장 매입단가에 반영)."""
     import io
@@ -3880,6 +3893,8 @@ def costs_make(body: CostIn, download: bool = False, save: bool = False, to_fold
                           " item, qty, unit_fx, unit_krw, landed, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                           (r["filename"], body.company, body.supplier.strip(), r["doc_no"], body.remit_date, body.customs_date,
                            body.remit_rate, body.invoice, x["item"], x["qty"], x["unit_fx"], x["unit_krw"], x["landed"], now()))
+            if settle_id:
+                c.execute("UPDATE settlements SET status = 'done', cost_filename = ? WHERE id = ?", (r["filename"], settle_id))
         r["saved"] = True
     if download or to_folder:
         buf = io.BytesIO()
@@ -3927,6 +3942,133 @@ async def costs_extract(files: List[UploadFile] = File(...), user: dict = Depend
     except Exception as e:
         raise HTTPException(400, f"서류를 읽지 못했습니다: {e}")
     return r
+
+
+# ---- 📑 통관 정산서·청구서 PDF (사무실 '통관 청구서 및 정산서' 폴더) → 원가계산서가 아직 없는 건 찾기
+SETTLE_DIR = Path(os.getenv("TEAMHUB_SETTLE_DIR", str(Path(DB_PATH).parent / "settlements")))
+
+
+def _settle_meta(filename: str) -> tuple:
+    """'260901_Sunlong_정산서.pdf' → ('2026-09-01', 'Sunlong')."""
+    stem = re.sub(r"\.\w+$", "", filename)
+    m = re.match(r"^\D*(\d{2})(\d{2})(\d{2})(?!\d)[\s_\-.]*([^_\-\s(]+)?", stem)
+    if m and 1 <= int(m[2]) <= 12:
+        return f"20{m[1]}-{m[2]}-{m[3]}", (m[4] or "").strip()
+    d = file_date(filename)
+    return d or "", ""
+
+
+@app.post("/api/settlements/upload")
+async def settlements_upload(file: UploadFile = File(...), user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
+    data = await file.read()
+    filename = (urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")).split("/")[-1].split("\\")[-1]
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "PDF 파일만 올릴 수 있습니다.")
+    if len(data) > 30 * 1024 * 1024:
+        raise HTTPException(400, "파일이 너무 큽니다 (30MB 이하).")
+    d, sup = _settle_meta(filename)
+    SETTLE_DIR.mkdir(parents=True, exist_ok=True)
+    with db() as c:
+        row = c.execute("SELECT id, size FROM settlements WHERE filename = ?", (filename,)).fetchone()
+        if row and row["size"] == len(data):
+            return {"ok": True, "skipped": "이미 있음", "id": row["id"]}
+        if row:
+            c.execute("UPDATE settlements SET size = ?, doc_date = ?, supplier = ?, extract = '', error = '',"
+                      " status = CASE status WHEN 'done' THEN 'done' ELSE 'new' END WHERE id = ?", (len(data), d, sup, row["id"]))
+            sid = row["id"]
+        else:
+            sid = c.execute("INSERT INTO settlements (filename, doc_date, supplier, size, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+                            (filename, d, sup, len(data), now())).lastrowid
+    (SETTLE_DIR / f"{sid}.pdf").write_bytes(data)
+    return {"ok": True, "id": sid, "date": d, "supplier": sup}
+
+
+def _settle_match(c) -> list:
+    """정산서마다 같은 공급사·통관일(±10일) 원가계산서가 있는지."""
+    sheets = {}
+    for r in c.execute("SELECT filename, supplier, customs_date FROM cost_sheets GROUP BY filename"):
+        sheets[r["filename"]] = dict(r)
+    out = []
+    for s in c.execute("SELECT id, filename, doc_date, supplier, status, cost_filename, error, extract != '' AS has_extract"
+                       " FROM settlements ORDER BY doc_date DESC, id DESC"):
+        s = dict(s)
+        hit = sheets.get(s["cost_filename"]) if s["cost_filename"] else None
+        if not hit and s["doc_date"]:
+            sd = datetime.strptime(s["doc_date"], "%Y-%m-%d")
+            sup = re.sub(r"[^a-z가-힣]", "", (s["supplier"] or "").lower())[:4]
+            for x in sheets.values():
+                try:
+                    cd = datetime.strptime(x["customs_date"], "%Y-%m-%d")
+                except (TypeError, ValueError):
+                    continue
+                if abs((cd - sd).days) <= 10 and (not sup or sup in re.sub(r"[^a-z가-힣]", "", (x["supplier"] or "").lower())):
+                    hit = x
+                    break
+        s["cost"] = hit
+        out.append(s)
+    return out
+
+
+@app.get("/api/settlements")
+def settlements_list(user: dict = Depends(current_user)):
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        rows = _settle_match(c)
+    todo = [r for r in rows if not r["cost"] and r["status"] not in ("done", "skip")]
+    return {"todo": todo, "total": len(rows), "matched": sum(1 for r in rows if r["cost"]),
+            "skipped": sum(1 for r in rows if r["status"] == "skip"), "ai": ai_mail.enabled()}
+
+
+@app.post("/api/settlements/{sid}/read")
+async def settlements_read(sid: int, user: dict = Depends(current_user)):
+    """🤖 정산서 PDF 를 AI 로 읽어 원가계산서 입력값 (한 번 읽으면 저장해 둠)."""
+    import base64
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        s = c.execute("SELECT * FROM settlements WHERE id = ?", (sid,)).fetchone()
+    if not s:
+        raise HTTPException(404, "정산서가 없습니다.")
+    if s["extract"]:
+        return {**json.loads(s["extract"]), "settle_id": sid}
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다. 서버 /etc/teamhub.env 에 TEAMHUB_ANTHROPIC_API_KEY 를 넣고 재시작하세요.")
+    f = SETTLE_DIR / f"{sid}.pdf"
+    if not f.exists():
+        raise HTTPException(404, "PDF 파일이 서버에 없습니다. 다시 올려 주세요.")
+    blocks = [{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                             "data": base64.b64encode(f.read_bytes()).decode()}}]
+    try:
+        r = await asyncio.to_thread(ai_mail.extract_costs, blocks)
+    except Exception as e:
+        with db() as c:
+            c.execute("UPDATE settlements SET error = ? WHERE id = ?", (str(e)[:300], sid))
+        raise HTTPException(400, f"정산서를 읽지 못했습니다: {e}")
+    if not r.get("supplier") and s["supplier"]:
+        r["supplier"] = s["supplier"]
+    with db() as c:
+        c.execute("UPDATE settlements SET extract = ?, error = '', status = CASE status WHEN 'new' THEN 'read' ELSE status END"
+                  " WHERE id = ?", (json.dumps(r, ensure_ascii=False), sid))
+    return {**r, "settle_id": sid}
+
+
+@app.post("/api/settlements/{sid}/skip")
+def settlements_skip(sid: int, body: dict, user: dict = Depends(current_user)):
+    """원가계산서가 필요 없는 정산서(샘플·반송 등) 표시 / 되돌리기."""
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        c.execute("UPDATE settlements SET status = ? WHERE id = ?", ("skip" if body.get("skip", True) else "new", sid))
+    return {"ok": True}
+
+
+@app.get("/api/settlements/{sid}/pdf")
+def settlements_pdf(sid: int, user: dict = Depends(current_user)):
+    f = SETTLE_DIR / f"{sid}.pdf"
+    if not f.exists():
+        raise HTTPException(404, "PDF 파일이 없습니다.")
+    return Response(content=f.read_bytes(), media_type="application/pdf")
 
 
 @app.get("/api/costs/defaults")
