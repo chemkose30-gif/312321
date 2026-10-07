@@ -663,11 +663,25 @@ def logout(authorization: str = Header(default="")):
     return {"ok": True}
 
 
+def _app_version() -> str:
+    """서버에 올라간 코드 버전 (git 커밋 날짜·번호) — '업데이트 됐나?' 확인용."""
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", str(BASE_DIR), "log", "-1", "--format=%cd · %h", "--date=format:%Y-%m-%d %H:%M"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+APP_VERSION = _app_version()
+
+
 @app.get("/api/me")
 def me(user: dict = Depends(current_user)):
     d = public_user(user)
     with db() as c:
         d["can_profit"] = can_see_cost(c, user)
+    d["version"] = APP_VERSION
     return d
 
 

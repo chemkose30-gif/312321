@@ -102,7 +102,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--primary-weak);bo
 .more{font-size:11px;color:var(--muted);padding-left:4px}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:10px;flex-wrap:wrap}
 /* ---------- tasks */
-.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
 .tabs button{background:none;border:0;padding:10px 14px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent}
 .tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
 table{width:100%;border-collapse:collapse}
@@ -279,6 +279,7 @@ td.money{text-align:right;font-variant-numeric:tabular-nums}
         <button id="pushBtn">🔔 알림 · 앱 설치</button>
         <button id="pwBtn" class="admin-only">🔑 비밀번호 변경</button>
         <button id="logoutBtn">🚪 로그아웃</button>
+        <div id="verInfo" class="muted" style="font-size:11px;padding:6px 12px"></div>
       </div>
     </div>
   </header>
@@ -395,6 +396,7 @@ $('#pwBtn').onclick = () => {
 async function boot() {
   if (!state.token) { logoutLocal(); return; }
   try { state.me = await api('/api/me'); } catch { return; }
+  if ($('#verInfo')) $('#verInfo').textContent = state.me.version ? '버전 ' + state.me.version : '';
   state.users = await api('/api/users');
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#userBtn').textContent = `${state.me.name} ▾`;
