@@ -1587,7 +1587,7 @@ async function renderQuoteReport(dt) {
       <select id="rGroup" style="width:auto">${Object.entries(d.groups).map(([k, v]) => `<option value="${k}" ${r.group === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       ${['line', 'date', 'month', 'year'].includes(r.group) ? '' : `<select id="rSplit" style="width:auto" title="거래처별·품목별 표를 연도/월 칸으로 나눠 보기">${Object.entries(d.splits).map(([k, v]) => `<option value="${k}" ${d.split === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         ${d.split ? `<select id="rMeasure" style="width:auto">${Object.entries(d.measures).map(([k, v]) => `<option value="${k}" ${d.measure === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}`}
-      <button class="btn" id="rGo">🔍 검색</button><span class="spacer"></span><button class="btn" id="rXls">📥 엑셀 받기</button></div>
+      <button class="btn" id="rGo">🔍 검색</button>${state.me.role === 'admin' ? '<button class="btn" id="rTags" title="품목 이름 앞뒤에서 떼고 합칠 단어 (선납·미납·차액 등)">⚙ 품목 이름 정리</button>' : ''}<span class="spacer"></span><button class="btn" id="rXls">📥 엑셀 받기</button></div>
     <div class="stats stats4" style="margin-bottom:10px">
       <div class="stat" style="cursor:default"><span class="muted">${D.label} 건수</span><b>${d.total.docs.toLocaleString()}건</b></div>
       <div class="stat" style="cursor:default"><span class="muted">공급가액</span><b>${won(d.total.supply)}</b></div>
@@ -1602,6 +1602,21 @@ async function renderQuoteReport(dt) {
   const read = () => { r.from = $('#rFrom').value; r.to = $('#rTo').value; r.customer = $('#rCust').value.trim(); r.item = $('#rItem').value.trim(); r.itemLike = $('#rItemLike').checked; r.status = $('#rStatus').value; r.group = $('#rGroup').value;
     if ($('#rSplit')) r.split = $('#rSplit').value; if ($('#rMeasure')) r.measure = $('#rMeasure').value; };
   $('#rGo').onclick = () => { read(); renderQuoteReport(dt); };
+  if ($('#rTags')) $('#rTags').onclick = async () => {
+    const t = await api('/api/settings/item-tags');
+    openModal(`<h2>⚙ 품목 이름 정리</h2>
+      <div class="muted" style="font-size:13px;line-height:1.6">품목 이름 <b>앞이나 뒤</b>(괄호 안 포함)에 붙은 아래 단어는 떼고 같은 품목으로 합칩니다. 뒤에 '분·건'이 붙어도(미납분) 같이 뗍니다.
+        <br>'9월·10월분', 'N차', 포장 표시(25kg x 4, 4X25KG, 40bags)도 자동으로 뗍니다. 원래 문서의 이름은 바뀌지 않습니다.</div>
+      <label>기본 단어</label><div style="font-size:13px;line-height:1.8">${t.builtin.map(w => `<span class="tag">${esc(w)}</span>`).join(' ')}</div>
+      <label>더 뗄 단어 <small class="muted">(쉼표나 줄바꿈으로 구분)</small></label>
+      <textarea id="tgExtra" style="min-height:90px" placeholder="예: 견본, 보충분, 긴급">${esc(t.extra)}</textarea>
+      <div class="actions"><button class="btn" data-close>취소</button><button class="btn primary" id="tgSave">저장</button></div>`, (bg, close) => {
+      $('#tgSave', bg).onclick = async () => {
+        await api('/api/settings/item-tags', {method: 'PUT', body: {extra: $('#tgExtra', bg).value}});
+        close(); toast('저장했습니다.'); renderQuoteReport(dt);
+      };
+    });
+  };
   // 품목 칸: 누르면 전체 품목 목록(스크롤), 글자를 치면 좁혀짐 → 고르면 바로 검색
   attachSearch($('#rItem'), v => {
     const words = v.split(/\s+/).map(normText).filter(Boolean);

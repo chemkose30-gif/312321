@@ -42,6 +42,7 @@ async def lifespan(_app):
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
+            set_item_tags(get_setting(c, "item_tags_extra", ""))  # 품목 이름에서 뗄 단어 (관리자가 더 넣은 것)
             if get_setting(c, "mail_topics_v", "") != "4":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
                 for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
                                    " AND (topic = '' OR topic NOT IN ('finance', 'quality'))").fetchall():   # noqa
@@ -1239,6 +1240,25 @@ REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월�
                  "item": "품목별", "customer_item": "거래처·품목별", "creator": "담당자별"}
 REPORT_SPLITS = {"": "기간 나눔 없음", "year": "연도별로 나눠 보기", "month": "월별로 나눠 보기"}
 REPORT_MEASURES = {"supply": "공급가액", "total": "합계(VAT 포함)", "qty": "수량"}
+
+
+@app.get("/api/settings/item-tags")
+def get_item_tags(user: dict = Depends(current_user)):
+    with db() as c:
+        return {"builtin": list(_ITEM_TAG_WORDS), "extra": get_setting(c, "item_tags_extra", "")}
+
+
+class ItemTagsIn(BaseModel):
+    extra: str = ""
+
+
+@app.put("/api/settings/item-tags")
+def put_item_tags(body: ItemTagsIn, _: dict = Depends(admin_user)):
+    extra = ", ".join(w.strip() for w in re.split(r"[,\n]", body.extra) if w.strip())
+    set_item_tags(extra)
+    with db() as c:
+        set_setting(c, "item_tags_extra", extra)
+    return {"ok": True, "extra": extra}
 
 
 @app.get("/api/quotes/report")
@@ -3194,7 +3214,7 @@ def _item_key(s: str) -> str:
 _PACK_UNIT = r"(?:kgs?|g|l|lt|ltr|ml|ea|lbs?|mt|tons?|kilos?)"
 _PACK_CNT = r"(?:ea|pcs?|bags?|drums?|boxe?s?|cans?|btls?|bottles?|pails?|ctns?|cartons?|개|포|통|드럼|박스|병|캔)"
 _PACK_RE = re.compile(
-    r"[\s,/_-]*[\(\[]?\s*(?:"
+    r"[\s,/_-]*[\(\[]?\s*(?:(?<![A-Za-z])in\s+)?(?:"
     rf"\d+(?:\.\d+)?\s*{_PACK_UNIT}\.?(?:\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_CNT}?)?(?:\s*/\s*{_PACK_CNT})?"  # 25kg, 25kg*4, 25kg x 40bags, 25kg/drum
     rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}?\s*[x×*]\s*\d+(?:\.\d+)?\s*{_PACK_UNIT}"  # 4x25kg, 4 drums x 200kg
     rf"|\d+(?:\.\d+)?\s*{_PACK_CNT}"  # 40bags, 4드럼
@@ -3202,21 +3222,43 @@ _PACK_RE = re.compile(
 
 
 # 품목 이름 앞뒤에 붙는 메모성 표시: '9월', '10월분', '선납', '미납', '소분', '외화' 등
-_ITEM_TAG = r"(?:\d{1,2}\s*월\s*분?|선\s*납|미\s*납|소\s*분|외\s*화|선입금|미입금)"
-_TAG_BRACKET_RE = re.compile(rf"[\(\[\{{<【]\s*{_ITEM_TAG}(?:[\s,/·]*{_ITEM_TAG})*\s*[\)\]\}}>】]")
-_TAG_HEAD_RE = re.compile(rf"^\s*{_ITEM_TAG}(?=[\s_\-:/.,)\]]|[A-Za-z가-힣])[\s_\-:/.,)\]]*")
-_TAG_TAIL_RE = re.compile(rf"[\s_\-:/.,(\[]*{_ITEM_TAG}\s*$")
+_ITEM_TAG_WORDS = ("선납", "미납", "소분", "외화", "차액", "선지급", "선급", "미지급", "선입금", "미입금", "잔금", "잔액",
+                   "정산", "계약금", "추가청구", "재청구", "환불", "반품", "할인", "운임", "운송비", "택배비", "샘플비",
+                   "패킹", "포장", "packing", "package", "packed", "pack",
+                   "drums", "drum", "bags", "bag", "pails", "pail", "드럼", "백")
+# 단어 + '분/금/건' (미납분·선납분·차액분 등), 'N월(분)', 'N차'
+_TAG_RES = ()
+
+
+def set_item_tags(extra: str = ""):
+    """품목 이름에서 뗄 메모 단어 정규식을 만듦. extra = 관리자가 더 넣은 단어(쉼표·줄바꿈 구분)."""
+    global _TAG_RES
+    words = list(_ITEM_TAG_WORDS) + [w.strip() for w in re.split(r"[,\n]", extra or "") if w.strip()]
+    alt = "|".join(r"\s*".join(re.escape(ch) for ch in w.replace(" ", "")) for w in sorted(set(words), key=len, reverse=True))
+    # 단어 + '분/건' (미납분·선납분·차액분 등), 'N월(분)', 'N차'
+    tag = rf"(?:\d{{1,2}}\s*월\s*분?|\d{{1,2}}\s*차|(?:{alt})\s*(?:분|건)?)"
+    _TAG_RES = (re.compile(rf"[\(\[\{{<【]\s*{tag}(?:[\s,/·]*{tag})*\s*[\)\]\}}>】]", re.I),
+                re.compile(rf"^\s*{tag}(?=[\s_\-:/.,)\]]|[A-Za-z가-힣])[\s_\-:/.,)\]]*", re.I),
+                re.compile(rf"[\s_\-:/.,(\[]*{tag}\s*$", re.I))
+
+
+set_item_tags()
 
 
 def item_strip_tags(name: str) -> str:
-    n = _TAG_BRACKET_RE.sub(" ", str(name or ""))
+    bracket_re, head_re, tail_re = _TAG_RES
+    n = bracket_re.sub(" ", str(name or ""))
     for _ in range(4):
-        m = _TAG_HEAD_RE.sub("", n)
-        m = _TAG_TAIL_RE.sub("", m)
+        m = head_re.sub("", n)
+        m = tail_re.sub("", m)
         if m == n:
             break
         n = m
     return re.sub(r"\s{2,}", " ", n).strip()
+
+
+_PACK_HEAD_RE = re.compile(_PACK_RE.pattern.replace(r"\s*$", "").replace(r"[\s,/_-]*", "^\\s*", 1) + r"[\s,/_-]+",
+                           re.I)
 
 
 def item_base(name: str) -> str:
@@ -3230,8 +3272,9 @@ def item_base(name: str) -> str:
         if not m or m.start() == 0:
             break
         n = item_strip_tags(n[:m.start()])
-    n = n.strip(" ,/-*x×")
-    return n.strip() or str(name or "").strip()
+    n = re.sub(r"(?:\s+[x×*]|[,/\-*×])+\s*$", "", n).strip()
+    n = _PACK_HEAD_RE.sub("", n) if _PACK_HEAD_RE.sub("", n).strip() else n  # '4X25KG Vanillin' 처럼 앞에 붙은 포장
+    return item_strip_tags(n).strip() or n.strip() or str(name or "").strip()
 
 
 def parse_ledger_rows(rows: list):
