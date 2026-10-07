@@ -1235,18 +1235,24 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
             "pages": max(1, (total + size - 1) // size), "years": years}
 
 
-REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월별", "customer": "거래처별", "item": "품목별",
-                 "customer_item": "거래처·품목별", "creator": "담당자별"}
+REPORT_GROUPS = {"line": "품목별 상세", "date": "일자별", "month": "월별", "year": "연별", "customer": "거래처별",
+                 "item": "품목별", "customer_item": "거래처·품목별", "creator": "담당자별"}
+REPORT_SPLITS = {"": "기간 나눔 없음", "year": "연도별로 나눠 보기", "month": "월별로 나눠 보기"}
+REPORT_MEASURES = {"supply": "공급가액", "total": "합계(VAT 포함)", "qty": "수량"}
 
 
 @app.get("/api/quotes/report")
 def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str = "", customer: str = "", item: str = "",
-                  item_mode: str = "exact", status: str = "", group: str = "line", format: str = "",
-                  user: dict = Depends(current_user)):
+                  item_mode: str = "exact", status: str = "", group: str = "line", split: str = "",
+                  measure: str = "supply", format: str = "", user: dict = Depends(current_user)):
     """판매현황·견적서현황: 기간·거래처·품목·상태로 걸러 품목 줄을 모으거나(일자·월·거래처·품목·담당자별) 그대로 보여줌.
     format=csv 면 엑셀로 열 수 있는 CSV 로 내려줌."""
     if group not in REPORT_GROUPS:
         group = "line"
+    if split not in REPORT_SPLITS or group in ("line", "date", "month", "year"):
+        split = ""
+    if measure not in REPORT_MEASURES:
+        measure = "supply"
     where, params = ["q.doc_type = ?"], [doc_type]
     if date_from:
         where.append("q.quote_date >= ?")
@@ -1292,17 +1298,21 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
                 ("total", "합계"), ("creator", "담당자")]
     else:
         keyf = {"date": lambda l: (l["quote_date"],), "month": lambda l: (l["quote_date"][:7],),
+                "year": lambda l: (l["quote_date"][:4],),
                 "customer": lambda l: (l["customer_name"],), "item": lambda l: (disp(l["name"]),),
                 "customer_item": lambda l: (l["customer_name"], disp(l["name"])),
                 "creator": lambda l: (l["creator"],)}[group]
-        heads = {"date": ["일자"], "month": ["월"], "customer": ["거래처"], "item": ["품목"],
+        heads = {"date": ["일자"], "month": ["월"], "year": ["연도"], "customer": ["거래처"], "item": ["품목"],
                  "customer_item": ["거래처", "품목"], "creator": ["담당자"]}[group]
         agg = {}
         for l in lines:
             k = keyf(l)
             a = agg.setdefault(k, {"docs": set(), "qty": 0, "units": set(), "supply": 0, "vat": 0, "total": 0, "last": "",
-                                   "dl": {}})
+                                   "dl": {}, "per": {}})
             a["docs"].add(l["doc_id"])
+            if split:
+                per = l["quote_date"][:4] if split == "year" else l["quote_date"][:7]
+                a["per"][per] = a["per"].get(per, 0) + (l[measure] or 0)
             dd = a["dl"].setdefault(l["doc_id"], {"id": l["doc_id"], "date": l["quote_date"], "no": l["quote_no"],
                                                   "customer": l["customer_name"], "status": l["status"], "items": [], "total": 0})
             dd["items"].append(l["name"])
@@ -1321,12 +1331,26 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
                      supply=a["supply"], vat=a["vat"], total=a["total"], last=a["last"],
                      avg_price=(a["supply"] / a["qty"]) if a["qty"] else 0,
                      doc_list=sorted(a["dl"].values(), key=lambda x: (x["date"], x["id"]), reverse=True)[:200])
+            for per, v in a["per"].items():
+                r["p_" + per] = v
             rows.append(r)
-        rows.sort(key=lambda r: tuple(r[f"k{n}"] for n in range(len(heads))) if group in ("date", "month")
-                  else (-r["total"],))
-        cols = [(f"k{n}", h) for n, h in enumerate(heads)] + [
-            ("docs", "건수"), ("qty", "수량"), ("unit", "단위"), ("avg_price", "평균단가"), ("supply", "공급가액"),
-            ("vat", "부가세"), ("total", "합계")] + ([("last", "마지막 거래")] if group not in ("date", "month") else [])
+        rows.sort(key=lambda r: tuple(r[f"k{n}"] for n in range(len(heads))) if group in ("date", "month", "year")
+                  else (-r[measure], -r["total"]))
+        if split:
+            # 거래처별 × 연도(또는 월) 표: 칸마다 공급가액/합계/수량
+            pers = sorted({k[2:] for r in rows for k in r if k.startswith("p_")})
+            for r in rows:
+                for p in pers:
+                    r.setdefault("p_" + p, 0)
+            for p in pers:
+                tot["p_" + p] = sum(r["p_" + p] for r in rows)
+            plabel = (lambda p: f"{p}년") if split == "year" else (lambda p: f"{p[2:4]}.{p[5:]}")
+            cols = [(f"k{n}", h) for n, h in enumerate(heads)] + [("p_" + p, plabel(p)) for p in pers] + [
+                (measure, "계"), ("docs", "건수")] + ([("unit", "단위")] if measure == "qty" else []) + [("last", "마지막 거래")]
+        else:
+            cols = [(f"k{n}", h) for n, h in enumerate(heads)] + [
+                ("docs", "건수"), ("qty", "수량"), ("unit", "단위"), ("avg_price", "평균단가"), ("supply", "공급가액"),
+                ("vat", "부가세"), ("total", "합계")] + ([("last", "마지막 거래")] if group not in ("date", "month", "year") else [])
     if format == "csv":
         import csv
         import io
@@ -1334,10 +1358,11 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
         wr = csv.writer(buf)
         wr.writerow([h for _, h in cols])
         for r in rows:
-            wr.writerow([round(r[k]) if isinstance(r[k], float) and k not in ("qty",) else r[k] for k, _ in cols])
-        wr.writerow(["합계"] + [round(tot[k]) if k in ("supply", "vat", "total") else tot[k] if k in ("qty", "docs") else ""
-                               for k, _ in cols[1:]])
-        label = ("판매현황" if doc_type == "statement" else "견적서현황") + f"_{REPORT_GROUPS[group]}_{date_from or '처음'}~{date_to or '끝'}.csv"
+            wr.writerow([r[k] if k == "qty" or (k.startswith("p_") and measure == "qty")
+                         else round(r[k]) if isinstance(r[k], float) else r[k] for k, _ in cols])
+        wr.writerow(["합계"] + ["" if k not in tot else tot[k] if k in ("qty", "docs") or measure == "qty" and k.startswith("p_")
+                               else round(tot[k]) for k, _ in cols[1:]])
+        label = ("판매현황" if doc_type == "statement" else "견적서현황") + f"_{REPORT_GROUPS[group]}{'_' + REPORT_SPLITS[split][:3] if split else ''}_{date_from or '처음'}~{date_to or '끝'}.csv"
         return Response(content=("\ufeff" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(label)})
     with db() as c:
@@ -1348,7 +1373,8 @@ def quotes_report(doc_type: str = "statement", date_from: str = "", date_to: str
             if k not in uniq or (uniq[k].isupper() and not b.isupper()):
                 uniq[k] = b
         names = sorted(uniq.values(), key=str.lower)
-    return {"item_names": names[:3000], "group": group, "groups": REPORT_GROUPS, "cols": [{"key": k, "label": h} for k, h in cols],
+    return {"item_names": names[:3000], "group": group, "groups": REPORT_GROUPS, "split": split, "splits": REPORT_SPLITS,
+            "measure": measure, "measures": REPORT_MEASURES, "cols": [{"key": k, "label": h} for k, h in cols],
             "rows": rows[:3000], "total": tot, "truncated": len(rows) > 3000}
 
 
