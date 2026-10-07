@@ -19,7 +19,11 @@ ufw allow 443/tcp >/dev/null
 ufw --force enable
 
 echo "[2/4] 앱을 내부 전용(127.0.0.1)으로, 보안옵션 켜서 재실행..."
+if [ ! -s /root/ins_data/data.key ]; then
+  openssl rand -base64 32 | tr '+/' '-_' | tr -d '\r\n' > /root/ins_data/data.key
+fi
 DATA_KEY="$(cat /root/ins_data/data.key)"
+if [ -z "$DATA_KEY" ]; then echo "암호화 키 생성 실패"; exit 1; fi
 docker rm -f ins-analyzer 2>/dev/null || true
 docker run -d --name ins-analyzer --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \

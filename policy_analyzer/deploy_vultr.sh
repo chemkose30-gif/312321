@@ -16,9 +16,9 @@ fi
 
 echo "[2/5] 암호화 키 준비(최초 1회 생성, /root/ins_data/data.key 에 보관)..."
 mkdir -p /root/ins_data
-if [ ! -f /root/ins_data/data.key ]; then
-  docker run --rm python:3.12-slim python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())" 2>/dev/null \
-    | tr -d '\r\n' > /root/ins_data/data.key
+if [ ! -s /root/ins_data/data.key ]; then
+  # Fernet 키 = urlsafe base64(32바이트). openssl 로 생성(추가 설치 불필요).
+  openssl rand -base64 32 | tr '+/' '-_' | tr -d '\r\n' > /root/ins_data/data.key
   echo "    키 생성됨. 이 파일을 반드시 따로 백업하세요: /root/ins_data/data.key"
 fi
 DATA_KEY="$(cat /root/ins_data/data.key)"
