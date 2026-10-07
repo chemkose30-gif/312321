@@ -28,9 +28,14 @@ Render보다 손이 더 가지만(SSH 명령 필요), `deploy_vultr.sh` 로 거�
 5. 첫 계정 생성: `docker exec -it ins-analyzer python manage.py add-planner myid "내이름"`
 6. 접속: `http://<서버IP>:8000`
 
-### HTTPS(암호화) — 실제 고객정보를 쓰기 전 필수
-http 는 암호화가 안 됩니다. 도메인이 있으면 Caddy로 자동 HTTPS를 붙일 수 있습니다(요청 시 설정 추가).
-도메인 없이 IP로 쓰는 것은 테스트까지만 하세요.
+### HTTPS(암호화) — 도메인 없이도 가능
+도메인이 없어도 서버 IP로 만든 주소(`<IP를->로>.sslip.io`)에 진짜 인증서를 받을 수 있습니다.
+서버에서 `bash setup_https.sh` 실행하면:
+- Caddy가 `<IP>.sslip.io` 로 Let's Encrypt 인증서를 자동 발급(자물쇠 표시)
+- 앱은 외부에 직접 노출하지 않고 Caddy 뒤에서만 동작(127.0.0.1)
+- 방화벽으로 22/80/443 만 허용, 2단계 인증·보안쿠키 켜짐
+
+이후 접속 주소는 `https://<IP>.sslip.io`. 도메인을 따로 사면 Caddyfile 의 주소만 바꾸면 됩니다.
 
 ## 서버에 올리기 (PC에 설치 없이, 인터넷 주소로 접속)
 파이썬 설치가 번거로우면 서버(호스팅)에 올리면 됩니다. GitHub 저장소를 연결하면 자동 배포되는
