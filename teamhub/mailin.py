@@ -378,6 +378,22 @@ TRACK_LABEL = re.compile(
     r"\s*(?:NO\.?|NUMBER|ID|#|번호)?\s*(?:is|:|：|\.|-)?\s*(?P<num>1Z[0-9A-Z]{16}|[A-Z]{2}\d{9}[A-Z]{2}|\d[\d ]{7,18}\d)",
     re.I)
 UPS_RE = re.compile(r"\b1Z[0-9A-Z]{16}\b")
+# UPS 메일의 UNI-PASS 조회 번호(B/L): 운송장(1Z…)이 아니라 938V 로 시작하는 번호
+UPS_BL_RE = re.compile(r"\b938V[0-9A-Z]{4,14}\b", re.I)
+UPS_BL_LABEL = re.compile(r"(?:shipment|house\s*(?:awb|b\s*/?\s*l)|hawb|h\s*b\s*/?\s*l|b\s*/\s*l)\s*(?:no\.?|number|id|#|번호)?"
+                          r"\s*[:：]?\s*(?P<num>(?!1Z)[0-9A-Z]{8,20})\b", re.I)
+
+
+def ups_bl(text: str) -> str:
+    """UPS 메일에서 UNI-PASS 로 조회할 B/L 번호 (938V…, 없으면 'Shipment/House B/L 번호' 표시가 붙은 번호)."""
+    m = UPS_BL_RE.search(text or "")
+    if m:
+        return m[0].upper()
+    for m in UPS_BL_LABEL.finditer(text or ""):
+        n = m["num"].upper()
+        if re.search(r"\d", n) and re.search(r"[A-Z]", n):
+            return n
+    return ""
 DELIVERED = re.compile(r"\bdelivered\b|배송\s*완료|배달\s*완료|배송완료|배달완료|已签收", re.I)
 NOT_DELIVERED = re.compile(r"will\s+be\s+delivered|scheduled|estimated|out\s+for\s+delivery|attempt|exception|not\s+delivered",
                            re.I)

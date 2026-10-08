@@ -45,6 +45,20 @@ async def lifespan(_app):
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
             set_item_tags(get_setting(c, "item_tags_extra", ""))  # 품목 이름에서 뗄 단어 (관리자가 더 넣은 것)
+            if get_setting(c, "ups_bl_fix_v", "") != "1":   # UPS 를 운송장(1Z…)으로 UNI-PASS 조회하던 건 → 메일에서 938V… B/L 찾아 바꿈
+                fixed = []
+                for sh in c.execute("SELECT id, hbl_no, status FROM shipments WHERE hbl_no LIKE '1Z%'").fetchall():
+                    m = c.execute("SELECT subject, body FROM mail_items WHERE body LIKE ? OR subject LIKE ? ORDER BY id DESC LIMIT 5",
+                                  (f"%{sh['hbl_no']}%", f"%{sh['hbl_no']}%")).fetchall()
+                    bl = next((b for b in (mailin.ups_bl(f"{x['subject']}\n{x['body']}") for x in m) if b), "")
+                    c.execute("UPDATE shipments SET track_no = ? WHERE id = ?", (sh["hbl_no"], sh["id"]))
+                    if bl:
+                        c.execute("UPDATE shipments SET hbl_no = ?, cs_error = '', cs_checked_at = '' WHERE id = ?", (bl, sh["id"]))
+                        if sh["status"] != "arrived":
+                            fixed.append(sh["id"])
+                set_setting(c, "ups_bl_fix_v", "1")
+                for sid in fixed:
+                    unipass_soon(sid)
             settle_auto_soon()               # 원가계산서가 없는 정산서 자동 작성 (AI 키가 있을 때)
             if get_setting(c, "mail_topics_v", "") != "4":      # 업무 분류 바뀜(수입·통관/해외 영업/발주 문의…) → 다시 분류
                 for r in c.execute("SELECT id, subject, body FROM mail_items WHERE status != 'merged' AND topic_set = 0"
@@ -491,6 +505,7 @@ def init_db():
                                 ("shipments", "cs_error", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "bl_found_at", "TEXT NOT NULL DEFAULT ''"),
+                                ("shipments", "track_no", "TEXT NOT NULL DEFAULT ''"),
                                 ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")) + tuple(
                 ("ecount_customers", k, "TEXT NOT NULL DEFAULT ''") for k in CUST_FIELDS if k != "memo") + tuple(
                 ("ecount_products", k, "TEXT NOT NULL DEFAULT ''") for k in PROD_TEXT_FIELDS if k not in ("spec", "unit")) + (
@@ -5156,8 +5171,8 @@ def unipass_loop():
 # ---- 메일에 나온 B/L·운송장 번호 → UNI-PASS 조회 → 입고예정 자동 등록
 def shipment_by_number(c, num: str):
     n = mailin.norm_bl(num)
-    for r in c.execute("SELECT id, bl_no, hbl_no FROM shipments WHERE bl_no != '' OR hbl_no != ''"):
-        if n and n in (mailin.norm_bl(r["bl_no"]), mailin.norm_bl(r["hbl_no"])):
+    for r in c.execute("SELECT id, bl_no, hbl_no, track_no FROM shipments WHERE bl_no != '' OR hbl_no != '' OR track_no != ''"):
+        if n and n in (mailin.norm_bl(r["bl_no"]), mailin.norm_bl(r["hbl_no"]), mailin.norm_bl(r["track_no"])):
             return r["id"]
     return None
 
@@ -5205,10 +5220,16 @@ def courier_mail(c, owner_id, it: dict, bulk: bool = False):
     ship_c = next((cd for cd in it["candidates"] if cd.get("kind") == "ship"), None)
     if not eta and ship_c and ship_c.get("label") != "ETD" and ship_c["date"] >= sent.isoformat():
         eta = ship_c["date"]             # 본문의 'ETA 10/09' 같은 날짜
+    ubl = mailin.ups_bl(f"{it['subject']}\n{body}") if courier == "UPS" or any(co == "UPS" for _, co in nums) else ""
     for num, co in nums:
-        sid = shipment_by_number(c, num)
+        cbl = ubl if co == "UPS" and ubl else num     # UNI-PASS 로 조회할 번호 (UPS 는 938V…)
+        sid = shipment_by_number(c, num) or (shipment_by_number(c, cbl) if cbl != num else None)
         if sid:
             sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
+            if cbl != num and mailin.norm_bl(sh["hbl_no"]) != cbl:   # 운송장으로 만든 UPS 건에 B/L(938V…)을 알게 됨
+                c.execute("UPDATE shipments SET hbl_no = ?, track_no = ?, updated_at = ? WHERE id = ?", (cbl, num, now(), sid))
+                if sh["status"] != "arrived":
+                    unipass_soon(sid)
             if sh["status"] == "arrived":
                 continue
             if delivered:
@@ -5226,9 +5247,9 @@ def courier_mail(c, owner_id, it: dict, bulk: bool = False):
         if item:
             same = find_open_shipment(c, item, eta or sent.isoformat())
             if same:                     # 인바운딩 등에 이미 있는 건이면 운송장만 붙인다
-                c.execute("UPDATE shipments SET hbl_no = ?, eta = CASE WHEN ? != '' THEN ? ELSE eta END, note = note || ?,"
-                          " updated_at = ? WHERE id = ?",
-                          (num, eta, eta, f" · {co} {num}", now(), same["id"]))
+                c.execute("UPDATE shipments SET hbl_no = ?, track_no = ?, eta = CASE WHEN ? != '' THEN ? ELSE eta END,"
+                          " note = note || ?, updated_at = ? WHERE id = ?",
+                          (cbl, num, eta, eta, f" · {co} {num}" + (f" (B/L {cbl})" if cbl != num else ""), now(), same["id"]))
                 c.execute("DELETE FROM bl_watch WHERE number = ?", (num,))
                 unipass_soon(same["id"])
                 continue
@@ -5237,11 +5258,13 @@ def courier_mail(c, owner_id, it: dict, bulk: bool = False):
             f"INSERT INTO shipments ({', '.join(SHIP_FIELDS)}, arrived_at, created_by, created_at, updated_at)"
             f" VALUES ({', '.join('?' * len(SHIP_FIELDS))}, ?, ?, ?, ?)",
             ((item or COURIER_ITEM)[:120], co, shipper, "", (ship_c or {}).get("qty") or 0, (ship_c or {}).get("unit") or "kg",
-             eta or (sent + timedelta(days=3)).isoformat(), "arrived" if delivered else "shipped", "", num, "",
-             f"[특송] {co} 운송장 {num}" + (f" · 메일: {it['subject'][:150]}" if it["subject"] else "")
+             eta or (sent + timedelta(days=3)).isoformat(), "arrived" if delivered else "shipped", "", cbl, "",
+             f"[특송] {co} 운송장 {num}" + (f" · B/L {cbl}" if cbl != num else "")
+             + (f" · 메일: {it['subject'][:150]}" if it["subject"] else "")
              + ("" if eta else " · 도착일 미정 — 발송일+3일로 추정"),
              it["sent_at"] + ":00" if delivered else None, oid, ts, ts))
-        c.execute("DELETE FROM bl_watch WHERE number = ?", (num,))
+        c.execute("UPDATE shipments SET track_no = ? WHERE id = ?", (num, cur.lastrowid))
+        c.execute("DELETE FROM bl_watch WHERE number IN (?, ?)", (num, cbl))
         if not delivered and not bulk:
             unipass_soon(cur.lastrowid)
             notify(c, oid, f"📦 {co} 특송 입고예정 등록: {item or shipper or num}" + (f" · 도착 {eta}" if eta else ""))
