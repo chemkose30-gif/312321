@@ -4199,6 +4199,150 @@ def settlements_pdf(sid: int, user: dict = Depends(current_user)):
     return Response(content=f.read_bytes(), media_type="application/pdf")
 
 
+# ---- 📒 수입관리대장: 회사 엑셀(월별 시트)에 TeamHub 정보로 빈 줄 채우기
+#   통관일·B/L ← 입고예정(UNI-PASS) / 세관·공급가액·부가세·외화 ← 정산서 PDF(AI) / 송금일·환율 ← 확인한 원가계산서
+IMPORT_TPL = Path(os.getenv("TEAMHUB_LEDGER_TPL_DIR", str(Path(DB_PATH).parent / "ledger_tpl"))) / "import_ledger.xlsx"
+COURIER_ABBR = {"FedEx": "FDX", "UPS": "UPS", "DHL": "DHL", "TNT": "TNT", "EMS": "EMS", "SF Express": "SF", "Aramex": "ARAMEX"}
+
+
+def _d(v: str):
+    try:
+        return datetime.strptime(str(v or "")[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def import_ledger_rows(c, ym: str) -> list:
+    """그 달(통관 신고일 기준) 수입 건 — 정산서 + 입고예정(UNI-PASS)."""
+    out, seen = [], set()
+    nb = lambda x: mailin.norm_bl(x or "")
+    for s in c.execute("SELECT * FROM settlements WHERE extract != '' AND status != 'skip'"):
+        r = json.loads(s["extract"])
+        cd = r.get("decl_date") or r.get("customs_date") or ""
+        if cd[:7] != ym:
+            continue
+        cost = None
+        if s["cost_filename"]:
+            cost = c.execute("SELECT remit_date, rate, invoice FROM cost_sheets WHERE filename = ? LIMIT 1",
+                             (s["cost_filename"],)).fetchone()
+        confirmed = s["status"] == "done" and cost
+        remit = cost["remit_date"] if confirmed else ""
+        out.append({"src": "정산서", "supplier": r.get("supplier") or s["supplier"], "bl": (r.get("bl_no") or "").strip(),
+                    "invoice": r.get("invoice") or (cost["invoice"] if cost else ""), "invoice_date": r.get("invoice_date") or "",
+                    "fx": r.get("pay_amount_fx") or sum((i.get("qty") or 0) * (i.get("unit_fx") or 0) for i in r.get("items") or []),
+                    "remit_date": remit, "rate": cost["rate"] if confirmed else None,
+                    "kind": ("사전" if remit and remit <= cd else "사후") if remit else "",
+                    "decl_date": cd, "office": r.get("customs_office") or "", "tax_base": r.get("tax_base") or None,
+                    "vat": r.get("import_vat") or None, "settle": "O"})
+        seen.add(nb(r.get("bl_no")))
+    for sh in c.execute("SELECT * FROM shipments WHERE substr(cs_cleared_at, 1, 7) = ?", (ym,)):
+        bl = sh["hbl_no"] or sh["bl_no"]
+        if not bl or nb(bl) in seen or nb(sh["bl_no"]) in seen:
+            continue
+        courier = sh["spec"] if str(sh["note"] or "").startswith("[특송]") else ""
+        out.append({"src": "입고예정", "supplier": sh["supplier"] or "", "bl": bl, "invoice": "", "invoice_date": "", "fx": None,
+                    "remit_date": "", "rate": None, "kind": "", "decl_date": sh["cs_cleared_at"][:10], "office": "",
+                    "tax_base": None, "vat": None, "settle": COURIER_ABBR.get(courier, "")})
+        seen.add(nb(bl))
+    out.sort(key=lambda x: (x["decl_date"], x["supplier"].lower()))
+    return out
+
+
+def import_ledger_fill(data: bytes, ym: str, rows: list) -> tuple:
+    """양식 엑셀의 그 달 시트에 채움. 이미 같은 B/L 줄이 있으면 빈 칸만 채우고, 없으면 빈 줄에 새로 씀 (수식 칸은 그대로)."""
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    name = f"{int(ym[5:7]):02d}월"
+    if name not in wb.sheetnames:   # 그 달 시트가 없으면 앞 달 시트를 복사해 비움
+        prev = sorted([n for n in wb.sheetnames if re.match(r"^\d{2}월$", n) and n < name]) or \
+            [n for n in wb.sheetnames if re.match(r"^\d{2}월$", n)]
+        if not prev:
+            raise HTTPException(400, "양식에 'MM월' 시트가 없습니다.")
+        ws = wb.copy_worksheet(wb[prev[-1]])
+        ws.title = name
+        wb.move_sheet(ws, offset=wb.sheetnames.index(prev[-1]) - wb.sheetnames.index(name) + 1)
+        hdr = next(r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "NO")
+        for r in range(hdr + 1, ws.max_row + 1):
+            if str(ws.cell(row=r, column=1).value or "").strip() == "Total":
+                break
+            for col in (2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 19):
+                ws.cell(row=r, column=col).value = None
+    ws = wb[name]
+    ws.cell(row=1, column=1).value = re.sub(r"\d{4}년\s*\d{1,2}월", f"{ym[:4]}년 {ym[5:7]}월", str(ws.cell(row=1, column=1).value or "")) \
+        or f"{ym[:4]}년 {ym[5:7]}월 수입관리대장"
+    hdr = next((r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "NO"), 3)
+    total = next((r for r in range(hdr + 1, ws.max_row + 1) if str(ws.cell(row=r, column=1).value or "").strip() == "Total"),
+                 ws.max_row + 1)
+    nb = lambda x: mailin.norm_bl(str(x or ""))
+    existing = {nb(ws.cell(row=r, column=11).value): r for r in range(hdr + 1, total) if ws.cell(row=r, column=11).value}
+    free = [r for r in range(hdr + 1, total) if not ws.cell(row=r, column=5).value and not ws.cell(row=r, column=11).value
+            and not any(ws.cell(row=r, column=k).value for k in (2, 3, 4, 7, 10))]
+    added = filled = 0
+    no_room = []
+    for x in rows:
+        vals = {2: x["kind"] or None, 3: _d(x["invoice_date"]), 4: x["invoice"] or None, 5: x["supplier"] or None,
+                6: _d(x["remit_date"]), 7: x["fx"] or None, 8: x["rate"], 10: _d(x["decl_date"]), 11: x["bl"] or None,
+                12: _d(x["decl_date"]), 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"], 19: x["settle"] or None}
+        r = existing.get(nb(x["bl"]))
+        if r:
+            n = 0
+            for col, v in vals.items():
+                if v not in (None, "") and ws.cell(row=r, column=col).value in (None, ""):
+                    ws.cell(row=r, column=col).value = v
+                    n += 1
+            filled += bool(n)
+            x["status"] = "채움" if n else "그대로"
+            continue
+        if not free:
+            no_room.append(x["bl"])
+            x["status"] = "자리 없음"
+            continue
+        r = free.pop(0)
+        for col, v in vals.items():
+            if v not in (None, ""):
+                ws.cell(row=r, column=col).value = v
+        added += 1
+        x["status"] = "새로"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), {"added": added, "filled": filled, "no_room": no_room, "sheet": name}
+
+
+@app.post("/api/import-ledger/template")
+async def import_ledger_template(file: UploadFile = File(...), user: dict = Depends(admin_user)):
+    data = await file.read()
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "수입관리대장 엑셀(.xlsx)을 올려 주세요.")
+    IMPORT_TPL.parent.mkdir(parents=True, exist_ok=True)
+    IMPORT_TPL.write_bytes(data)
+    with db() as c:
+        set_setting(c, "import_tpl_meta", json.dumps({"filename": file.filename, "uploaded_at": now()}, ensure_ascii=False))
+    return {"ok": True}
+
+
+@app.get("/api/import-ledger")
+def import_ledger(month: str = "", download: bool = False, user: dict = Depends(current_user)):
+    """그 달 수입관리대장에 들어갈 줄 미리보기 / 채운 엑셀 받기."""
+    ym = month if re.match(r"^\d{4}-\d{2}$", month or "") else datetime.now().strftime("%Y-%m")
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        rows = import_ledger_rows(c, ym)
+        meta = json.loads(get_setting(c, "import_tpl_meta", "{}") or "{}")
+    if not download:
+        res = {"month": ym, "rows": rows, "template": IMPORT_TPL.exists(), "meta": meta}
+        if IMPORT_TPL.exists():
+            _, res["result"] = import_ledger_fill(IMPORT_TPL.read_bytes(), ym, rows)
+        return res
+    if not IMPORT_TPL.exists():
+        raise HTTPException(400, "수입관리대장 엑셀(양식)을 먼저 올려 주세요.")
+    out, res = import_ledger_fill(IMPORT_TPL.read_bytes(), ym, rows)
+    name = (meta.get("filename") or "수입관리대장.xlsx").rsplit(".", 1)[0] + f"_{ym}.xlsx"
+    return Response(content=out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
+
+
 @app.get("/api/costs/defaults")
 def costs_defaults(company: str = "이알씨", user: dict = Depends(current_user)):
     """원가계산서 작성 기본값: 통관수수료 항목(그 회사 최근 원가계산서 양식에서), 최근 통관된 입고예정."""

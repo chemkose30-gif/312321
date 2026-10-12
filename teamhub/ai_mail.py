@@ -149,6 +149,9 @@ COST_SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨/켐코�
   - 포워더 인보이스에 항목이 나뉘어 있으면 나눠서 적고(선박 운임 묶음 금액으로 적지 말 것), 같은 비용을 두 번 적지 마세요
     (정산서 합계 = 세금계산서들의 합 — 세금계산서 기준으로 한 번씩만).
   - 관세·부가가치세(수입 부가세)·미수금·입금액은 fees 가 아닙니다.
+- 수입신고필증·수입세금계산서가 있으면: decl_no(수입신고번호), decl_date(신고일 YYYY-MM-DD), customs_office(세관 이름, 예: "부산세관", "인천공항세관"),
+  tax_base(수입세금계산서 공급가액 = 과세표준, 원), import_vat(수입 부가가치세, 원), pay_amount_fx(결제금액 외화 합계, 예: CFR-USD-29,000 → 29000),
+  invoice_date(공급사 인보이스 날짜 YYYY-MM-DD, 없으면 ""). 없으면 "" / 0.
 - notes: 확인이 필요한 점 한두 줄 (예: "송금 환율 없음 — 신고 환율로 대신", "통관수수료 부가세 별도 금액 추정")."""
 
 COST_SCHEMA = {
@@ -164,9 +167,13 @@ COST_SCHEMA = {
         "fees": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "amount": {"type": "number"}},
                                             "required": ["name", "amount"], "additionalProperties": False}},
         "notes": {"type": "string"},
+        "decl_no": {"type": "string"}, "decl_date": {"type": "string"}, "customs_office": {"type": "string"},
+        "tax_base": {"type": "number"}, "import_vat": {"type": "number"}, "pay_amount_fx": {"type": "number"},
+        "invoice_date": {"type": "string"},
     },
     "required": ["importer", "supplier", "mode", "invoice", "bl_no", "currency", "customs_date", "customs_rate", "remit_date", "remit_rate",
-                 "items", "fees", "notes"],
+                 "items", "fees", "notes", "decl_no", "decl_date", "customs_office", "tax_base", "import_vat", "pay_amount_fx",
+                 "invoice_date"],
     "additionalProperties": False,
 }
 

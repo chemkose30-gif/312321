@@ -2840,6 +2840,52 @@ async function drawSettlements(box, refresh) {
   };
 }
 
+// ---- 📒 수입관리대장: 회사 엑셀(월별 시트)의 빈 줄을 TeamHub 정보로 채워 받기
+function openImportLedger() {
+  const ym = todayStr().slice(0, 7);
+  openModal(`<h2>📒 수입관리대장 채우기</h2>
+    <div class="muted" style="font-size:13px;line-height:1.6">수입관리대장 엑셀을 양식으로 올려 두면, 고른 달 시트에 TeamHub가 아는 수입 건을 채워 줍니다 (통관 신고일 기준).
+      <br>· 통관일·B/L·특송사(FDX/UPS) ← 입고예정(UNI-PASS) · 세관·공급가액·부가세·외화·인보이스 ← 정산서 PDF(AI) · 송금일·환율 ← 확인한 원가계산서
+      <br>· 이미 같은 B/L 줄이 있으면 <b>빈 칸만</b> 채우고, 없으면 빈 줄에 새로 씁니다. 수식(NO·원화·합계·송금증) 칸과 직접 적은 값은 건드리지 않습니다. 그 달 시트가 없으면 앞 달 시트를 복사해 만듭니다.</div>
+    <div class="row" style="gap:8px;margin-top:8px"><label style="margin:0">달</label><input type="month" id="ilMonth" value="${ym}" style="width:auto">
+      <span class="spacer"></span>${state.me.role === 'admin' ? '<label class="btn sm" style="margin:0">📤 양식(수입관리대장 엑셀) 올리기<input type="file" id="ilTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
+    <div id="ilBody" class="muted" style="margin-top:10px">불러오는 중…</div><div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ilGo" disabled>📥 채운 엑셀 받기</button></div>`, (bg, close) => {
+    bg.firstElementChild.classList.add('wide');
+    const load = async () => {
+      $('#ilBody', bg).textContent = '불러오는 중…'; $('.err', bg).textContent = '';
+      try {
+        const d = await api(`/api/import-ledger?month=${$('#ilMonth', bg).value}`);
+        const fmt = v => v ? won(v) : '';
+        $('#ilBody', bg).classList.remove('muted');
+        $('#ilBody', bg).innerHTML = (d.template ? `<div class="muted" style="font-size:12px;margin-bottom:6px">양식: <b>${esc(d.meta.filename || '')}</b> (${esc((d.meta.uploaded_at || '').slice(0, 16))} 올림) → <b>${esc(d.result.sheet)}</b> 시트에 새로 ${d.result.added}줄, 빈 칸 채움 ${d.result.filled}줄${d.result.no_room.length ? ` · <span class="down">빈 줄이 모자라 ${d.result.no_room.length}건은 못 넣음</span>` : ''}</div>`
+            : '<div class="down" style="margin-bottom:6px">아직 양식이 없습니다. 📤 양식 올리기로 수입관리대장 엑셀(★매출.수입관리대장 2026.xlsx)을 올려 주세요.</div>')
+          + `<div class="qscroll" style="max-height:50vh;overflow:auto"><table class="an-table"><thead><tr><th>통관일</th><th>거래처</th><th>B/L</th><th>인보이스</th><th class="num">외화</th><th>송금일 · 환율</th><th>세관</th><th class="num">공급가액</th><th class="num">부가세</th><th>정산서</th><th>엑셀</th></tr></thead><tbody>
+            ${d.rows.map(x => `<tr><td>${esc(x.decl_date.slice(5))}</td><td>${esc(x.supplier)}</td><td><small>${esc(x.bl)}</small></td><td><small>${esc(x.invoice)}</small></td><td class="num">${x.fx ? fmtQty(x.fx) : ''}</td>
+              <td><small>${x.remit_date ? esc(x.remit_date.slice(5)) + ' · ' + x.rate : '<span class="muted">송금 확인 전</span>'}</small></td><td><small>${esc(x.office)}</small></td><td class="num">${fmt(x.tax_base)}</td><td class="num">${fmt(x.vat)}</td><td>${esc(x.settle)}</td>
+              <td><small class="${x.status === '자리 없음' ? 'down' : 'muted'}">${esc(x.status || '')}</small></td></tr>`).join('') || '<tr><td colspan="11" class="empty">이 달에 TeamHub가 아는 수입 건이 없습니다.</td></tr>'}
+          </tbody></table></div>
+          <div class="muted" style="font-size:12px;margin-top:6px">정산서를 AI로 읽은 건만 세관·금액이 채워집니다 (🧮 원가계산서 → 📑 정산서). 송금일·환율은 원가계산서에서 송금환율을 확인·저장한 건만 들어갑니다.</div>`;
+        $('#ilGo', bg).disabled = !d.template;
+      } catch (err) { $('#ilBody', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+    };
+    $('#ilMonth', bg).onchange = load;
+    if ($('#ilTpl', bg)) $('#ilTpl', bg).onchange = async e => {
+      const fd = new FormData(); fd.append('file', e.target.files[0]);
+      const res = await fetch('/api/import-ledger/template', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '올리지 못했습니다.'; return; }
+      toast('양식을 올렸습니다.'); load();
+    };
+    $('#ilGo', bg).onclick = async () => {
+      const res = await fetch(`/api/import-ledger?month=${$('#ilMonth', bg).value}&download=1`, {headers: {Authorization: 'Bearer ' + state.token}});
+      if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '만들지 못했습니다.'; return; }
+      const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || '수입관리대장.xlsx');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    load();
+  });
+}
+
 // ---- ✏ 원가계산서 만들기 (받은 원가계산서와 같은 계산: 원 단위 올림, 통관수수료는 수량 비율로 나눔)
 async function openCostMake(after, prefill, settleId) {
   let co = '이알씨', def = await api(`/api/costs/defaults?company=${encodeURIComponent(co)}`);
@@ -2989,6 +3035,7 @@ async function renderProfit() {
   const admin = state.me.role === 'admin';
   const tools = (admin ? '<button class="btn" id="pfSet" title="자동 업로드 설정">⚙</button><button class="btn" id="pfUp">매입매출장 올리기</button>' : '')
     + '<button class="btn" id="pfCost" title="원가계산서 만들기 · 올리기 · 일계장 매입단가 체크">🧮 원가계산서</button>'
+    + '<button class="btn" id="pfImp" title="수입관리대장 엑셀의 그 달 시트를 TeamHub 정보로 채우기">📒 수입관리대장</button>'
     + '<button class="btn primary" id="pfMake" title="거래명세서로 그날 기준 일계장 엑셀 만들기">📒 일계장 만들기</button>';
   if (!d.years.length) {   // 일계장이 아직 없어도 원가계산서는 쓸 수 있게
     $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>${tools}</div>
@@ -2996,6 +3043,7 @@ async function renderProfit() {
     if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
     $('#pfMake').onclick = openLedgerMake;
     $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit(); };
+    $('#pfImp').onclick = openImportLedger;
     if (pf.tab === 'cost') drawCostCheck(new Date().getFullYear());
     return;
   }
@@ -3061,6 +3109,7 @@ async function renderProfit() {
   if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
   if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
   $('#pfMake').onclick = openLedgerMake;
+  $('#pfImp').onclick = openImportLedger;
   $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit().then(() => { const t = $('#pfCheck'); if (t) t.scrollIntoView({behavior: 'smooth'}); }); };
   let timer;
   $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
