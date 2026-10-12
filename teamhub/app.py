@@ -4212,51 +4212,122 @@ def _d(v: str):
         return None
 
 
-def import_ledger_rows(c, ym: str) -> list:
-    """그 달(통관 신고일 기준) 수입 건 — 정산서 + 입고예정(UNI-PASS)."""
-    out, seen = [], set()
-    nb = lambda x: mailin.norm_bl(x or "")
-    for s in c.execute("SELECT * FROM settlements WHERE extract != '' AND status != 'skip'"):
-        r = json.loads(s["extract"])
-        cd = r.get("decl_date") or r.get("customs_date") or ""
-        if cd[:7] != ym:
-            continue
-        cost = None
-        if s["cost_filename"]:
-            cost = c.execute("SELECT remit_date, rate, invoice FROM cost_sheets WHERE filename = ? LIMIT 1",
-                             (s["cost_filename"],)).fetchone()
-        confirmed = s["status"] == "done" and cost
-        remit = cost["remit_date"] if confirmed else ""
-        out.append({"src": "정산서", "supplier": r.get("supplier") or s["supplier"], "bl": (r.get("bl_no") or "").strip(),
-                    "invoice": r.get("invoice") or (cost["invoice"] if cost else ""), "invoice_date": r.get("invoice_date") or "",
-                    "fx": r.get("pay_amount_fx") or sum((i.get("qty") or 0) * (i.get("unit_fx") or 0) for i in r.get("items") or []),
-                    "remit_date": remit, "rate": cost["rate"] if confirmed else None,
-                    "kind": ("사전" if remit and remit <= cd else "사후") if remit else "",
-                    "decl_date": cd, "office": r.get("customs_office") or "", "tax_base": r.get("tax_base") or None,
-                    "vat": r.get("import_vat") or None, "settle": "O"})
-        seen.add(nb(r.get("bl_no")))
-    for sh in c.execute("SELECT * FROM shipments WHERE substr(cs_cleared_at, 1, 7) = ?", (ym,)):
-        bl = sh["hbl_no"] or sh["bl_no"]
-        if not bl or nb(bl) in seen or nb(sh["bl_no"]) in seen:
-            continue
-        courier = sh["spec"] if str(sh["note"] or "").startswith("[특송]") else ""
-        out.append({"src": "입고예정", "supplier": sh["supplier"] or "", "bl": bl, "invoice": "", "invoice_date": "", "fx": None,
-                    "remit_date": "", "rate": None, "kind": "", "decl_date": sh["cs_cleared_at"][:10], "office": "",
-                    "tax_base": None, "vat": None, "settle": COURIER_ABBR.get(courier, "")})
-        seen.add(nb(bl))
-    out.sort(key=lambda x: (x["decl_date"], x["supplier"].lower()))
+def _inv_key(v) -> str:
+    """인보이스 번호 비교용 (엑셀은 숫자로 바뀌어 있기도: 0000130101 → 130101)."""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return re.sub(r"[^0-9a-z]", "", str(v or "").lower()).lstrip("0")
+
+
+def _sup_key(v) -> str:
+    return re.sub(r"[^a-z가-힣]", "", str(v or "").lower())[:4]
+
+
+def _imp_months(a: str, b: str) -> list:
+    """'2026-08' ~ '2026-09' → 그 사이 달들 (최대 12개월)."""
+    ok = lambda m: m if re.match(r"^\d{4}-\d{2}$", m or "") else ""
+    a, b = ok(a) or datetime.now().strftime("%Y-%m"), ok(b)
+    b = b or a
+    if b < a:
+        a, b = b, a
+    out, y, m = [], int(a[:4]), int(a[5:])
+    while f"{y}-{m:02d}" <= b and len(out) < 12:
+        out.append(f"{y}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
     return out
 
 
-def import_ledger_fill(data: bytes, ym: str, rows: list) -> tuple:
-    """양식 엑셀의 그 달 시트에 채움. 이미 같은 B/L 줄이 있으면 빈 칸만 채우고, 없으면 빈 줄에 새로 씀 (수식 칸은 그대로)."""
-    import io
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(data))
+def _cost_groups(c) -> dict:
+    """원가계산서 파일별 요약. 자동 작성(송금환율 확인 전)이 아닌 것은 송금일·환율 확정으로 봄."""
+    auto = {r[0] for r in c.execute("SELECT cost_filename FROM settlements WHERE status = 'auto' AND cost_filename != ''")}
+    out = {}
+    for r in c.execute("SELECT filename, MAX(company) AS company, MAX(supplier) AS supplier, MAX(remit_date) AS remit_date,"
+                       " MAX(customs_date) AS customs_date, MAX(rate) AS rate, MAX(invoice) AS invoice,"
+                       " SUM(qty * COALESCE(unit_fx, 0)) AS fx FROM cost_sheets GROUP BY filename"):
+        out[r["filename"]] = {**dict(r), "confirmed": r["filename"] not in auto}
+    return out
+
+
+def _imp_rate(rate, currency: str = ""):
+    """엔화는 대장에 100엔 기준 환율로 적음 (원가계산서는 1엔 기준)."""
+    if not rate:
+        return None
+    return round(rate * 100, 2) if (currency or "").upper() == "JPY" or rate < 50 else rate
+
+
+def import_ledger_rows(c, ym: str) -> list:
+    """그 달(통관 신고일 기준) 수입 건 — 정산서(AI) + 원가계산서 + 입고예정(UNI-PASS). 켐코스 수입 건은 뺌."""
+    out, seen, used = [], set(), set()
+    nb = lambda x: mailin.norm_bl(x or "")
+    costs = _cost_groups(c)
+    for s in _settle_match(c):
+        if s["status"] == "skip":
+            continue
+        x = c.execute("SELECT extract FROM settlements WHERE id = ?", (s["id"],)).fetchone()["extract"]
+        r = json.loads(x) if x else {}
+        cost = costs.get((s["cost"] or {}).get("filename") or "")
+        if not r and not cost:
+            continue
+        cd = r.get("decl_date") or r.get("customs_date") or (cost or {}).get("customs_date") or ""
+        if cd[:7] != ym:
+            continue
+        if cost:
+            used.add(cost["filename"])
+        if "켐코스" in (r.get("importer") or "").replace(" ", "") or (cost or {}).get("company") == "켐코스":
+            continue
+        ok = cost and cost["confirmed"] and cost["remit_date"]
+        remit = cost["remit_date"] if ok else ""
+        fx = r.get("pay_amount_fx") or sum((i.get("qty") or 0) * (i.get("unit_fx") or 0) for i in r.get("items") or []) \
+            or (cost or {}).get("fx")
+        courier = r.get("mode") == "Courier"
+        out.append({"src": "정산서" if r else "원가계산서", "supplier": r.get("supplier") or (cost or {}).get("supplier") or s["supplier"],
+                    "bl": (r.get("bl_no") or "").strip(), "invoice": r.get("invoice") or (cost or {}).get("invoice") or "",
+                    "invoice_date": r.get("invoice_date") or "", "fx": round(fx, 2) if fx else None, "currency": r.get("currency") or "",
+                    "remit_date": remit, "rate": _imp_rate(cost["rate"], r.get("currency")) if ok else None,
+                    "kind": ("사전" if remit <= cd else "사후") if remit else "", "decl_date": cd,
+                    "office": r.get("customs_office") or "", "tax_base": r.get("tax_base") or None, "vat": r.get("import_vat") or None,
+                    "settle": "" if courier else "O",
+                    "jpy": (r.get("currency") or "").upper() == "JPY" or bool(cost and cost["rate"] and cost["rate"] < 50)})
+        if r.get("bl_no"):
+            seen.add(nb(r["bl_no"]))
+    for f, cost in costs.items():   # 정산서 없이 원가계산서만 있는 건
+        if f in used or (cost["customs_date"] or "")[:7] != ym or cost["company"] == "켐코스":
+            continue
+        ok = cost["confirmed"] and cost["remit_date"]
+        cd = cost["customs_date"]
+        out.append({"src": "원가계산서", "supplier": cost["supplier"], "bl": "", "invoice": cost["invoice"] or "", "invoice_date": "",
+                    "fx": round(cost["fx"], 2) if cost["fx"] else None, "currency": "", "remit_date": cost["remit_date"] if ok else "",
+                    "rate": _imp_rate(cost["rate"]) if ok else None,
+                    "kind": ("사전" if cost["remit_date"] <= cd else "사후") if ok else "", "decl_date": cd, "office": "",
+                    "tax_base": None, "vat": None, "settle": "", "jpy": bool(cost["rate"] and cost["rate"] < 50)})
+    for sh in c.execute("SELECT * FROM shipments WHERE substr(cs_cleared_at, 1, 7) = ?", (ym,)):
+        bl = sh["hbl_no"] or sh["bl_no"]
+        courier = sh["spec"] if str(sh["note"] or "").startswith("[특송]") else ""
+        hit = next((x for x in out if nb(x["bl"]) in (nb(bl), nb(sh["bl_no"])) and x["bl"]), None) if bl else None
+        if not hit:   # B/L 없는 원가계산서 건과는 거래처·통관일(±3일)로
+            d = _d(sh["cs_cleared_at"])
+            hit = next((x for x in out if not x["bl"] and _sup_key(x["supplier"]) == _sup_key(sh["supplier"]) and d and _d(x["decl_date"])
+                        and abs((_d(x["decl_date"]) - d).days) <= 3), None)
+        if hit:
+            hit["bl"] = hit["bl"] or bl or ""
+            if courier and not hit["settle"]:
+                hit["settle"] = COURIER_ABBR.get(courier, "")
+            continue
+        if not bl:
+            continue
+        out.append({"src": "입고예정", "supplier": sh["supplier"] or "", "bl": bl, "invoice": "", "invoice_date": "", "fx": None,
+                    "currency": "", "remit_date": "", "rate": None, "kind": "", "decl_date": sh["cs_cleared_at"][:10], "office": "",
+                    "tax_base": None, "vat": None, "settle": COURIER_ABBR.get(courier, ""), "jpy": False})
+    out.sort(key=lambda x: (x["decl_date"], (x["supplier"] or "").lower()))
+    return out
+
+
+def _imp_sheet(wb, ym: str):
+    """그 달 시트 (없으면 앞 달 시트를 복사해 입력 칸을 비움)."""
     name = f"{int(ym[5:7]):02d}월"
-    if name not in wb.sheetnames:   # 그 달 시트가 없으면 앞 달 시트를 복사해 비움
-        prev = sorted([n for n in wb.sheetnames if re.match(r"^\d{2}월$", n) and n < name]) or \
-            [n for n in wb.sheetnames if re.match(r"^\d{2}월$", n)]
+    if name not in wb.sheetnames:
+        months = [n for n in wb.sheetnames if re.match(r"^\d{2}월$", n)]
+        prev = sorted([n for n in months if n < name]) or months
         if not prev:
             raise HTTPException(400, "양식에 'MM월' 시트가 없습니다.")
         ws = wb.copy_worksheet(wb[prev[-1]])
@@ -4268,45 +4339,143 @@ def import_ledger_fill(data: bytes, ym: str, rows: list) -> tuple:
                 break
             for col in (2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 19):
                 ws.cell(row=r, column=col).value = None
-    ws = wb[name]
-    ws.cell(row=1, column=1).value = re.sub(r"\d{4}년\s*\d{1,2}월", f"{ym[:4]}년 {ym[5:7]}월", str(ws.cell(row=1, column=1).value or "")) \
-        or f"{ym[:4]}년 {ym[5:7]}월 수입관리대장"
+        ws.cell(row=1, column=1).value = re.sub(r"\d{4}년\s*\d{1,2}월", f"{ym[:4]}년 {ym[5:7]}월", str(ws.cell(row=1, column=1).value or "")) \
+            or f"{ym[:4]}년 {ym[5:7]}월 수입관리대장"
+    return wb[name]
+
+
+def _imp_bounds(ws) -> tuple:
     hdr = next((r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "NO"), 3)
     total = next((r for r in range(hdr + 1, ws.max_row + 1) if str(ws.cell(row=r, column=1).value or "").strip() == "Total"),
                  ws.max_row + 1)
-    nb = lambda x: mailin.norm_bl(str(x or ""))
-    existing = {nb(ws.cell(row=r, column=11).value): r for r in range(hdr + 1, total) if ws.cell(row=r, column=11).value}
-    free = [r for r in range(hdr + 1, total) if not ws.cell(row=r, column=5).value and not ws.cell(row=r, column=11).value
-            and not any(ws.cell(row=r, column=k).value for k in (2, 3, 4, 7, 10))]
-    added = filled = 0
-    no_room = []
-    for x in rows:
-        vals = {2: x["kind"] or None, 3: _d(x["invoice_date"]), 4: x["invoice"] or None, 5: x["supplier"] or None,
-                6: _d(x["remit_date"]), 7: x["fx"] or None, 8: x["rate"], 10: _d(x["decl_date"]), 11: x["bl"] or None,
-                12: _d(x["decl_date"]), 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"], 19: x["settle"] or None}
-        r = existing.get(nb(x["bl"]))
-        if r:
-            n = 0
+    return hdr, total
+
+
+def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
+    """양식 엑셀의 그 달 시트들에 채움. 이미 있는 줄(어느 달 시트든 B/L·인보이스 번호·거래처+통관일이 같은 줄)은 빈 칸만 채우고,
+    없으면 그 달 시트 빈 줄에 새로 씀. 수식 칸·직접 적은 값은 그대로."""
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    for ym in by_month:
+        _imp_sheet(wb, ym)
+    nb = lambda x: mailin.norm_bl(str(x or "")) if x not in (None, "") else ""
+    by_bl, by_inv, by_sd = {}, {}, []
+    for n in wb.sheetnames:
+        if not re.match(r"^\d{2}월$", n):
+            continue
+        ws = wb[n]
+        hdr, total = _imp_bounds(ws)
+        sup, d = "", None
+        for r in range(hdr + 1, total):
+            v = lambda k: ws.cell(row=r, column=k).value
+            if v(5):   # 이어지는 줄(분할 인보이스)은 위 줄 거래처·통관일
+                sup, d = _sup_key(v(5)), None
+            d = v(10) if isinstance(v(10), datetime) else d
+            if nb(v(11)):
+                by_bl.setdefault(nb(v(11)), (ws, r))
+            if _inv_key(v(4)):
+                by_inv.setdefault(_inv_key(v(4)), (ws, r))
+            if v(5) and d:
+                by_sd.append((sup, d, ws, r))
+    res, used = {}, set()
+    for ym, rows in by_month.items():
+        ws = _imp_sheet(wb, ym)
+        hdr, total = _imp_bounds(ws)
+        free = [r for r in range(hdr + 1, total) if not any(ws.cell(row=r, column=k).value for k in (2, 3, 4, 5, 7, 10, 11))]
+        added = filled = 0
+        no_room = []
+        for x in rows:
+            hit = by_bl.get(nb(x["bl"])) if x["bl"] else None
+            hit = hit or (by_inv.get(_inv_key(x["invoice"])) if _inv_key(x["invoice"]) else None)
+            if not hit:
+                d, sk = _d(x["decl_date"]), _sup_key(x["supplier"])
+                hit = next(((w, r) for s, dd, w, r in by_sd if s == sk and d and abs((dd - d).days) <= 3
+                            and (w.title, r) not in used), None)
+            vals = {2: x["kind"] or None, 3: _d(x["invoice_date"]), 4: x["invoice"] or None, 5: x["supplier"] or None,
+                    6: _d(x["remit_date"]), 7: x["fx"] or None, 8: x["rate"], 10: _d(x["decl_date"]), 11: x["bl"] or None,
+                    12: _d(x["decl_date"]) if x["tax_base"] else None, 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"],
+                    19: x["settle"] or None}
+            if hit:
+                w, r = hit
+                used.add((w.title, r))
+                n = 0
+                for col, v in vals.items():
+                    if col == 2 and not x["remit_date"]:
+                        continue
+                    if v not in (None, "") and w.cell(row=r, column=col).value in (None, ""):
+                        w.cell(row=r, column=col).value = v
+                        n += 1
+                        if col == 8 and x["jpy"] and str(w.cell(row=r, column=9).value or "").replace("SUM(G%d)" % r, "G%d" % r) == f"=G{r}*H{r}":
+                            w.cell(row=r, column=9).value = f"=G{r}*H{r}/100"   # 엔화는 100엔 기준 환율
+                filled += bool(n)
+                x["status"] = ("채움" if n else "그대로") + ("" if w is ws else f" ({w.title})")
+                continue
+            if not free:
+                no_room.append(x["bl"] or x["invoice"] or x["supplier"])
+                x["status"] = "자리 없음"
+                continue
+            r = free.pop(0)
+            used.add((ws.title, r))
             for col, v in vals.items():
-                if v not in (None, "") and ws.cell(row=r, column=col).value in (None, ""):
+                if v not in (None, ""):
                     ws.cell(row=r, column=col).value = v
-                    n += 1
-            filled += bool(n)
-            x["status"] = "채움" if n else "그대로"
-            continue
-        if not free:
-            no_room.append(x["bl"])
-            x["status"] = "자리 없음"
-            continue
-        r = free.pop(0)
-        for col, v in vals.items():
-            if v not in (None, ""):
-                ws.cell(row=r, column=col).value = v
-        added += 1
-        x["status"] = "새로"
+            if x["jpy"]:   # 엔화는 100엔 기준 환율
+                ws.cell(row=r, column=9).value = f"=G{r}*H{r}/100"
+            added += 1
+            x["status"] = "새로"
+        res[ym] = {"added": added, "filled": filled, "no_room": no_room, "sheet": ws.title}
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue(), {"added": added, "filled": filled, "no_room": no_room, "sheet": name}
+    return buf.getvalue(), res
+
+
+IMP_READ = {"left": 0, "done": 0, "error": ""}
+IMP_READ_LOCK = threading.Lock()
+
+
+def _imp_unread(c, months: list) -> list:
+    """그 기간 정산서 중 아직 AI로 안 읽었거나, 세관·공급가액 칸이 생기기 전에 읽은 것."""
+    lo = (datetime.strptime(months[0] + "-01", "%Y-%m-%d") - timedelta(days=20)).strftime("%Y-%m-%d")
+    hi = (datetime.strptime(months[-1] + "-28", "%Y-%m-%d") + timedelta(days=25)).strftime("%Y-%m-%d")
+    out = []
+    for s in c.execute("SELECT id, doc_date, extract FROM settlements WHERE status != 'skip' AND doc_date BETWEEN ? AND ?", (lo, hi)):
+        r = json.loads(s["extract"]) if s["extract"] else None
+        if r and "tax_base" in r:
+            continue
+        if r and (r.get("decl_date") or r.get("customs_date") or "")[:7] not in months:
+            continue
+        out.append(s["id"])
+    return out
+
+
+def imp_read_run(ids: list):
+    """정산서를 AI로 (다시) 읽어 둠 — 원가계산서·상태는 그대로, 읽은 내용만 바꿈."""
+    import base64
+    if not IMP_READ_LOCK.acquire(blocking=False):
+        return
+    try:
+        IMP_READ.update(left=len(ids), done=0, error="")
+        for sid in ids:
+            f = SETTLE_DIR / f"{sid}.pdf"
+            try:
+                if f.exists():
+                    with AI_LOCK:
+                        r = ai_mail.extract_costs([{"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                                                  "data": base64.b64encode(f.read_bytes()).decode()}}])
+                    with db() as c:
+                        s = c.execute("SELECT supplier FROM settlements WHERE id = ?", (sid,)).fetchone()
+                        if not r.get("supplier") and s and s["supplier"]:
+                            r["supplier"] = s["supplier"]
+                        c.execute("UPDATE settlements SET extract = ?, error = '', status = CASE status WHEN 'new' THEN 'read' ELSE status END"
+                                  " WHERE id = ?", (json.dumps(r, ensure_ascii=False), sid))
+                IMP_READ["done"] += 1
+            except Exception as e:
+                IMP_READ["error"] = str(e)[:200]
+            IMP_READ["left"] -= 1
+    finally:
+        IMP_READ["left"] = 0
+        IMP_READ_LOCK.release()
 
 
 @app.post("/api/import-ledger/template")
@@ -4321,24 +4490,40 @@ async def import_ledger_template(file: UploadFile = File(...), user: dict = Depe
     return {"ok": True}
 
 
+@app.post("/api/import-ledger/read")
+def import_ledger_read(body: dict, user: dict = Depends(admin_user)):
+    """🤖 그 기간 정산서를 AI로 읽기 (안 읽은 것·예전에 읽어 세관·공급가액이 없는 것)."""
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다.")
+    if IMP_READ_LOCK.locked():
+        return {"ok": True, "running": True}
+    with db() as c:
+        ids = _imp_unread(c, _imp_months(body.get("from", ""), body.get("to", "")))
+    threading.Thread(target=imp_read_run, args=(ids,), daemon=True).start()
+    return {"ok": True, "count": len(ids)}
+
+
 @app.get("/api/import-ledger")
-def import_ledger(month: str = "", download: bool = False, user: dict = Depends(current_user)):
-    """그 달 수입관리대장에 들어갈 줄 미리보기 / 채운 엑셀 받기."""
-    ym = month if re.match(r"^\d{4}-\d{2}$", month or "") else datetime.now().strftime("%Y-%m")
+def import_ledger(month: str = "", month_to: str = "", download: bool = False, user: dict = Depends(current_user)):
+    """그 기간(달마다 그 달 시트) 수입관리대장에 들어갈 줄 미리보기 / 채운 엑셀 받기."""
+    months = _imp_months(month, month_to)
     with db() as c:
         if not can_see_cost(c, user):
             raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
-        rows = import_ledger_rows(c, ym)
+        by_month = {ym: import_ledger_rows(c, ym) for ym in months}
         meta = json.loads(get_setting(c, "import_tpl_meta", "{}") or "{}")
+        unread = len(_imp_unread(c, months))
     if not download:
-        res = {"month": ym, "rows": rows, "template": IMPORT_TPL.exists(), "meta": meta}
+        res = {"months": months, "by_month": by_month, "template": IMPORT_TPL.exists(), "meta": meta, "unread": unread,
+               "reading": IMP_READ_LOCK.locked(), "read": dict(IMP_READ), "ai": ai_mail.enabled()}
         if IMPORT_TPL.exists():
-            _, res["result"] = import_ledger_fill(IMPORT_TPL.read_bytes(), ym, rows)
+            _, res["result"] = import_ledger_fill(IMPORT_TPL.read_bytes(), by_month)
         return res
     if not IMPORT_TPL.exists():
         raise HTTPException(400, "수입관리대장 엑셀(양식)을 먼저 올려 주세요.")
-    out, res = import_ledger_fill(IMPORT_TPL.read_bytes(), ym, rows)
-    name = (meta.get("filename") or "수입관리대장.xlsx").rsplit(".", 1)[0] + f"_{ym}.xlsx"
+    out, _ = import_ledger_fill(IMPORT_TPL.read_bytes(), by_month)
+    tag = months[0] if len(months) == 1 else f"{months[0]}~{months[-1][5:]}"
+    name = (meta.get("filename") or "수입관리대장.xlsx").rsplit(".", 1)[0] + f"_{tag}.xlsx"
     return Response(content=out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
 

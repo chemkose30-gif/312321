@@ -2842,34 +2842,54 @@ async function drawSettlements(box, refresh) {
 
 // ---- 📒 수입관리대장: 회사 엑셀(월별 시트)의 빈 줄을 TeamHub 정보로 채워 받기
 function openImportLedger() {
-  const ym = todayStr().slice(0, 7);
+  const now = new Date(), ymOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const ym = ymOf(now), ym0 = ymOf(new Date(now.getFullYear(), now.getMonth() - 2, 1));
   openModal(`<h2>📒 수입관리대장 채우기</h2>
-    <div class="muted" style="font-size:13px;line-height:1.6">수입관리대장 엑셀을 양식으로 올려 두면, 고른 달 시트에 TeamHub가 아는 수입 건을 채워 줍니다 (통관 신고일 기준).
-      <br>· 통관일·B/L·특송사(FDX/UPS) ← 입고예정(UNI-PASS) · 세관·공급가액·부가세·외화·인보이스 ← 정산서 PDF(AI) · 송금일·환율 ← 확인한 원가계산서
-      <br>· 이미 같은 B/L 줄이 있으면 <b>빈 칸만</b> 채우고, 없으면 빈 줄에 새로 씁니다. 수식(NO·원화·합계·송금증) 칸과 직접 적은 값은 건드리지 않습니다. 그 달 시트가 없으면 앞 달 시트를 복사해 만듭니다.</div>
-    <div class="row" style="gap:8px;margin-top:8px"><label style="margin:0">달</label><input type="month" id="ilMonth" value="${ym}" style="width:auto">
+    <div class="muted" style="font-size:13px;line-height:1.6">수입관리대장 엑셀을 양식으로 올려 두면, 고른 기간의 달마다 그 달 시트에 TeamHub가 아는 수입 건을 채워 줍니다 (통관 신고일 기준).
+      <br>· 세관·공급가액·부가세·외화·인보이스·B/L ← 정산서 PDF(AI) · 송금일·환율·인보이스 ← 원가계산서 (자동 작성 후 송금환율 확인 전인 것은 빼고) · 통관일·B/L·특송사 ← 입고예정(UNI-PASS)
+      <br>· 이미 있는 줄(B/L · 인보이스 번호 · 거래처+통관일이 같은 줄, 다른 달 시트여도)은 <b>빈 칸만</b> 채우고, 없으면 그 달 빈 줄에 새로 씁니다. 수식 칸과 직접 적은 값은 건드리지 않습니다. 시트가 없는 달은 앞 달 시트를 복사해 만듭니다.</div>
+    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><label style="margin:0">기간</label><input type="month" id="ilFrom" value="${ym0}" style="width:auto"> ~ <input type="month" id="ilTo" value="${ym}" style="width:auto">
       <span class="spacer"></span>${state.me.role === 'admin' ? '<label class="btn sm" style="margin:0">📤 양식(수입관리대장 엑셀) 올리기<input type="file" id="ilTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
+    <div id="ilRead" style="margin-top:8px"></div>
     <div id="ilBody" class="muted" style="margin-top:10px">불러오는 중…</div><div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ilGo" disabled>📥 채운 엑셀 받기</button></div>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
+    let timer = null;
+    const q = () => `month=${$('#ilFrom', bg).value}&month_to=${$('#ilTo', bg).value}`;
     const load = async () => {
-      $('#ilBody', bg).textContent = '불러오는 중…'; $('.err', bg).textContent = '';
+      clearTimeout(timer);
+      $('.err', bg).textContent = '';
       try {
-        const d = await api(`/api/import-ledger?month=${$('#ilMonth', bg).value}`);
+        const d = await api(`/api/import-ledger?${q()}`);
+        if (!document.body.contains(bg)) return;
         const fmt = v => v ? won(v) : '';
+        $('#ilRead', bg).innerHTML = d.reading
+          ? `<div class="muted" style="font-size:13px">🤖 정산서 읽는 중… 남은 ${d.read.left}건 (읽은 ${d.read.done}건) — 다 읽으면 아래 표가 다시 채워집니다.</div>`
+          : d.unread && d.ai && state.me.role === 'admin'
+            ? `<div class="row" style="gap:8px;font-size:13px"><span class="down">이 기간 정산서 ${d.unread}건은 아직 AI로 안 읽었거나 세관·공급가액 없이 읽은 것이라 대장에 안 들어갑니다.</span><button class="btn sm" id="ilDoRead">🤖 ${d.unread}건 읽기</button></div>`
+            : d.unread ? `<div class="muted" style="font-size:13px">이 기간 정산서 ${d.unread}건은 아직 AI로 안 읽어 대장에 안 들어갑니다.</div>` : '';
+        if ($('#ilDoRead', bg)) $('#ilDoRead', bg).onclick = async () => {
+          try { await api('/api/import-ledger/read', {method: 'POST', body: {from: $('#ilFrom', bg).value, to: $('#ilTo', bg).value}}); toast('정산서를 읽기 시작했습니다.'); setTimeout(load, 1500); }
+          catch (err) { $('.err', bg).textContent = err.message; }
+        };
+        if (d.reading) timer = setTimeout(load, 5000);
         $('#ilBody', bg).classList.remove('muted');
-        $('#ilBody', bg).innerHTML = (d.template ? `<div class="muted" style="font-size:12px;margin-bottom:6px">양식: <b>${esc(d.meta.filename || '')}</b> (${esc((d.meta.uploaded_at || '').slice(0, 16))} 올림) → <b>${esc(d.result.sheet)}</b> 시트에 새로 ${d.result.added}줄, 빈 칸 채움 ${d.result.filled}줄${d.result.no_room.length ? ` · <span class="down">빈 줄이 모자라 ${d.result.no_room.length}건은 못 넣음</span>` : ''}</div>`
+        $('#ilBody', bg).innerHTML = (d.template ? `<div class="muted" style="font-size:12px;margin-bottom:6px">양식: <b>${esc(d.meta.filename || '')}</b> (${esc((d.meta.uploaded_at || '').slice(0, 16))} 올림)</div>`
             : '<div class="down" style="margin-bottom:6px">아직 양식이 없습니다. 📤 양식 올리기로 수입관리대장 엑셀(★매출.수입관리대장 2026.xlsx)을 올려 주세요.</div>')
-          + `<div class="qscroll" style="max-height:50vh;overflow:auto"><table class="an-table"><thead><tr><th>통관일</th><th>거래처</th><th>B/L</th><th>인보이스</th><th class="num">외화</th><th>송금일 · 환율</th><th>세관</th><th class="num">공급가액</th><th class="num">부가세</th><th>정산서</th><th>엑셀</th></tr></thead><tbody>
-            ${d.rows.map(x => `<tr><td>${esc(x.decl_date.slice(5))}</td><td>${esc(x.supplier)}</td><td><small>${esc(x.bl)}</small></td><td><small>${esc(x.invoice)}</small></td><td class="num">${x.fx ? fmtQty(x.fx) : ''}</td>
-              <td><small>${x.remit_date ? esc(x.remit_date.slice(5)) + ' · ' + x.rate : '<span class="muted">송금 확인 전</span>'}</small></td><td><small>${esc(x.office)}</small></td><td class="num">${fmt(x.tax_base)}</td><td class="num">${fmt(x.vat)}</td><td>${esc(x.settle)}</td>
-              <td><small class="${x.status === '자리 없음' ? 'down' : 'muted'}">${esc(x.status || '')}</small></td></tr>`).join('') || '<tr><td colspan="11" class="empty">이 달에 TeamHub가 아는 수입 건이 없습니다.</td></tr>'}
-          </tbody></table></div>
-          <div class="muted" style="font-size:12px;margin-top:6px">정산서를 AI로 읽은 건만 세관·금액이 채워집니다 (🧮 원가계산서 → 📑 정산서). 송금일·환율은 원가계산서에서 송금환율을 확인·저장한 건만 들어갑니다.</div>`;
+          + d.months.map(m => {
+            const rows = d.by_month[m] || [], res = (d.result || {})[m];
+            return `<h3 style="margin:12px 0 4px;font-size:15px">${+m.slice(5)}월 ${res ? `<small class="muted" style="font-weight:400">→ ${esc(res.sheet)} 시트 새로 ${res.added}줄 · 빈 칸 채움 ${res.filled}줄${res.no_room.length ? ` · <span class="down">빈 줄이 모자라 ${res.no_room.length}건 못 넣음</span>` : ''}</small>` : ''}</h3>
+              <div class="qscroll" style="overflow:auto"><table class="an-table"><thead><tr><th>통관일</th><th>거래처</th><th>B/L</th><th>인보이스</th><th class="num">외화</th><th>송금일 · 환율</th><th>세관</th><th class="num">공급가액</th><th class="num">부가세</th><th>정산서</th><th>출처</th><th>엑셀</th></tr></thead><tbody>
+              ${rows.map(x => `<tr><td>${esc(x.decl_date.slice(5))}</td><td>${esc(x.supplier)}</td><td><small>${esc(x.bl)}</small></td><td><small>${esc(x.invoice)}</small></td><td class="num">${x.fx ? fmtQty(x.fx) : ''}</td>
+                <td><small>${x.remit_date ? esc(x.remit_date.slice(5)) + ' · ' + x.rate : '<span class="muted">송금 확인 전</span>'}</small></td><td><small>${esc(x.office)}</small></td><td class="num">${fmt(x.tax_base)}</td><td class="num">${fmt(x.vat)}</td><td>${esc(x.settle)}</td>
+                <td><small class="muted">${esc(x.src)}</small></td><td><small class="${x.status === '자리 없음' ? 'down' : 'muted'}">${esc(x.status || '')}</small></td></tr>`).join('') || '<tr><td colspan="12" class="empty">이 달에 TeamHub가 아는 수입 건이 없습니다.</td></tr>'}
+              </tbody></table></div>`;
+          }).join('')
+          + `<div class="muted" style="font-size:12px;margin-top:6px">송금일·환율은 원가계산서에 송금환율이 들어간 건만 들어갑니다 (자동 작성된 원가계산서는 🧮 원가계산서에서 송금환율을 확인·저장한 뒤). 엔화는 100엔 기준 환율로 적습니다.</div>`;
         $('#ilGo', bg).disabled = !d.template;
       } catch (err) { $('#ilBody', bg).textContent = ''; $('.err', bg).textContent = err.message; }
     };
-    $('#ilMonth', bg).onchange = load;
+    $('#ilFrom', bg).onchange = load; $('#ilTo', bg).onchange = load;
     if ($('#ilTpl', bg)) $('#ilTpl', bg).onchange = async e => {
       const fd = new FormData(); fd.append('file', e.target.files[0]);
       const res = await fetch('/api/import-ledger/template', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
@@ -2877,7 +2897,7 @@ function openImportLedger() {
       toast('양식을 올렸습니다.'); load();
     };
     $('#ilGo', bg).onclick = async () => {
-      const res = await fetch(`/api/import-ledger?month=${$('#ilMonth', bg).value}&download=1`, {headers: {Authorization: 'Bearer ' + state.token}});
+      const res = await fetch(`/api/import-ledger?${q()}&download=1`, {headers: {Authorization: 'Bearer ' + state.token}});
       if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '만들지 못했습니다.'; return; }
       const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || '수입관리대장.xlsx');
       const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
