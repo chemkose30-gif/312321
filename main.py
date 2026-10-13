@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from blog_draft import Draft, DraftRequest, build_draft
+
 load_dotenv()
 API_KEY = os.getenv("ODDS_API_KEY", "")
 
@@ -720,11 +722,22 @@ async def kbl_leaders():
         raise HTTPException(503, "KBL 스크래퍼 미설치")
     return await get_kbl_leaders()
 
+@app.post("/api/blog/draft", response_model=Draft)
+async def blog_draft(req: DraftRequest):
+    try:
+        return build_draft(req)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
 frontend_dir = Path(__file__).parent / "frontend"
 
 @app.get("/")
 async def root():
     return FileResponse(frontend_dir / "index.html")
+
+@app.get("/blog")
+async def blog_page():
+    return FileResponse(frontend_dir / "blog.html")
 
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
