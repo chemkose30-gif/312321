@@ -417,7 +417,7 @@ def terms_mine_html(t: dict, rate: float, paid_count: int, paid_amount: float, c
     if current:
         before, basis = current, "적은 해지환급금 기준"
     else:
-        year = max(1, paid_count // 12)
+        year = (paid_count - 1) // 12 + 1  # 경과연도 (57회 → 5년차)
         penalty = next((p["amount_won"] for p in t["surrender_penalty"] if int(p["year"]) == year), 0)
         if t.get("example_monthly_premium"):  # 해지공제는 예시 보험료 기준이라 내 보험료 비율로 환산
             penalty *= monthly / t["example_monthly_premium"]

@@ -94,7 +94,7 @@ def surrender(p: dict, monthly: float, n: int, fees: list[dict], rate: float, cu
         before_tax, penalty, basis = current, 0.0, "입력한 해지환급금 기준"
     else:
         est = value_after(fees, monthly, n, rate)
-        year = max(1, n // 12)
+        year = (n - 1) // 12 + 1  # 경과연도 (57회 → 5년차)
         penalty = DEFAULT_PENALTY_300K.get(year, 0) * monthly / 300000
         before_tax, basis = max(est - penalty, 0), f"추정 (공시이율 {rate:g}%, 해지공제 약 {round(penalty, -3):,.0f}원 가정)"
     tax = before_tax * SURRENDER_TAX_PCT / 100 if is_tax_qualified(p) else 0.0
