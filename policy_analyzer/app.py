@@ -633,6 +633,56 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 <p class="muted">판단 기준은 상담용 참고값입니다. 고객의 소득·가족력·기존 계획에 따라 달라질 수 있습니다.</p></div>"""
 
 
+def pension_html(p: dict, editable: bool) -> str:
+    """연금·저축 계약이면 수익률·해지 시 금액 박스"""
+    import pension
+    r = pension.analyze(p)
+    if r is None:
+        return ""
+    if not r["ok"]:
+        return f'<div class="check info"><b>연금 수익률</b><span>{e(r["reason"])}</span></div>'
+    rows = []
+    if r.get("actual"):
+        a = r["actual"]
+        rows.append(f"<tr><td><b>실제 (입력한 적립금)</b></td><td class='num'>{won(r['paid'])}</td><td class='num'>{won(a['value'])}</td>"
+                    f"<td class='num'>{a['ratio'] * 100:.1f}%</td><td class='num'><b>{a['irr']:.2f}%</b></td></tr>")
+    for s in r["projections"]:
+        rows.append(f"<tr><td>만기 예상 · 이율 {s['rate']:g}%</td><td class='num'>{won(round(s['paid'], -4))}</td>"
+                    f"<td class='num'>{won(round(s['value'], -4))}</td><td class='num'>{s['ratio'] * 100:.0f}%</td>"
+                    f"<td class='num'>{s['irr']:.2f}%</td></tr>")
+    tax = ""
+    if r.get("tax"):
+        t = r["tax"]
+        tax = (f"<p>세액공제: 연 납입 {won(t['annual'])} × {t['credit_pct']:g}% = <b>매년 약 {won(round(t['credit'], -3))} 환급</b> · "
+               f"세액공제 포함 체감 수익률 약 <b>{t['felt_irr']:.2f}%</b> (이율 {r['rate']:g}% 기준)</p>")
+    sv = r.get("surrender")
+    surr = ""
+    if sv:
+        surr = f"""<div class="check warn"><b>지금 해지하면 ({r['months_paid']}회 납입 시점)</b><span>
+낸 돈 {won(sv['paid'])} → 해지환급금 {won(round(sv['before_tax'], -3))}{f" − 기타소득세(16.5%) {won(round(sv['tax'], -3))}" if sv['tax'] else ""}
+= <b>실수령 약 {won(round(sv['after_tax'], -3))}</b> · <b>손실 약 {won(round(sv['loss'], -3))}</b><br>
+<span class="muted">{e(sv['basis'])}. {"그동안 받은 세액공제(약 " + won(round(sv['credits_received'], -3)) + ")를 감안해도 해지는 불리할 수 있습니다." if sv['tax'] else ""}</span></span></div>"""
+    note = ("사업비는 입력값 기준" if r["custom_fees"] else
+            f"사업비는 일반 가정(체결 {pension.DEFAULT_ACQ_PCT}%·10년, 관리 {pension.DEFAULT_MGMT_PCT}%) — 상품 약관과 다를 수 있음")
+    cfg = p.get("pension") or {}
+    form = ""
+    if editable:
+        v = lambda k: e(str(cfg.get(k) if cfg.get(k) is not None else ""))  # noqa: E731
+        form = f"""<details class="manage no-print"><summary>수익률 계산값 입력 (현재 적립금·공시이율·사업비)</summary>
+<form method="post" action="/policies/{p['id']}/pension" class="row" style="margin-top:8px">
+<label style="margin:0">현재 해지환급금(원)</label><input type="text" name="current_value" value="{v('current_value')}" style="width:130px">
+<label style="margin:0">기준일</label><input type="date" name="as_of" value="{v('as_of')}">
+<label style="margin:0">공시이율(%)</label><input type="text" name="rate" value="{v('rate')}" placeholder="{pension.DEFAULT_RATE}" style="width:60px">
+<label style="margin:0">체결비용(%)</label><input type="text" name="acq_pct" value="{v('acq_pct')}" placeholder="{pension.DEFAULT_ACQ_PCT}" style="width:60px">
+<label style="margin:0">관리비용(%)</label><input type="text" name="mgmt_pct" value="{v('mgmt_pct')}" placeholder="{pension.DEFAULT_MGMT_PCT}" style="width:60px">
+<label style="margin:0">세액공제율</label><select name="credit_pct"><option value="13.2" {"selected" if cfg.get("credit_pct") != 16.5 else ""}>13.2%</option><option value="16.5" {"selected" if cfg.get("credit_pct") == 16.5 else ""}>16.5% (총급여 5,500만 이하)</option></select>
+<button class="btn-sm">계산</button></form></details>"""
+    return f"""<div class="manage"><h3>연금 수익률</h3>
+<p class="muted">월 {won(r['monthly'])} × {r['years']}년 · 현재 {r['months_paid']}/{r['total_months']}회 납입 · {note}</p>
+<div class="tbl-wrap"><table><tr><th>구분</th><th>낸 돈</th><th>적립금</th><th>환급률</th><th>연수익률</th></tr>{''.join(rows)}</table></div>
+{tax}{surr}{form}</div>"""
+
+
 def policy_html(p: dict, editable: bool) -> str:
     covs = "".join(f"""<tr><td>{e(c.get('name') or '')}</td><td class="muted">{e(c.get('category') or '')}</td>
 <td class="num">{won(c.get('amount'))}</td><td>{'갱신형' if c.get('renewable') else ('비갱신' if c.get('renewable') is False else '-')}</td>
@@ -647,7 +697,7 @@ def policy_html(p: dict, editable: bool) -> str:
         cls = "warn-tag" if st in ("미납", "실효") else ("ok-tag" if st == "정상" else "")
         badges = f""" <span class="tag">{e(analysis.OWNERS.get(m.get('owner', ''), '확인 전'))}</span>""" + \
                  (f' <span class="tag {cls}">{e(st)}</span>' if st else "")
-    manage_html = manage_form(p) if editable else ""
+    manage_html = pension_html(p, editable) + (manage_form(p) if editable else "")
     return f"""<div class="card"><div class="row between"><h3>{e(p.get('company') or '?')} · {e(p.get('product_name') or '')}{badges}</h3>{actions}</div>
 <p class="muted">증권번호 {e(p.get('policy_no') or '-')} · 계약자 {e(p.get('contractor_name') or '-')} · 피보험자 {e(p.get('insured_name') or '-')}<br>
 계약일 {ymd(p.get('contract_date'))} · 만기 {ymd(p.get('maturity_date'))} · {e(p.get('payment_period') or '-')} {e(p.get('payment_cycle') or '')}
@@ -997,6 +1047,26 @@ def edit_policy(request: Request, pid_: int, data: str = Form(...)):
     store.update_policy(pid, pid_, extractor.mask_rrn(obj))
     log(request, pid, "edit_policy", f"계약#{pid_}")
     flash(request, "계약 정보를 수정했습니다.")
+    return RedirectResponse(f"/customers/{p['customer_id']}", status_code=303)
+
+
+@app.post("/policies/{pid_}/pension")
+def save_pension(request: Request, pid_: int, current_value: str = Form(""), as_of: str = Form(""), rate: str = Form(""),
+                 acq_pct: str = Form(""), mgmt_pct: str = Form(""), credit_pct: str = Form("13.2")):
+    pid = planner_id(request)
+    p = store.get_policy(pid, pid_)
+    if not p:
+        raise HTTPException(404)
+    cfg = {"current_value": _num(current_value) or None, "as_of": as_of or None, "rate": _num(rate) or None,
+           "credit_pct": 16.5 if _num(credit_pct) == 16.5 else 13.2}
+    for k, val in (("acq_pct", acq_pct), ("mgmt_pct", mgmt_pct)):
+        if val.strip():
+            cfg[k] = _num(val)
+    data = {k: v for k, v in p.items() if k not in ("id", "customer_id")}
+    data["pension"] = cfg
+    store.update_policy(pid, pid_, data)
+    log(request, pid, "manage_policy", f"계약#{pid_} 연금")
+    flash(request, "연금 수익률 계산값을 저장했습니다.")
     return RedirectResponse(f"/customers/{p['customer_id']}", status_code=303)
 
 
