@@ -365,6 +365,7 @@ onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='�
 <div class="row"><input type="file" name="files" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple required>
 <button>분석하기</button></div>
 <p class="muted">PDF·JPG·PNG, 한 번에 {MAX_FILES}개 / 합계 30MB까지. 한 고객의 증권만 함께 올려 주세요.
+<b>약관 PDF</b>를 올리면 자동으로 약관 분석(이율·사업비·해지공제·예상 수익률)으로 처리합니다.
 {"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다. "}{BACKEND_NOTE}</p></form>"""
 
 
@@ -466,6 +467,26 @@ async def terms_analyze(request: Request, file: UploadFile = File(...), monthly:
     return page("약관 분석 결과", terms_result_html(t, m, y, rates, total, pages))
 
 
+async def _terms_response(request: Request, pid: int, pdf: bytes, back: str | None = None,
+                          monthly: str = "", years: str = "", rate: str = ""):
+    """약관 PDF 분석 결과 화면. back 이 있으면 실패 시 그 화면으로 돌아가 안내."""
+    import terms as tm
+    try:
+        small, total, pages = await run_in_threadpool(tm.select_pages, pdf)
+        t = await run_in_threadpool(tm.extract_terms, small)
+    except tm.TermsError as ex:
+        if back:
+            flash(request, f"증권에서 계약 정보를 찾지 못했고, 약관으로도 분석하지 못했습니다: {ex}")
+            return RedirectResponse(back, status_code=303)
+        return page("약관 분석", terms_form(str(ex)))
+    log(request, pid, "terms_analyze", f"{total}쪽")
+    m = _num(monthly) or t.get("example_monthly_premium") or 0
+    y = int(_num(years) or t.get("example_pay_years") or 0)
+    rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({_num(rate)} if _num(rate) else {2.5, 3.0}))
+    head = '<div class="flash">약관 파일로 확인되어 약관 분석 결과를 보여드립니다. 고객 계약 정보(증권)는 따로 올려 주세요.</div>'
+    return page("약관 분석 결과", head + terms_result_html(t, m, y, rates, total, pages))
+
+
 @app.post("/upload")
 async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None)):
     pid = planner_id(request)
@@ -489,6 +510,12 @@ async def upload(request: Request, files: list[UploadFile] = File(...), customer
         flash(request, "파일 합계가 30MB를 넘습니다. 나눠서 올려 주세요.")
         return RedirectResponse(back, status_code=303)
 
+    import terms as tm
+    pdfs = [d for _, m, d in payload if m == extractor.PDF_TYPE]
+    # 약관 PDF 하나만 올렸으면 → 약관 분석으로 바로 처리
+    if len(payload) == 1 and pdfs and await run_in_threadpool(tm.is_terms_pdf, pdfs[0]):
+        return await _terms_response(request, pid, pdfs[0])
+
     try:
         result = await run_in_threadpool(extractor.extract, payload)
     except extractor.ExtractError as ex:
@@ -498,6 +525,8 @@ async def upload(request: Request, files: list[UploadFile] = File(...), customer
     insured = result.get("insured") or {}
     policies = result.get("policies") or []
     if not policies:
+        if pdfs:  # 증권 내용이 없으면 약관일 수 있으니 약관 분석으로 한 번 더 시도
+            return await _terms_response(request, pid, pdfs[0], back)
         flash(request, "증권에서 계약 정보를 찾지 못했습니다. 글씨가 잘 보이는 파일인지 확인해 주세요.")
         return RedirectResponse(back, status_code=303)
 
@@ -550,7 +579,7 @@ def home(request: Request, q: str = ""):
 <form method="post" action="/logout" class="row"><a class="muted" href="/account">{e(me['name'])} · 내 계정</a><button class="btn-ghost btn-sm">로그아웃</button></form></div>
 {take_flash(request)}
 {todo_html(pid, notes, all_pol, names)}
-<div class="card"><div class="row between"><h2 style="margin:0">새 고객 증권 분석</h2><a class="btn btn-ghost btn-sm" href="/terms">약관 분석 (연금·저축 수익률)</a></div>{upload_form()}</div>
+<div class="card"><h2>새 고객 증권·약관 분석</h2>{upload_form()}</div>
 <div class="card"><div class="row between"><h2>고객 ({len(customers)})</h2>
 <div class="row"><a class="btn btn-sm" href="/customers/new">+ 고객 직접 등록</a>
 <form class="row" method="get"><input type="text" name="q" value="{e(q)}" placeholder="이름·연락처·메모·상담내용 검색" style="width:240px"><button class="btn-ghost btn-sm">검색</button></form></div></div>

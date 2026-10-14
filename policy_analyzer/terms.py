@@ -71,6 +71,22 @@ class TermsError(Exception):
     pass
 
 
+def is_terms_pdf(pdf: bytes) -> bool:
+    """약관 문서인지 판별: 앞부분에 '약관'이 있고, 증권 표시(증권번호·가입금액)가 거의 없으며 쪽수가 많음"""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=pdf, filetype="pdf")
+    except Exception:
+        return False
+    try:
+        if doc.page_count < 20:
+            return False
+        head = "".join(doc.load_page(i).get_text() or "" for i in range(min(5, doc.page_count)))
+        return "약관" in head and head.count("증권번호") == 0 and head.count("가입금액") < 3
+    finally:
+        doc.close()
+
+
 def select_pages(pdf: bytes, max_pages: int = MAX_TERMS_PAGES) -> tuple[bytes, int, list[int]]:
     """수익률 관련 단어가 많은 페이지만 남긴 PDF, 원본 페이지 수, 선택 페이지 번호(1부터)"""
     import fitz  # PyMuPDF
