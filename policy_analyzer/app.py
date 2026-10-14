@@ -632,6 +632,7 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 <div class="stat"><span class="muted">월 보험료 합계</span><b>{won(a['monthly_premium'])}</b></div>
 <div class="stat"><span class="muted">만기 지난 계약</span><b>{a['expired_count']}건</b></div>
 <div class="stat"><span class="muted">확인할 항목</span><b>{sum(1 for x in a['checks'] if x[0] == 'warn')}개 경고 · {sum(1 for x in a['checks'] if x[0] == 'info')}개 참고</b></div></div>"""
+    stats += pension_summary_html(policies)
 
     rows = []
     for s in a["summary"]:
@@ -660,6 +661,22 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 <div class="card"><h2>체크 포인트</h2>{checks}</div>
 <div class="card"><h2>보장 합산</h2>{summary}
 <p class="muted">판단 기준은 상담용 참고값입니다. 고객의 소득·가족력·기존 계획에 따라 달라질 수 있습니다.</p></div>"""
+
+
+def pension_summary_html(policies: list[dict]) -> str:
+    """요약 칸: 연금·저축 계약의 고객 납입 합계와 지금 해지 시 실수령 합계"""
+    import pension
+    rs = [r for r in (pension.analyze(p) for p in policies) if r and r.get("ok") and r.get("surrender")]
+    if not rs:
+        return ""
+    paid = sum(r["surrender"]["paid"] for r in rs)
+    after = sum(r["surrender"]["after_tax"] for r in rs)
+    loss = paid - after
+    return f"""<div class="grid" style="margin-top:12px">
+<div class="stat"><span class="muted">연금·저축 고객이 낸 돈 ({len(rs)}건)</span><b>{won(round(paid, -3))}</b></div>
+<div class="stat"><span class="muted">지금 해지 시 실수령 (세후)</span><b>{won(round(after, -3))}</b></div>
+<div class="stat"><span class="muted">지금 해지 시 {"손실" if loss > 0 else "이익"}</span><b class="{'under' if loss > 0 else 'enough'}">{won(round(abs(loss), -3))}</b></div></div>
+<p class="muted">해지환급금을 입력하지 않은 계약은 추정치입니다. 각 계약의 '연금 수익률'에서 실제 해지환급금을 입력하면 정확해집니다.</p>"""
 
 
 def pension_html(p: dict, editable: bool) -> str:
@@ -707,7 +724,7 @@ def pension_html(p: dict, editable: bool) -> str:
 <label style="margin:0">세액공제율</label><select name="credit_pct"><option value="13.2" {"selected" if cfg.get("credit_pct") != 16.5 else ""}>13.2%</option><option value="16.5" {"selected" if cfg.get("credit_pct") == 16.5 else ""}>16.5% (총급여 5,500만 이하)</option></select>
 <button class="btn-sm">계산</button></form></details>"""
     return f"""<div class="manage"><h3>연금 수익률</h3>
-<p class="muted">월 {won(r['monthly'])} × {r['years']}년 · 현재 {r['months_paid']}/{r['total_months']}회 납입 · {note}</p>
+<p class="muted">월 {won(r['monthly'])} × {f"{r['years']}년" if r['years'] else "납입기간 미확인(만기 예상 생략)"} · 현재 {r['months_paid']}/{r['total_months']}회 납입 · {note}</p>
 <div class="tbl-wrap"><table><tr><th>구분</th><th>낸 돈</th><th>적립금</th><th>환급률</th><th>연수익률</th></tr>{''.join(rows)}</table></div>
 {tax}{surr}{form}</div>"""
 

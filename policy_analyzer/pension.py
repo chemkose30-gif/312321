@@ -93,12 +93,15 @@ def analyze(p: dict, today: date | None = None) -> dict | None:
     cfg = p.get("pension") or {}
     monthly = p.get("monthly_premium") or 0
     years = pay_years(p)
-    if not monthly or not years:
-        return {"ok": False, "reason": "월 보험료 또는 납입기간(예: 32년납)이 없어 계산할 수 없습니다. 계약 수정에서 입력해 주세요."}
-    total_months = years * 12
+    if not monthly or not analysis.parse_date(p.get("contract_date")):
+        return {"ok": False, "reason": "월 보험료 또는 계약일이 없어 계산할 수 없습니다. 계약 수정에서 입력해 주세요."}
+    # 납입기간을 모르면 계약일부터 오늘까지 낸 것으로 보고, 만기 예상은 생략
+    total_months = years * 12 if years else 1200
     n = months_paid(p, total_months, today)
+    if not years:
+        years = 0
     rate = cfg.get("rate") or DEFAULT_RATE
-    fees = fee_table(years, cfg.get("acq_pct") if cfg.get("acq_pct") is not None else DEFAULT_ACQ_PCT,
+    fees = fee_table(years or 99, cfg.get("acq_pct") if cfg.get("acq_pct") is not None else DEFAULT_ACQ_PCT,
                      cfg.get("mgmt_pct") if cfg.get("mgmt_pct") is not None else DEFAULT_MGMT_PCT)
     result = {"ok": True, "monthly": monthly, "years": years, "months_paid": n, "total_months": total_months,
               "paid": monthly * n, "rate": rate, "custom_fees": "acq_pct" in cfg or "mgmt_pct" in cfg,
@@ -112,11 +115,11 @@ def analyze(p: dict, today: date | None = None) -> dict | None:
 
     result["surrender"] = surrender(p, monthly, n, fees, rate, current, cfg)
 
-    # 납입 완료 시점 예상 (최저 수준 1% / 입력 공시이율)
-    result["projections"] = [terms.simulate(fees, monthly, years, r) for r in sorted({1.0, rate})]
+    # 납입 완료 시점 예상 (최저 수준 1% / 입력 공시이율) — 납입기간을 알 때만
+    result["projections"] = [terms.simulate(fees, monthly, years, r) for r in sorted({1.0, rate})] if years else []
 
     # 연금저축 세액공제
-    if result["tax_qualified"]:
+    if result["tax_qualified"] and years:
         annual = monthly * 12
         credit_pct = cfg.get("credit_pct") or 13.2
         main = next(s for s in result["projections"] if s["rate"] == rate)
