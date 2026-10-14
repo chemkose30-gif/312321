@@ -118,10 +118,63 @@ def build_content(files: list[tuple[str, str, bytes]]) -> list[dict]:
     return blocks
 
 
+# 긴 PDF(약관 포함)에서 계약·담보가 있는 페이지만 자동 선별
+MAX_PDF_PAGES = 15                       # 이보다 많으면 핵심 페이지만 추림
+# 계약 기본사항·담보표에 흔한 단어 (점수 +)
+_PAGE_POS = ("가입금액", "보험료", "납입기간", "보험기간", "보종코드", "증권번호",
+             "계약자", "피보험자", "주계약", "특약", "담보", "갱신형", "월납", "진단비")
+# 약관 설명 페이지에 흔한 단어 (점수 -)
+_PAGE_NEG = ("약관", "지급사유", "용어의 정의", "용어의정의", "보상하지", "면책", "제1조", "제 1 조", "계약 전 알릴")
+
+
+def prefilter_pdf(data: bytes, max_pages: int = MAX_PDF_PAGES) -> bytes:
+    """페이지가 많은 PDF에서 계약·담보 페이지만 남긴 새 PDF 바이트를 반환.
+    글자가 없는(스캔) PDF면 앞 max_pages 장만 사용. 실패 시 원본 그대로."""
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return data
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception:
+        return data
+    try:
+        n = doc.page_count
+        if n <= max_pages:
+            return data
+        scored = []
+        any_text = False
+        for i in range(n):
+            text = doc.load_page(i).get_text() or ""
+            if text.strip():
+                any_text = True
+            score = sum(text.count(k) for k in _PAGE_POS) - 2 * sum(text.count(k) for k in _PAGE_NEG)
+            scored.append((i, score))
+        if not any_text:
+            keep = list(range(min(max_pages, n)))            # 스캔본: 앞쪽부터
+        else:
+            good = sorted([i for i, s in scored if s > 0], key=lambda i: dict(scored)[i], reverse=True)
+            keep = sorted(good[:max_pages]) or [0, 1]         # 담보 페이지 상위 N장, 없으면 앞 2장
+        out = fitz.open()
+        for i in keep:
+            if 0 <= i < n:
+                out.insert_pdf(doc, from_page=i, to_page=i)
+        buf = out.tobytes()
+        out.close()
+        return buf
+    finally:
+        doc.close()
+
+
+def prefilter_files(files: list[tuple[str, str, bytes]]) -> list[tuple[str, str, bytes]]:
+    return [(name, mime, prefilter_pdf(data) if mime == PDF_TYPE else data) for name, mime, data in files]
+
+
 def extract(files: list[tuple[str, str, bytes]]) -> dict:
     backend = "mock" if os.environ.get("ANALYZER_MOCK") == "1" else os.environ.get("EXTRACT_BACKEND", BACKEND)
     if backend == "mock":
         return copy.deepcopy(MOCK_RESULT)
+    files = prefilter_files(files)        # 긴 PDF는 계약·담보 페이지만 추려서 처리
     if backend == "local":
         return _extract_local(files)
     return _extract_claude(files)
