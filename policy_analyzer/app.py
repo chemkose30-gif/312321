@@ -676,7 +676,8 @@ def pension_summary_html(policies: list[dict]) -> str:
 <div class="stat"><span class="muted">연금·저축 고객이 낸 돈 ({len(rs)}건)</span><b>{won(round(paid, -3))}</b></div>
 <div class="stat"><span class="muted">지금 해지 시 실수령 (세후)</span><b>{won(round(after, -3))}</b></div>
 <div class="stat"><span class="muted">지금 해지 시 {"손실" if loss > 0 else "이익"}</span><b class="{'under' if loss > 0 else 'enough'}">{won(round(abs(loss), -3))}</b></div></div>
-<p class="muted">해지환급금을 입력하지 않은 계약은 추정치입니다. 각 계약의 '연금 수익률'에서 실제 해지환급금을 입력하면 정확해집니다.</p>"""
+<p class="muted">{"모든 계약이 실제 기록 기준입니다." if all(r["paid_actual"] and r.get("actual") for r in rs) else
+"실제 납입 기록·해지환급금을 입력하지 않은 계약은 '매달 납입' 가정의 추정치입니다. 각 계약의 '연금 수익률 → 수익률 계산값 입력'에서 보험사 앱의 실제 납입회차·납입액·해지환급금을 넣으면 정확해집니다."}</p>"""
 
 
 def pension_html(p: dict, editable: bool) -> str:
@@ -716,6 +717,8 @@ def pension_html(p: dict, editable: bool) -> str:
         v = lambda k: e(str(cfg.get(k) if cfg.get(k) is not None else ""))  # noqa: E731
         form = f"""<details class="manage no-print"><summary>수익률 계산값 입력 (현재 적립금·공시이율·사업비)</summary>
 <form method="post" action="/policies/{p['id']}/pension" class="row" style="margin-top:8px">
+<label style="margin:0">실제 납입회차</label><input type="text" name="paid_count" value="{v('paid_count')}" placeholder="예: 57" style="width:60px">
+<label style="margin:0">실제 납입액(원)</label><input type="text" name="paid_amount" value="{v('paid_amount')}" placeholder="예: 14540814" style="width:120px">
 <label style="margin:0">현재 해지환급금(원)</label><input type="text" name="current_value" value="{v('current_value')}" style="width:130px">
 <label style="margin:0">기준일</label><input type="date" name="as_of" value="{v('as_of')}">
 <label style="margin:0">공시이율(%)</label><input type="text" name="rate" value="{v('rate')}" placeholder="{pension.DEFAULT_RATE}" style="width:60px">
@@ -724,7 +727,7 @@ def pension_html(p: dict, editable: bool) -> str:
 <label style="margin:0">세액공제율</label><select name="credit_pct"><option value="13.2" {"selected" if cfg.get("credit_pct") != 16.5 else ""}>13.2%</option><option value="16.5" {"selected" if cfg.get("credit_pct") == 16.5 else ""}>16.5% (총급여 5,500만 이하)</option></select>
 <button class="btn-sm">계산</button></form></details>"""
     return f"""<div class="manage"><h3>연금 수익률</h3>
-<p class="muted">월 {won(r['monthly'])} × {f"{r['years']}년" if r['years'] else "납입기간 미확인(만기 예상 생략)"} · 현재 {r['months_paid']}/{r['total_months']}회 납입 · {note}</p>
+<p class="muted">월 {won(r['monthly'])} × {f"{r['years']}년" if r['years'] else "납입기간 미확인(만기 예상 생략)"} · 현재 {r['months_paid']}/{r['total_months']}회 납입 · 낸 돈 {won(r['paid'])} <b>({"실제 기록" if r['paid_actual'] else "추정: 매달 납입 가정"})</b> · {note}</p>
 <div class="tbl-wrap"><table><tr><th>구분</th><th>낸 돈</th><th>적립금</th><th>환급률</th><th>연수익률</th></tr>{''.join(rows)}</table></div>
 {tax}{surr}{form}</div>"""
 
@@ -1098,13 +1101,15 @@ def edit_policy(request: Request, pid_: int, data: str = Form(...)):
 
 @app.post("/policies/{pid_}/pension")
 def save_pension(request: Request, pid_: int, current_value: str = Form(""), as_of: str = Form(""), rate: str = Form(""),
-                 acq_pct: str = Form(""), mgmt_pct: str = Form(""), credit_pct: str = Form("13.2")):
+                 acq_pct: str = Form(""), mgmt_pct: str = Form(""), credit_pct: str = Form("13.2"),
+                 paid_count: str = Form(""), paid_amount: str = Form("")):
     pid = planner_id(request)
     p = store.get_policy(pid, pid_)
     if not p:
         raise HTTPException(404)
     cfg = {"current_value": _num(current_value) or None, "as_of": as_of or None, "rate": _num(rate) or None,
-           "credit_pct": 16.5 if _num(credit_pct) == 16.5 else 13.2}
+           "credit_pct": 16.5 if _num(credit_pct) == 16.5 else 13.2,
+           "paid_count": int(_num(paid_count)) or None, "paid_amount": _num(paid_amount) or None}
     for k, val in (("acq_pct", acq_pct), ("mgmt_pct", mgmt_pct)):
         if val.strip():
             cfg[k] = _num(val)

@@ -71,7 +71,7 @@ def surrender(p: dict, monthly: float, n: int, fees: list[dict], rate: float, cu
     """지금 해지하면 받는 금액(세전·세후)과 손실. 적립금 입력값이 있으면 그것을 해지환급금으로 본다."""
     if not n:
         return None
-    paid = monthly * n
+    paid = cfg.get("paid_amount") or monthly * n
     if current:
         before_tax, penalty, basis = current, 0.0, "입력한 해지환급금 기준"
     else:
@@ -100,18 +100,25 @@ def analyze(p: dict, today: date | None = None) -> dict | None:
     n = months_paid(p, total_months, today)
     if not years:
         years = 0
+    # 보험사 앱의 실제 납입 기록을 입력했으면 그것을 우선 사용
+    if cfg.get("paid_count"):
+        n = int(cfg["paid_count"])
+    elif cfg.get("paid_amount"):
+        n = max(1, round(cfg["paid_amount"] / monthly))
     rate = cfg.get("rate") or DEFAULT_RATE
     fees = fee_table(years or 99, cfg.get("acq_pct") if cfg.get("acq_pct") is not None else DEFAULT_ACQ_PCT,
                      cfg.get("mgmt_pct") if cfg.get("mgmt_pct") is not None else DEFAULT_MGMT_PCT)
     result = {"ok": True, "monthly": monthly, "years": years, "months_paid": n, "total_months": total_months,
-              "paid": monthly * n, "rate": rate, "custom_fees": "acq_pct" in cfg or "mgmt_pct" in cfg,
+              "paid": cfg.get("paid_amount") or monthly * n, "paid_actual": bool(cfg.get("paid_amount") or cfg.get("paid_count")),
+              "rate": rate, "custom_fees": "acq_pct" in cfg or "mgmt_pct" in cfg,
               "tax_qualified": is_tax_qualified(p)}
 
     # 현재 적립금을 입력했으면 실제 수익률
     current = cfg.get("current_value") or 0
     if current and n:
-        result["actual"] = {"value": current, "ratio": current / (monthly * n),
-                            "irr": terms._irr(monthly, n, current), "as_of": cfg.get("as_of") or ""}
+        paid_now = cfg.get("paid_amount") or monthly * n
+        result["actual"] = {"value": current, "ratio": current / paid_now,
+                            "irr": terms._irr(paid_now / n, n, current), "as_of": cfg.get("as_of") or ""}
 
     result["surrender"] = surrender(p, monthly, n, fees, rate, current, cfg)
 
