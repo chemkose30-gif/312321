@@ -311,7 +311,7 @@ def logout(request: Request):
 ACTION_NAMES = {
     "login": "로그인", "logout": "로그아웃", "login_fail": "로그인 실패", "otp_fail": "인증코드 실패",
     "login_locked": "로그인 잠김", "2fa_setup": "2단계 인증 설정", "password_change": "비밀번호 변경",
-    "view_customer": "고객 조회", "view_report": "리포트 조회", "create_customer": "고객 등록",
+    "view_customer": "고객 조회", "view_report": "리포트 조회", "terms_analyze": "약관 분석", "create_customer": "고객 등록",
     "edit_customer": "고객 정보 수정", "delete_customer": "고객 삭제", "upload": "증권 업로드",
     "edit_policy": "계약 수정", "manage_policy": "계약 관리정보 수정", "delete_policy": "계약 삭제",
     "add_note": "상담 기록 작성", "edit_note": "상담 기록 수정", "delete_note": "상담 기록 삭제",
@@ -376,6 +376,94 @@ def find_customer(pid: int, insured: dict) -> int | None:
         if c.get("name") == name and c.get("birth_date") == birth:
             return c["id"]
     return None
+
+
+# ── 약관 분석 (연금·저축성 상품 구조 + 수익률 시뮬레이션) ──────────────────────
+TERMS_MAX_BYTES = 30 * 1024 * 1024
+
+
+def terms_form(error: str = "") -> str:
+    err = f'<p class="under">{e(error)}</p>' if error else ""
+    return f"""<div class="card"><h1>약관 분석</h1>{err}
+<p class="muted">연금·저축보험 약관 PDF를 올리면 이율(공시·최저보증), 사업비, 해지공제, 세제를 정리하고
+사업비를 반영한 예상 수익률을 계산합니다. 약관에는 개인 계약 숫자가 없으므로 결과는 <b>상품 구조와 예시</b>입니다.</p>
+<form method="post" action="/terms" enctype="multipart/form-data" class="drop"
+onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='약관 분석 중... (1~2분)'">
+<div class="row"><input type="file" name="file" accept=".pdf,application/pdf" required>
+<label style="margin:0">월 보험료</label><input type="text" name="monthly" placeholder="약관 예시값" style="width:110px">
+<label style="margin:0">납입 연수</label><input type="text" name="years" placeholder="예시값" style="width:70px">
+<label style="margin:0">현재 공시이율(%)</label><input type="text" name="rate" placeholder="예: 2.5" style="width:70px">
+<button>분석하기</button></div>
+<p class="muted">수백 페이지 약관도 이율·사업비 관련 페이지만 골라서 분석합니다. 비워 두면 약관의 예시 기준으로 계산합니다.</p>
+</form></div>"""
+
+
+def _num(s: str) -> float:
+    try:
+        return float("".join(ch for ch in s if ch.isdigit() or ch == "."))
+    except ValueError:
+        return 0.0
+
+
+def terms_result_html(t: dict, monthly: float, years: int, rates: list[float], total_pages: int, pages: list[int]) -> str:
+    import terms as tm
+    mg = "".join(f"<tr><td>{e(g['period'])}</td><td class='num'>{g['rate_pct']:g}%</td></tr>" for g in t["min_guarantee"]) \
+        or "<tr><td colspan='2' class='muted'>약관에서 찾지 못함</td></tr>"
+    fees = "".join(f"<tr><td>{e(f['name'])}</td><td>{int(f['from_year'])}~{'' if f['to_year'] >= 99 else int(f['to_year'])}년</td>"
+                   f"<td class='num'>{f['pct_of_premium']:g}%</td><td class='muted'>{e(f['note'])}</td></tr>" for f in t["fees"]) \
+        or "<tr><td colspan='4' class='muted'>약관에서 찾지 못함</td></tr>"
+    pen = " → ".join(f"{int(p['year'])}년 {won(p['amount_won'])}" for p in t["surrender_penalty"]) or "없음/찾지 못함"
+    sims = [tm.simulate(t["fees"], monthly, years, r) for r in rates] if monthly and years else []
+    sim_rows = "".join(f"<tr><td class='num'>{s['rate']:g}%</td><td class='num'>{won(round(s['paid'], -4))}</td>"
+                       f"<td class='num'>{won(round(s['value'], -4))}</td><td class='num'>{s['ratio'] * 100:.1f}%</td>"
+                       f"<td class='num'><b>{s['irr']:.2f}%</b></td></tr>" for s in sims)
+    sim = (f"""<p class="muted">월 {won(monthly)} × {years}년 납입, 해당 이율이 계속 유지된다고 가정 (사업비 반영, 세액공제 미반영)</p>
+<div class="tbl-wrap"><table><tr><th>적용 이율</th><th>낸 돈</th><th>{years}년 후 적립금</th><th>환급률</th><th>실질 연수익률</th></tr>{sim_rows}</table></div>"""
+           if sims else '<p class="muted">월 보험료·납입 연수를 알 수 없어 시뮬레이션을 생략했습니다. 값을 넣고 다시 분석하세요.</p>')
+    li = lambda xs: "".join(f"<li>{e(x)}</li>" for x in xs) or "<li class='muted'>없음</li>"  # noqa: E731
+    return f"""<p><a href="/terms">← 다른 약관 분석</a> · <a href="/">고객 목록</a></p>
+<div class="card"><h1>{e(t['product_name'] or '약관 분석 결과')}</h1>
+<p class="muted">{e(t['company'])} · {e(t['product_type'])} · 원본 {total_pages}쪽 중 관련 {len(pages)}쪽 분석 ({', '.join(map(str, pages))}쪽)</p>
+<p><b>적립 이율:</b> {e(t['rate_type'] or '-')}</p></div>
+<div class="card"><h2>예상 수익률 시뮬레이션</h2>{sim}</div>
+<div class="card"><h2>최저보증이율</h2><div class="tbl-wrap"><table><tr><th>기간</th><th>연복리</th></tr>{mg}</table></div></div>
+<div class="card"><h2>사업비 (보험료에서 떼는 비용)</h2>
+<p class="muted">예시 기준: {e(t['fee_example_basis'] or '-')}</p>
+<div class="tbl-wrap"><table><tr><th>항목</th><th>기간</th><th>기본보험료 대비</th><th>비고</th></tr>{fees}</table></div>
+<p class="muted">추가납입 비용: {t['extra_payment_fee_pct']:g}% · 연금 수령 시: {e(t['annuity_fee_note'] or '-')}</p></div>
+<div class="card"><h2>해지공제 (조기 해지 페널티)</h2><p>{e(pen)}</p></div>
+<div class="card"><h2>세제</h2><ul>{li(t['tax_notes'])}</ul>
+<p class="muted">약관 작성 당시 세법 기준입니다. 현재 세액공제 한도·세율은 따로 확인하세요.</p></div>
+<div class="card"><h2>주의할 점</h2><ul>{li(t['cautions'])}</ul></div>
+<p class="muted">이 결과는 약관을 정리한 참고 자료입니다. 실제 수익률은 해지환급금 조회(낸 돈·현재 적립금)로 확인하세요.</p>"""
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page(request: Request):
+    planner_id(request)
+    return page("약관 분석", f'<p><a href="/">← 고객 목록</a></p>{take_flash(request)}{terms_form()}')
+
+
+@app.post("/terms", response_class=HTMLResponse)
+async def terms_analyze(request: Request, file: UploadFile = File(...), monthly: str = Form(""),
+                        years: str = Form(""), rate: str = Form("")):
+    import terms as tm
+    pid = planner_id(request)
+    data = await file.read()
+    if len(data) > TERMS_MAX_BYTES:
+        return page("약관 분석", terms_form("파일이 30MB를 넘습니다."))
+    if security.sniff_mime(data) != extractor.PDF_TYPE:
+        return page("약관 분석", terms_form("PDF 파일만 올릴 수 있습니다."))
+    try:
+        small, total, pages = await run_in_threadpool(tm.select_pages, data)
+        t = await run_in_threadpool(tm.extract_terms, small)
+    except tm.TermsError as ex:
+        return page("약관 분석", terms_form(str(ex)))
+    log(request, pid, "terms_analyze", f"{total}쪽")
+    m = _num(monthly) or t.get("example_monthly_premium") or 0
+    y = int(_num(years) or t.get("example_pay_years") or 0)
+    rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({_num(rate)} if _num(rate) else {2.5, 3.0}))
+    return page("약관 분석 결과", terms_result_html(t, m, y, rates, total, pages))
 
 
 @app.post("/upload")
@@ -462,7 +550,7 @@ def home(request: Request, q: str = ""):
 <form method="post" action="/logout" class="row"><a class="muted" href="/account">{e(me['name'])} · 내 계정</a><button class="btn-ghost btn-sm">로그아웃</button></form></div>
 {take_flash(request)}
 {todo_html(pid, notes, all_pol, names)}
-<div class="card"><h2>새 고객 증권 분석</h2>{upload_form()}</div>
+<div class="card"><div class="row between"><h2 style="margin:0">새 고객 증권 분석</h2><a class="btn btn-ghost btn-sm" href="/terms">약관 분석 (연금·저축 수익률)</a></div>{upload_form()}</div>
 <div class="card"><div class="row between"><h2>고객 ({len(customers)})</h2>
 <div class="row"><a class="btn btn-sm" href="/customers/new">+ 고객 직접 등록</a>
 <form class="row" method="get"><input type="text" name="q" value="{e(q)}" placeholder="이름·연락처·메모·상담내용 검색" style="width:240px"><button class="btn-ghost btn-sm">검색</button></form></div></div>
