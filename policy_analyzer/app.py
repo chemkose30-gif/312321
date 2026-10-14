@@ -792,6 +792,7 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 <td class="num muted">{amt}</td><td></td></tr>""")
     for cat in a["missing_benchmarks"]:
         rows.append(f'<tr class="cat-row"><td class="nowrap">{e(cat)}</td><td class="num under">없음</td><td class="nowrap"><span class="under">미가입 ({won(analysis.BENCHMARKS[cat])} 기준)</span></td></tr>')
+    rows += pension_sum_rows(policies)
     summary = f'<div class="tbl-wrap"><table><tr><th>보장 / 담보</th><th class="num">금액</th><th>판단</th></tr>{"".join(rows)}</table></div>'
 
     checks = "".join(f'<div class="check {lvl}"><b>{e(t)}</b><span>{e(d)}</span></div>' for lvl, t, d in a["checks"]) \
@@ -801,6 +802,26 @@ def analysis_html(c: dict, policies: list[dict]) -> str:
 <div class="card"><h2>체크 포인트</h2>{checks}</div>
 <div class="card"><h2>보장 합산</h2>{summary}
 <p class="muted">판단 기준은 상담용 참고값입니다. 고객의 소득·가족력·기존 계획에 따라 달라질 수 있습니다.</p></div>"""
+
+
+def pension_sum_rows(policies: list[dict]) -> list[str]:
+    """보장 합산 표에 연금·저축 계약 행 (금액 = 지금 해지 시 실수령, 판단 칸 = 낸 돈)"""
+    import pension
+    items = [(p, pension.analyze(p)) for p in policies if pension.is_pension(p)]
+    if not items:
+        return []
+    sv = [r["surrender"] for _, r in items if r and r.get("ok") and r.get("surrender")]
+    head = (f'<tr class="cat-row"><td class="nowrap">연금·저축 <span class="muted">(지금 해지 시 실수령)</span></td>'
+            f'<td class="num">{won(round(sum(s["after_tax"] for s in sv), -3)) if sv else ""}</td>'
+            f'<td class="nowrap">{"낸 돈 " + won(sum(s["paid"] for s in sv)) if sv else ""}</td></tr>')
+    rows = [head]
+    for p, r in items:
+        s = r.get("surrender") if r and r.get("ok") else None
+        amt = won(round(s["after_tax"], -3)) if s else "-"
+        paid = f'<span class="muted small">낸 돈 {won(s["paid"])}</span>' if s else '<span class="muted small">계산값 입력 필요</span>'
+        rows.append(f"""<tr class="sub-row"><td class="sub">{e(p.get('product_name') or '')} <span class="muted small">({e(p.get('company') or '')} · 월 {won(p.get('monthly_premium'))})</span></td>
+<td class="num muted">{amt}</td><td>{paid}</td></tr>""")
+    return rows
 
 
 def pension_summary_html(policies: list[dict]) -> str:
