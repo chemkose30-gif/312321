@@ -35,7 +35,16 @@ def parse_pasted(text: str) -> dict:
     pats = {"years": r"납\s*,?\s*(\d+)\s*년", "monthly": r"납\s*,?\s*\d+\s*년\)?\s*(\d+)\s*원",
             "paid_count": r"(\d+)\s*회", "paid_amount": r"납입완료\s*(\d+)\s*원"}
     found = {k: re.search(p, flat) for k, p in pats.items()}
-    return {k: m.group(1) for k, m in found.items() if m}
+    out = {k: m.group(1) for k, m in found.items() if m}
+    # 고객 계약으로 저장할 때 쓰는 값: 상품명(첫 줄), 증권번호, 계약일
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines and any(w in lines[0] for w in ("보험", "연금", "저축")):
+        out["product_name"] = lines[0][:100]
+    if m := re.search(r"증권번호\s*([0-9*\-]+)", text):
+        out["policy_no"] = m.group(1)
+    if m := re.search(r"(\d{4})\.(\d{2})\.(\d{2})", text):
+        out["contract_date"] = "".join(m.groups())
+    return out
 
 
 def is_tax_qualified(p: dict) -> bool:

@@ -433,7 +433,7 @@ def terms_mine_html(t: dict, rate: float, paid_count: int, paid_amount: float, c
 · 지금까지 연수익률 {irr:.2f}%<br><span class="muted">{e(basis)}</span></span></div>"""
 
 
-def terms_input_form(t: dict, total_pages: int, pages: list[int], f: dict) -> str:
+def terms_input_form(t: dict, total_pages: int, pages: list[int], f: dict, customers: list[dict] = ()) -> str:
     """약관 결과 아래 직접 적는 칸. 분석 결과(t)를 숨김값으로 넘겨 다시 분석(=API 비용) 없이 재계산."""
     v = lambda k: e(str(f.get(k) or ""))  # noqa: E731
     return f"""<div class="card no-print"><h2>✏ 직접 적기 (내 계약 숫자)</h2>
@@ -446,12 +446,37 @@ def terms_input_form(t: dict, total_pages: int, pages: list[int], f: dict) -> st
 <label style="margin:0">낸 회차</label><input type="text" name="paid_count" value="{v('paid_count')}" placeholder="예: 57" style="width:50px">
 <label style="margin:0">낸 돈(원)</label><input type="text" name="paid_amount" value="{v('paid_amount')}" placeholder="예: 14540814" style="width:110px">
 <label style="margin:0">현재 해지환급금(원)</label><input type="text" name="current" value="{v('current')}" placeholder="모르면 비워두기" style="width:120px">
-<textarea name="pasted" rows="4" style="width:100%" placeholder="또는 보험사 앱 계약조회 화면 글을 그대로 붙여넣기 (예: 매월납, 32년 / 255,102원 / 57회 / 납입완료 14,540,814원)"></textarea>
-<button class="btn-sm">계산</button></form>
-<p class="muted">보험사 앱의 납입내역·해지환급금 조회 화면 숫자를 적거나 붙여넣으면 실제 기준으로 계산합니다. 다시 분석하지 않으니 비용이 들지 않습니다.</p></div>"""
+<textarea name="pasted" rows="4" style="width:100%" placeholder="또는 보험사 앱 계약조회 화면 글을 그대로 붙여넣기 (예: 매월납, 32년 / 255,102원 / 57회 / 납입완료 14,540,814원)">{v('pasted')}</textarea>
+<button class="btn-sm">계산</button>
+<div style="width:100%;border-top:1px solid #ddd;margin-top:8px;padding-top:8px" class="row">
+<b>고객에 저장</b>
+<select name="customer_id"><option value="">+ 새 고객</option>{"".join(f'<option value="{c["id"]}">{e(c.get("name") or "이름 미확인")} {e(ymd(c.get("birth_date")))}</option>' for c in customers)}</select>
+<label style="margin:0">새 고객 이름</label><input type="text" name="name" placeholder="새 고객일 때" style="width:90px">
+<label style="margin:0">생년월일</label><input type="text" name="birth_date" placeholder="19900101" style="width:90px">
+<button class="btn-sm" formaction="/terms/save">이 계약을 고객에 저장</button></div></form>
+<p class="muted">보험사 앱의 납입내역·해지환급금 조회 화면 숫자를 적거나 붙여넣으면 실제 기준으로 계산합니다. 다시 분석하지 않으니 비용이 들지 않습니다.
+저장하면 약관의 사업비가 함께 저장되어 고객 화면에서도 연금 수익률·해지 실수령액이 보입니다.</p></div>"""
 
 
-def terms_block(t: dict, total: int, pages: list[int], f: dict | None = None) -> str:
+def terms_policy(t: dict, f: dict) -> dict:
+    """약관 분석 결과 + 직접 적은/붙여넣은 계약 숫자 → 고객 계약 데이터"""
+    def first_year(word: str) -> float | None:
+        xs = [x["pct_of_premium"] for x in t["fees"] if word in x["name"] and (x["from_year"] or 1) <= 1]
+        return sum(xs) if xs else None
+    years = int(_num(f.get("years", "")))
+    cfg = {"paid_count": int(_num(f.get("paid_count", ""))) or None, "paid_amount": _num(f.get("paid_amount", "")) or None,
+           "current_value": _num(f.get("current", "")) or None, "rate": _num(f.get("rate", "")) or None, "credit_pct": 13.2}
+    for k, word in (("acq_pct", "체결"), ("mgmt_pct", "관리")):
+        if (pct := first_year(word)) is not None:
+            cfg[k] = pct
+    return {"company": t.get("company") or "", "product_name": f.get("product_name") or t.get("product_name") or "",
+            "policy_no": f.get("policy_no") or "", "contract_date": f.get("contract_date") or "",
+            "monthly_premium": int(_num(f.get("monthly", ""))) or None,
+            "payment_period": f"{years}년납" if years else "", "payment_cycle": "월납",
+            "coverages": [], "exclusions": [], "pension": cfg}
+
+
+def terms_block(t: dict, total: int, pages: list[int], f: dict | None = None, customers: list[dict] = ()) -> str:
     """약관 하나의 결과 + 입력칸. f = 직접 적은 값(문자열)"""
     f = f or {}
     m = _num(f.get("monthly", "")) or t.get("example_monthly_premium") or 0
@@ -459,7 +484,7 @@ def terms_block(t: dict, total: int, pages: list[int], f: dict | None = None) ->
     r = _num(f.get("rate", ""))
     rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({r} if r else {2.5, 3.0}))
     mine = terms_mine_html(t, r or 2.5, int(_num(f.get("paid_count", ""))), _num(f.get("paid_amount", "")), _num(f.get("current", "")))
-    return terms_result_html(t, m, y, rates, total, pages, mine) + terms_input_form(t, total, pages, f)
+    return terms_result_html(t, m, y, rates, total, pages, mine) + terms_input_form(t, total, pages, f, customers)
 
 
 def terms_result_html(t: dict, monthly: float, years: int, rates: list[float], total_pages: int, pages: list[int],
@@ -510,7 +535,7 @@ async def _terms_one(request: Request, pid: int, name: str, pdf: bytes, f: dict)
     except tm.TermsError as ex:
         return f'<div class="card"><h2>{e(name)}</h2><p class="under">분석 실패: {e(str(ex))}</p></div>'
     log(request, pid, "terms_analyze", f"{total}쪽")
-    return terms_block(t, total, pages, f)
+    return terms_block(t, total, pages, f, store.list_customers(pid))
 
 
 async def _terms_page(request: Request, pid: int, pdfs: list[tuple[str, bytes]], f: dict | None = None, head: str = ""):
@@ -539,26 +564,61 @@ async def terms_analyze(request: Request, files: list[UploadFile] = File(...), m
     return await _terms_page(request, pid, pdfs, {"monthly": monthly, "years": years, "rate": rate})
 
 
+def _terms_form_values(t: str, pages: str, f: dict, pasted: str) -> tuple[dict, list[int], dict]:
+    """숨김값으로 넘어온 약관 결과 + 직접 적은 값 + 붙여넣은 글(빈 칸만 채움) 정리"""
+    import pension
+    f = {**f, "pasted": pasted[:5000]}
+    for k, v in pension.parse_pasted(f["pasted"]).items():
+        f[k] = f.get(k) or v
+    data = json.loads(t)
+    if not isinstance(data, dict):
+        raise ValueError
+    return data, [int(x) for x in pages.split(",") if x.strip()], f
+
+
 @app.post("/terms/calc", response_class=HTMLResponse)
 async def terms_calc(request: Request, t: str = Form(...), total: int = Form(0), pages: str = Form(""),
                      monthly: str = Form(""), years: str = Form(""), rate: str = Form(""),
                      paid_count: str = Form(""), paid_amount: str = Form(""), current: str = Form(""),
                      pasted: str = Form("")):
     """직접 적은 숫자로 약관 결과 재계산 (Claude 다시 호출 안 함)"""
-    import pension
-    planner_id(request)
+    pid = planner_id(request)
     f = {"monthly": monthly, "years": years, "rate": rate, "paid_count": paid_count,
          "paid_amount": paid_amount, "current": current}
-    # 붙여넣은 글에서 찾은 값은 비어 있는 칸만 채움
-    for k, v in pension.parse_pasted(pasted[:5000]).items():
-        f[k] = f[k] or v
     try:
-        data = json.loads(t)
-        nums = [int(x) for x in pages.split(",") if x.strip()]
-        body = terms_block(data, total, nums, f)
+        data, nums, f = _terms_form_values(t, pages, f, pasted)
+        body = terms_block(data, total, nums, f, store.list_customers(pid))
     except (ValueError, TypeError, KeyError, AttributeError):
         return page("약관 분석", terms_form("계산값을 읽지 못했습니다. 약관을 다시 올려 주세요."))
     return page("약관 분석 결과", '<p><a href="/terms">← 다른 약관 분석</a> · <a href="/">고객 목록</a></p>' + body)
+
+
+@app.post("/terms/save")
+async def terms_save(request: Request, t: str = Form(...), pages: str = Form(""),
+                     monthly: str = Form(""), years: str = Form(""), rate: str = Form(""),
+                     paid_count: str = Form(""), paid_amount: str = Form(""), current: str = Form(""),
+                     pasted: str = Form(""), customer_id: str = Form(""), name: str = Form(""), birth_date: str = Form("")):
+    """약관 결과 + 계약 숫자를 고객 계약으로 저장"""
+    pid = planner_id(request)
+    f = {"monthly": monthly, "years": years, "rate": rate, "paid_count": paid_count,
+         "paid_amount": paid_amount, "current": current}
+    try:
+        data, _, f = _terms_form_values(t, pages, f, pasted)
+        policy = terms_policy(data, f)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return page("약관 분석", terms_form("저장할 값을 읽지 못했습니다. 약관을 다시 올려 주세요."))
+    if customer_id.isdigit():
+        cid = int(customer_id)
+        if not store.get_customer(pid, cid):
+            raise HTTPException(404)
+    else:
+        bd = "".join(ch for ch in birth_date if ch.isdigit())[:8]
+        cid = store.save_customer(pid, {"name": name.strip()[:50], "birth_date": bd or None, "gender": None,
+                                        "address": None, "phone": None, "memo": ""})
+    added, replaced = store.add_policies(pid, cid, [policy], "약관+직접입력")
+    log(request, pid, "upload", f"고객#{cid} 약관 계약 저장")
+    flash(request, "계약을 저장했습니다." + (" (같은 증권번호 계약을 갱신)" if replaced else "") + " 내용이 맞는지 확인해 주세요.")
+    return RedirectResponse(f"/customers/{cid}", status_code=303)
 
 @app.post("/upload")
 async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None)):
