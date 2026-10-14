@@ -7,6 +7,7 @@
 실행: uvicorn app:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
 import html
 import json
 import os
@@ -365,7 +366,7 @@ onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='�
 <div class="row"><input type="file" name="files" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple required>
 <button>분석하기</button></div>
 <p class="muted">PDF·JPG·PNG, 한 번에 {MAX_FILES}개 / 합계 30MB까지. 한 고객의 증권만 함께 올려 주세요.
-<b>약관 PDF</b>를 올리면 자동으로 약관 분석(이율·사업비·해지공제·예상 수익률)으로 처리합니다.
+<b>약관 PDF</b>를 올리면(여러 개 가능) 자동으로 약관 분석(이율·사업비·해지공제·예상 수익률)으로 처리하고, 결과 아래에 낸 돈을 직접 적을 수 있습니다.
 {"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다. "}{BACKEND_NOTE}</p></form>"""
 
 
@@ -390,7 +391,7 @@ def terms_form(error: str = "") -> str:
 사업비를 반영한 예상 수익률을 계산합니다. 약관에는 개인 계약 숫자가 없으므로 결과는 <b>상품 구조와 예시</b>입니다.</p>
 <form method="post" action="/terms" enctype="multipart/form-data" class="drop"
 onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='약관 분석 중... (1~2분)'">
-<div class="row"><input type="file" name="file" accept=".pdf,application/pdf" required>
+<div class="row"><input type="file" name="files" accept=".pdf,application/pdf" multiple required>
 <label style="margin:0">월 보험료</label><input type="text" name="monthly" placeholder="약관 예시값" style="width:110px">
 <label style="margin:0">납입 연수</label><input type="text" name="years" placeholder="예시값" style="width:70px">
 <label style="margin:0">현재 공시이율(%)</label><input type="text" name="rate" placeholder="예: 2.5" style="width:70px">
@@ -406,7 +407,62 @@ def _num(s: str) -> float:
         return 0.0
 
 
-def terms_result_html(t: dict, monthly: float, years: int, rates: list[float], total_pages: int, pages: list[int]) -> str:
+def terms_mine_html(t: dict, rate: float, paid_count: int, paid_amount: float, current: float) -> str:
+    """약관 결과에 내가 적은 납입 기록으로 계산한 '지금 해지하면' 박스"""
+    import pension
+    import terms as tm
+    if not paid_count or not paid_amount:
+        return ""
+    monthly = paid_amount / paid_count
+    if current:
+        before, basis = current, "적은 해지환급금 기준"
+    else:
+        year = max(1, paid_count // 12)
+        penalty = next((p["amount_won"] for p in t["surrender_penalty"] if int(p["year"]) == year), 0)
+        if t.get("example_monthly_premium"):  # 해지공제는 예시 보험료 기준이라 내 보험료 비율로 환산
+            penalty *= monthly / t["example_monthly_premium"]
+        before = max(pension.value_after(t["fees"], monthly, paid_count, rate) - penalty, 0)
+        basis = f"추정 (약관 사업비, 공시이율 {rate:g}%, 해지공제 약 {won(round(penalty, -3))})"
+    taxed = "연금저축" in (t.get("product_type", "") + t.get("product_name", ""))
+    tax = before * pension.SURRENDER_TAX_PCT / 100 if taxed else 0.0
+    after = before - tax
+    irr = tm._irr(monthly, paid_count, before) if before else 0.0
+    return f"""<div class="check warn"><b>내 계약 · 지금 해지하면 ({paid_count}회 납입)</b><span>
+낸 돈 <b>{won(paid_amount)}</b> → 해지환급금 {won(round(before, -3))}{f" − 기타소득세(16.5%) {won(round(tax, -3))}" if tax else ""}
+= <b>실수령 약 {won(round(after, -3))}</b> · <b>{"손실" if after < paid_amount else "이익"} 약 {won(round(abs(paid_amount - after), -3))}</b>
+· 지금까지 연수익률 {irr:.2f}%<br><span class="muted">{e(basis)}</span></span></div>"""
+
+
+def terms_input_form(t: dict, total_pages: int, pages: list[int], f: dict) -> str:
+    """약관 결과 아래 직접 적는 칸. 분석 결과(t)를 숨김값으로 넘겨 다시 분석(=API 비용) 없이 재계산."""
+    v = lambda k: e(str(f.get(k) or ""))  # noqa: E731
+    return f"""<div class="card no-print"><h2>✏ 직접 적기 (내 계약 숫자)</h2>
+<form method="post" action="/terms/calc" class="row">
+<input type="hidden" name="t" value="{e(json.dumps(t, ensure_ascii=False))}">
+<input type="hidden" name="total" value="{total_pages}"><input type="hidden" name="pages" value="{e(','.join(map(str, pages)))}">
+<label style="margin:0">월 보험료</label><input type="text" name="monthly" value="{v('monthly')}" placeholder="예: 255102" style="width:100px">
+<label style="margin:0">납입 연수</label><input type="text" name="years" value="{v('years')}" placeholder="예: 32" style="width:50px">
+<label style="margin:0">공시이율(%)</label><input type="text" name="rate" value="{v('rate')}" placeholder="2.5" style="width:50px">
+<label style="margin:0">낸 회차</label><input type="text" name="paid_count" value="{v('paid_count')}" placeholder="예: 57" style="width:50px">
+<label style="margin:0">낸 돈(원)</label><input type="text" name="paid_amount" value="{v('paid_amount')}" placeholder="예: 14540814" style="width:110px">
+<label style="margin:0">현재 해지환급금(원)</label><input type="text" name="current" value="{v('current')}" placeholder="모르면 비워두기" style="width:120px">
+<button class="btn-sm">계산</button></form>
+<p class="muted">보험사 앱의 납입내역·해지환급금 조회 화면 숫자를 적으면 실제 기준으로 계산합니다. 다시 분석하지 않으니 비용이 들지 않습니다.</p></div>"""
+
+
+def terms_block(t: dict, total: int, pages: list[int], f: dict | None = None) -> str:
+    """약관 하나의 결과 + 입력칸. f = 직접 적은 값(문자열)"""
+    f = f or {}
+    m = _num(f.get("monthly", "")) or t.get("example_monthly_premium") or 0
+    y = int(_num(f.get("years", "")) or t.get("example_pay_years") or 0)
+    r = _num(f.get("rate", ""))
+    rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({r} if r else {2.5, 3.0}))
+    mine = terms_mine_html(t, r or 2.5, int(_num(f.get("paid_count", ""))), _num(f.get("paid_amount", "")), _num(f.get("current", "")))
+    return terms_result_html(t, m, y, rates, total, pages, mine) + terms_input_form(t, total, pages, f)
+
+
+def terms_result_html(t: dict, monthly: float, years: int, rates: list[float], total_pages: int, pages: list[int],
+                      mine: str = "") -> str:
     import terms as tm
     mg = "".join(f"<tr><td>{e(g['period'])}</td><td class='num'>{g['rate_pct']:g}%</td></tr>" for g in t["min_guarantee"]) \
         or "<tr><td colspan='2' class='muted'>약관에서 찾지 못함</td></tr>"
@@ -422,10 +478,9 @@ def terms_result_html(t: dict, monthly: float, years: int, rates: list[float], t
 <div class="tbl-wrap"><table><tr><th>적용 이율</th><th>낸 돈</th><th>{years}년 후 적립금</th><th>환급률</th><th>실질 연수익률</th></tr>{sim_rows}</table></div>"""
            if sims else '<p class="muted">월 보험료·납입 연수를 알 수 없어 시뮬레이션을 생략했습니다. 값을 넣고 다시 분석하세요.</p>')
     li = lambda xs: "".join(f"<li>{e(x)}</li>" for x in xs) or "<li class='muted'>없음</li>"  # noqa: E731
-    return f"""<p><a href="/terms">← 다른 약관 분석</a> · <a href="/">고객 목록</a></p>
-<div class="card"><h1>{e(t['product_name'] or '약관 분석 결과')}</h1>
+    return f"""<div class="card"><h1>{e(t['product_name'] or '약관 분석 결과')}</h1>
 <p class="muted">{e(t['company'])} · {e(t['product_type'])} · 원본 {total_pages}쪽 중 관련 {len(pages)}쪽 분석 ({', '.join(map(str, pages))}쪽)</p>
-<p><b>적립 이율:</b> {e(t['rate_type'] or '-')}</p></div>
+<p><b>적립 이율:</b> {e(t['rate_type'] or '-')}</p>{mine}</div>
 <div class="card"><h2>예상 수익률 시뮬레이션</h2>{sim}</div>
 <div class="card"><h2>최저보증이율</h2><div class="tbl-wrap"><table><tr><th>기간</th><th>연복리</th></tr>{mg}</table></div></div>
 <div class="card"><h2>사업비 (보험료에서 떼는 비용)</h2>
@@ -445,47 +500,59 @@ def terms_page(request: Request):
     return page("약관 분석", f'<p><a href="/">← 고객 목록</a></p>{take_flash(request)}{terms_form()}')
 
 
-@app.post("/terms", response_class=HTMLResponse)
-async def terms_analyze(request: Request, file: UploadFile = File(...), monthly: str = Form(""),
-                        years: str = Form(""), rate: str = Form("")):
-    import terms as tm
-    pid = planner_id(request)
-    data = await file.read()
-    if len(data) > TERMS_MAX_BYTES:
-        return page("약관 분석", terms_form("파일이 30MB를 넘습니다."))
-    if security.sniff_mime(data) != extractor.PDF_TYPE:
-        return page("약관 분석", terms_form("PDF 파일만 올릴 수 있습니다."))
-    try:
-        small, total, pages = await run_in_threadpool(tm.select_pages, data)
-        t = await run_in_threadpool(tm.extract_terms, small)
-    except tm.TermsError as ex:
-        return page("약관 분석", terms_form(str(ex)))
-    log(request, pid, "terms_analyze", f"{total}쪽")
-    m = _num(monthly) or t.get("example_monthly_premium") or 0
-    y = int(_num(years) or t.get("example_pay_years") or 0)
-    rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({_num(rate)} if _num(rate) else {2.5, 3.0}))
-    return page("약관 분석 결과", terms_result_html(t, m, y, rates, total, pages))
-
-
-async def _terms_response(request: Request, pid: int, pdf: bytes, back: str | None = None,
-                          monthly: str = "", years: str = "", rate: str = ""):
-    """약관 PDF 분석 결과 화면. back 이 있으면 실패 시 그 화면으로 돌아가 안내."""
+async def _terms_one(request: Request, pid: int, name: str, pdf: bytes, f: dict) -> str:
+    """약관 하나 분석 → 결과 HTML (실패하면 오류 카드)"""
     import terms as tm
     try:
         small, total, pages = await run_in_threadpool(tm.select_pages, pdf)
         t = await run_in_threadpool(tm.extract_terms, small)
     except tm.TermsError as ex:
-        if back:
-            flash(request, f"증권에서 계약 정보를 찾지 못했고, 약관으로도 분석하지 못했습니다: {ex}")
-            return RedirectResponse(back, status_code=303)
-        return page("약관 분석", terms_form(str(ex)))
+        return f'<div class="card"><h2>{e(name)}</h2><p class="under">분석 실패: {e(str(ex))}</p></div>'
     log(request, pid, "terms_analyze", f"{total}쪽")
-    m = _num(monthly) or t.get("example_monthly_premium") or 0
-    y = int(_num(years) or t.get("example_pay_years") or 0)
-    rates = sorted({g["rate_pct"] for g in t["min_guarantee"][:1]} | ({_num(rate)} if _num(rate) else {2.5, 3.0}))
-    head = '<div class="flash">약관 파일로 확인되어 약관 분석 결과를 보여드립니다. 고객 계약 정보(증권)는 따로 올려 주세요.</div>'
-    return page("약관 분석 결과", head + terms_result_html(t, m, y, rates, total, pages))
+    return terms_block(t, total, pages, f)
 
+
+async def _terms_page(request: Request, pid: int, pdfs: list[tuple[str, bytes]], f: dict | None = None, head: str = ""):
+    """약관 여러 개를 동시에 분석해 한 화면에 보여줌"""
+    blocks = await asyncio.gather(*(_terms_one(request, pid, n, d, f or {}) for n, d in pdfs))
+    nav = '<p><a href="/terms">← 다른 약관 분석</a> · <a href="/">고객 목록</a></p>'
+    sep = '<hr style="margin:32px 0">'
+    return page("약관 분석 결과", nav + head + sep.join(blocks))
+
+
+@app.post("/terms", response_class=HTMLResponse)
+async def terms_analyze(request: Request, files: list[UploadFile] = File(...), monthly: str = Form(""),
+                        years: str = Form(""), rate: str = Form("")):
+    pid = planner_id(request)
+    if len(files) > MAX_FILES:
+        return page("약관 분석", terms_form(f"한 번에 {MAX_FILES}개까지 올릴 수 있습니다."))
+    pdfs, total = [], 0
+    for up in files:
+        data = await up.read()
+        total += len(data)
+        if security.sniff_mime(data) != extractor.PDF_TYPE:
+            return page("약관 분석", terms_form(f"PDF 파일만 올릴 수 있습니다: {up.filename}"))
+        pdfs.append((up.filename or "약관.pdf", data))
+    if total > TERMS_MAX_BYTES:
+        return page("약관 분석", terms_form("파일 합계가 30MB를 넘습니다. 나눠서 올려 주세요."))
+    return await _terms_page(request, pid, pdfs, {"monthly": monthly, "years": years, "rate": rate})
+
+
+@app.post("/terms/calc", response_class=HTMLResponse)
+async def terms_calc(request: Request, t: str = Form(...), total: int = Form(0), pages: str = Form(""),
+                     monthly: str = Form(""), years: str = Form(""), rate: str = Form(""),
+                     paid_count: str = Form(""), paid_amount: str = Form(""), current: str = Form("")):
+    """직접 적은 숫자로 약관 결과 재계산 (Claude 다시 호출 안 함)"""
+    planner_id(request)
+    f = {"monthly": monthly, "years": years, "rate": rate, "paid_count": paid_count,
+         "paid_amount": paid_amount, "current": current}
+    try:
+        data = json.loads(t)
+        nums = [int(x) for x in pages.split(",") if x.strip()]
+        body = terms_block(data, total, nums, f)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return page("약관 분석", terms_form("계산값을 읽지 못했습니다. 약관을 다시 올려 주세요."))
+    return page("약관 분석 결과", '<p><a href="/terms">← 다른 약관 분석</a> · <a href="/">고객 목록</a></p>' + body)
 
 @app.post("/upload")
 async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None)):
@@ -511,10 +578,17 @@ async def upload(request: Request, files: list[UploadFile] = File(...), customer
         return RedirectResponse(back, status_code=303)
 
     import terms as tm
-    pdfs = [d for _, m, d in payload if m == extractor.PDF_TYPE]
-    # 약관 PDF 하나만 올렸으면 → 약관 분석으로 바로 처리
-    if len(payload) == 1 and pdfs and await run_in_threadpool(tm.is_terms_pdf, pdfs[0]):
-        return await _terms_response(request, pid, pdfs[0])
+    pdfs = [(n, d) for n, m, d in payload if m == extractor.PDF_TYPE]
+    is_terms = await asyncio.gather(*(run_in_threadpool(tm.is_terms_pdf, d) for _, d in pdfs))
+    terms_pdfs = [x for x, ok in zip(pdfs, is_terms) if ok]
+    terms_head = '<div class="flash">약관 파일로 확인되어 약관 분석 결과를 보여드립니다. 고객 계약 정보(증권)는 따로 올려 주세요.</div>'
+    # 올린 파일이 전부 약관이면 → 여러 개 한꺼번에 약관 분석
+    if terms_pdfs and len(terms_pdfs) == len(payload):
+        return await _terms_page(request, pid, terms_pdfs, head=terms_head)
+    # 증권과 약관을 섞어 올리면 약관은 빼고 증권만 추출 (약관은 따로 올리도록 안내)
+    if terms_pdfs:
+        payload = [x for x in payload if not any(x[2] is d for _, d in terms_pdfs)]
+        flash(request, f"약관 파일 {len(terms_pdfs)}개는 제외하고 증권만 분석했습니다. 약관은 따로 올려 주세요.")
 
     try:
         result = await run_in_threadpool(extractor.extract, payload)
@@ -526,7 +600,7 @@ async def upload(request: Request, files: list[UploadFile] = File(...), customer
     policies = result.get("policies") or []
     if not policies:
         if pdfs:  # 증권 내용이 없으면 약관일 수 있으니 약관 분석으로 한 번 더 시도
-            return await _terms_response(request, pid, pdfs[0], back)
+            return await _terms_page(request, pid, pdfs, head=terms_head)
         flash(request, "증권에서 계약 정보를 찾지 못했습니다. 글씨가 잘 보이는 파일인지 확인해 주세요.")
         return RedirectResponse(back, status_code=303)
 
@@ -686,8 +760,9 @@ def pension_html(p: dict, editable: bool) -> str:
     r = pension.analyze(p)
     if r is None:
         return ""
+    form = pension_form(p) if editable else ""
     if not r["ok"]:
-        return f'<div class="check info"><b>연금 수익률</b><span>{e(r["reason"])}</span></div>'
+        return f'<div class="manage"><h3>연금 수익률</h3><div class="check info"><b>계산 불가</b><span>{e(r["reason"])}</span></div>{form}</div>'
     rows = []
     if r.get("actual"):
         a = r["actual"]
@@ -711,11 +786,19 @@ def pension_html(p: dict, editable: bool) -> str:
 <span class="muted">{e(sv['basis'])}. {"그동안 받은 세액공제(약 " + won(round(sv['credits_received'], -3)) + ")를 감안해도 해지는 불리할 수 있습니다." if sv['tax'] else ""}</span></span></div>"""
     note = ("사업비는 입력값 기준" if r["custom_fees"] else
             f"사업비는 일반 가정(체결 {pension.DEFAULT_ACQ_PCT}%·10년, 관리 {pension.DEFAULT_MGMT_PCT}%) — 상품 약관과 다를 수 있음")
+    return f"""<div class="manage"><h3>연금 수익률</h3>
+<p class="muted">월 {won(r['monthly'])} × {f"{r['years']}년" if r['years'] else "납입기간 미확인(만기 예상 생략)"} · 현재 {r['months_paid']}/{r['total_months']}회 납입 · 낸 돈 {won(r['paid'])} <b>({"실제 기록" if r['paid_actual'] else "추정: 매달 납입 가정"})</b> · {note}</p>
+<div class="tbl-wrap"><table><tr><th>구분</th><th>낸 돈</th><th>적립금</th><th>환급률</th><th>연수익률</th></tr>{''.join(rows)}</table></div>
+{tax}{surr}{form}</div>"""
+
+
+def pension_form(p: dict) -> str:
+    """연금 계약에 실제 납입 기록·해지환급금 등을 직접 적는 칸 (기록이 없으면 펼쳐서 보여줌)"""
+    import pension
     cfg = p.get("pension") or {}
-    form = ""
-    if editable:
-        v = lambda k: e(str(cfg.get(k) if cfg.get(k) is not None else ""))  # noqa: E731
-        form = f"""<details class="manage no-print"><summary>수익률 계산값 입력 (현재 적립금·공시이율·사업비)</summary>
+    v = lambda k: e(str(cfg.get(k) if cfg.get(k) is not None else ""))  # noqa: E731
+    is_open = "" if cfg.get("paid_amount") or cfg.get("paid_count") else " open"
+    return f"""<details class="manage no-print"{is_open}><summary><b>✏ 낸 돈·해지환급금 직접 적기</b> (보험사 앱·납입내역 보고 입력)</summary>
 <form method="post" action="/policies/{p['id']}/pension" class="row" style="margin-top:8px">
 <label style="margin:0">실제 납입회차</label><input type="text" name="paid_count" value="{v('paid_count')}" placeholder="예: 57" style="width:60px">
 <label style="margin:0">실제 납입액(원)</label><input type="text" name="paid_amount" value="{v('paid_amount')}" placeholder="예: 14540814" style="width:120px">
@@ -726,10 +809,6 @@ def pension_html(p: dict, editable: bool) -> str:
 <label style="margin:0">관리비용(%)</label><input type="text" name="mgmt_pct" value="{v('mgmt_pct')}" placeholder="{pension.DEFAULT_MGMT_PCT}" style="width:60px">
 <label style="margin:0">세액공제율</label><select name="credit_pct"><option value="13.2" {"selected" if cfg.get("credit_pct") != 16.5 else ""}>13.2%</option><option value="16.5" {"selected" if cfg.get("credit_pct") == 16.5 else ""}>16.5% (총급여 5,500만 이하)</option></select>
 <button class="btn-sm">계산</button></form></details>"""
-    return f"""<div class="manage"><h3>연금 수익률</h3>
-<p class="muted">월 {won(r['monthly'])} × {f"{r['years']}년" if r['years'] else "납입기간 미확인(만기 예상 생략)"} · 현재 {r['months_paid']}/{r['total_months']}회 납입 · 낸 돈 {won(r['paid'])} <b>({"실제 기록" if r['paid_actual'] else "추정: 매달 납입 가정"})</b> · {note}</p>
-<div class="tbl-wrap"><table><tr><th>구분</th><th>낸 돈</th><th>적립금</th><th>환급률</th><th>연수익률</th></tr>{''.join(rows)}</table></div>
-{tax}{surr}{form}</div>"""
 
 
 def policy_html(p: dict, editable: bool) -> str:

@@ -92,9 +92,14 @@ def analyze(p: dict, today: date | None = None) -> dict | None:
         return None
     cfg = p.get("pension") or {}
     monthly = p.get("monthly_premium") or 0
+    # 증권에 월 보험료가 없어도 직접 적은 납입액÷회차로 계산
+    if not monthly and cfg.get("paid_amount") and cfg.get("paid_count"):
+        monthly = cfg["paid_amount"] / cfg["paid_count"]
     years = pay_years(p)
-    if not monthly or not analysis.parse_date(p.get("contract_date")):
-        return {"ok": False, "reason": "월 보험료 또는 계약일이 없어 계산할 수 없습니다. 계약 수정에서 입력해 주세요."}
+    if not monthly:
+        return {"ok": False, "reason": "월 보험료를 몰라 계산할 수 없습니다. 아래에 실제 납입회차·납입액을 적어 주세요."}
+    if not analysis.parse_date(p.get("contract_date")) and not cfg.get("paid_count"):
+        return {"ok": False, "reason": "계약일을 몰라 납입회차를 알 수 없습니다. 아래에 실제 납입회차를 적어 주세요."}
     # 납입기간을 모르면 계약일부터 오늘까지 낸 것으로 보고, 만기 예상은 생략
     total_months = years * 12 if years else 1200
     n = months_paid(p, total_months, today)
