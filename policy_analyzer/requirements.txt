@@ -12,5 +12,5 @@ qrcode>=7.4
 pytesseract
 pymupdf
 
-# Claude API 백엔드 (EXTRACT_BACKEND=claude) — 정확도 높으나 데이터가 해외 서버로 전송됨. 안 쓰면 설치 불필요
-# anthropic>=1.11
+# Claude API 백엔드 (EXTRACT_BACKEND=claude) — 정확도 높으나 데이터가 해외 서버로 전송됨
+anthropic>=1.11
