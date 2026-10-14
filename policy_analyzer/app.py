@@ -446,8 +446,9 @@ def terms_input_form(t: dict, total_pages: int, pages: list[int], f: dict) -> st
 <label style="margin:0">낸 회차</label><input type="text" name="paid_count" value="{v('paid_count')}" placeholder="예: 57" style="width:50px">
 <label style="margin:0">낸 돈(원)</label><input type="text" name="paid_amount" value="{v('paid_amount')}" placeholder="예: 14540814" style="width:110px">
 <label style="margin:0">현재 해지환급금(원)</label><input type="text" name="current" value="{v('current')}" placeholder="모르면 비워두기" style="width:120px">
+<textarea name="pasted" rows="4" style="width:100%" placeholder="또는 보험사 앱 계약조회 화면 글을 그대로 붙여넣기 (예: 매월납, 32년 / 255,102원 / 57회 / 납입완료 14,540,814원)"></textarea>
 <button class="btn-sm">계산</button></form>
-<p class="muted">보험사 앱의 납입내역·해지환급금 조회 화면 숫자를 적으면 실제 기준으로 계산합니다. 다시 분석하지 않으니 비용이 들지 않습니다.</p></div>"""
+<p class="muted">보험사 앱의 납입내역·해지환급금 조회 화면 숫자를 적거나 붙여넣으면 실제 기준으로 계산합니다. 다시 분석하지 않으니 비용이 들지 않습니다.</p></div>"""
 
 
 def terms_block(t: dict, total: int, pages: list[int], f: dict | None = None) -> str:
@@ -541,11 +542,16 @@ async def terms_analyze(request: Request, files: list[UploadFile] = File(...), m
 @app.post("/terms/calc", response_class=HTMLResponse)
 async def terms_calc(request: Request, t: str = Form(...), total: int = Form(0), pages: str = Form(""),
                      monthly: str = Form(""), years: str = Form(""), rate: str = Form(""),
-                     paid_count: str = Form(""), paid_amount: str = Form(""), current: str = Form("")):
+                     paid_count: str = Form(""), paid_amount: str = Form(""), current: str = Form(""),
+                     pasted: str = Form("")):
     """직접 적은 숫자로 약관 결과 재계산 (Claude 다시 호출 안 함)"""
+    import pension
     planner_id(request)
     f = {"monthly": monthly, "years": years, "rate": rate, "paid_count": paid_count,
          "paid_amount": paid_amount, "current": current}
+    # 붙여넣은 글에서 찾은 값은 비어 있는 칸만 채움
+    for k, v in pension.parse_pasted(pasted[:5000]).items():
+        f[k] = f[k] or v
     try:
         data = json.loads(t)
         nums = [int(x) for x in pages.split(",") if x.strip()]

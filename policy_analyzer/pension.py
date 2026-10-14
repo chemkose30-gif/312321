@@ -29,6 +29,15 @@ def is_pension(p: dict) -> bool:
     return any(w in name for w in PENSION_WORDS) and not any(w in name for w in EXCLUDE_WORDS)
 
 
+def parse_pasted(text: str) -> dict:
+    """보험사 앱 계약조회 화면을 복사·붙여넣은 글에서 월보험료·납입연수·납입회차·납입액을 찾음 (못 찾은 값은 빼고 반환)"""
+    flat = text.replace(",", "")
+    pats = {"years": r"납\s*,?\s*(\d+)\s*년", "monthly": r"납\s*,?\s*\d+\s*년\)?\s*(\d+)\s*원",
+            "paid_count": r"(\d+)\s*회", "paid_amount": r"납입완료\s*(\d+)\s*원"}
+    found = {k: re.search(p, flat) for k, p in pats.items()}
+    return {k: m.group(1) for k, m in found.items() if m}
+
+
 def is_tax_qualified(p: dict) -> bool:
     """세액공제 대상 연금저축인지 (상품명 기준)"""
     return "연금저축" in (p.get("product_name") or "")
