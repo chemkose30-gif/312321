@@ -25,8 +25,11 @@ CATEGORIES = [
 IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 PDF_TYPE = "application/pdf"
 
-_s = {"type": ["string", "null"]}
+# 문자열은 모르면 "" (빈 값)을 쓰게 해 union(nullable) 수를 줄인다.
+# (Claude 구조화 출력은 union 타입 파라미터를 16개까지만 허용)
+_s = {"type": "string"}
 _i = {"type": ["integer", "null"]}
+_b = {"type": ["boolean", "null"]}
 
 
 def _obj(props: dict) -> dict:
@@ -52,14 +55,14 @@ SCHEMA = _obj({
         "payment_period": {**_s, "description": "예: 20년납, 전기납"},
         "payment_cycle": {**_s, "description": "예: 월납"},
         "monthly_premium": {**_i, "description": "월 환산 보험료(원)"},
-        "is_renewable": {"type": ["boolean", "null"], "description": "주계약/대부분 특약이 갱신형이면 true"},
+        "is_renewable": {**_b, "description": "주계약/대부분 특약이 갱신형이면 true"},
         "exclusions": {"type": "array", "items": {"type": "string"},
                        "description": "부담보·할증 등 인수조건 문구 그대로"},
         "coverages": {"type": "array", "items": _obj({
             "name": {"type": "string", "description": "증권에 적힌 담보/특약명 그대로"},
             "category": {"type": "string", "enum": CATEGORIES},
             "amount": {**_i, "description": "가입금액(원). 일당은 1일 금액"},
-            "renewable": {"type": ["boolean", "null"]},
+            "renewable": _b,
             "end_date": {**_s, "description": "담보별 보장 종료일 YYYYMMDD (있으면)"},
         })},
     })},
@@ -69,7 +72,7 @@ SCHEMA = _obj({
 
 SYSTEM = """당신은 한국 보험증권을 읽어 데이터를 추출하는 도우미입니다.
 - 첨부된 모든 파일(여러 증권일 수 있음)에서 피보험자 정보와 계약별 담보를 빠짐없이 추출하세요.
-- 증권에 없는 값은 지어내지 말고 null 로 두세요. 금액은 원 단위 정수로 변환하세요 (예: 3천만원 -> 30000000).
+- 증권에 없는 값은 지어내지 마세요. 글자 항목은 빈 문자열("")로, 금액·숫자는 null 로 두세요. 금액은 원 단위 정수로 변환하세요 (예: 3천만원 -> 30000000).
 - 주민등록번호 뒷자리는 절대 출력하지 마세요. 생년월일과 성별 계산에만 사용하세요.
 - 담보마다 category 를 가장 가까운 것으로 분류하세요. 애매하면 '기타'.
   · 유사암(갑상선암·제자리암·경계성종양·기타피부암)은 '유사암·소액암'.
