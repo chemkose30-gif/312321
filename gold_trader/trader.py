@@ -54,7 +54,7 @@ def main():
     ap.add_argument("--daily-loss", type=float, default=10, help="하루 손실 한도 %% (0이면 없음)")
     ap.add_argument("--max-lot", type=float, default=0.10, help="자동매매 1회 최대 랏")
     ap.add_argument("--allow-real", action="store_true", help="실계좌 자동매매 허용 (주의)")
-    ap.add_argument("--improve-day", type=int, default=6, help="자기 발전 요일 (0=월 ... 6=일, PC 시간 기준)")
+    ap.add_argument("--improve-days", default="2,5", help="자기 발전 요일들 (0=월 ... 6=일, PC 시간 기준). 기본 수,토")
     ap.add_argument("--improve-hour", type=int, default=10, help="자기 발전 시각 (PC 시간, 이 시각 이후 1회)")
     ap.add_argument("--days-report", type=int, default=7)
     ap.add_argument("--csv")
@@ -145,7 +145,8 @@ def improve_due(a) -> bool:
     if not (STATE / "champion.json").exists():
         return True
     now = datetime.now()
-    if now.weekday() != a.improve_day or now.hour < a.improve_hour:
+    days = {int(x) for x in str(a.improve_days).split(",") if x.strip()}
+    if now.weekday() not in days or now.hour < a.improve_hour:
         return False
     try:
         return LAST_IMPROVE.read_text(encoding="utf-8").strip() != now.date().isoformat()
@@ -174,7 +175,8 @@ def run_forever(a, costs, risk, auto=False):
     """
     print(f"{'자동매매' if auto else '실시간 모의매매'} 시작 (Ctrl+C로 종료). 위험 {risk.risk_pct}%/건, "
           f"최대 {risk.max_positions}개, 레버리지 {risk.leverage:g}배, 하루 손실 한도 {risk.daily_loss_pct}%")
-    print(f"자기 발전: 매주 {DAYS[a.improve_day]}요일 {a.improve_hour}시 이후 1회 (PC 시간)")
+    names = ",".join(DAYS[int(x)] for x in str(a.improve_days).split(",") if x.strip())
+    print(f"자기 발전: 매주 {names}요일 {a.improve_hour}시 이후 각 1회 (PC 시간)")
     print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "") + ", 리포트: reports/")
     while True:
         try:
