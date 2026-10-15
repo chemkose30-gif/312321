@@ -18,7 +18,7 @@ import pandas as pd
 
 from evolve import STATE, load_champion
 from learner import TradeFilter
-from paper import BAR, Risk, side, write
+from paper import Risk, side, write
 from strategy import FEATURES, signals
 
 MAGIC = 20261015
@@ -89,6 +89,7 @@ def tick(df: pd.DataFrame, symbol: str, risk: Risk, max_lot: float, allow_real: 
         st = _state()
         ch = load_champion()
         p = ch["params"]
+        tf = ch.get("timeframe", 5)
 
         # 1) 브로커에서 체결·청산된 내역을 장부에 기록 (손절·익절은 서버에서 실행됨)
         deals = mt5.history_deals_get(st["since"] - 86400, time.time() + 86400) or []
@@ -111,7 +112,7 @@ def tick(df: pd.DataFrame, symbol: str, risk: Risk, max_lot: float, allow_real: 
         now_utc = pd.Timestamp.now(tz="UTC")
         friday_close = now_utc.dayofweek == 4 and (now_utc.hour, now_utc.minute) >= (20, 45)
         for pos in list(mine):
-            if friday_close or now_srv - pos.time >= p["max_hold"] * 300:
+            if friday_close or now_srv - pos.time >= p["max_hold"] * tf * 60:
                 _close(mt5, pos, info, "주말 전 청산" if friday_close else "시간초과", log)
                 mine.remove(pos)
 
@@ -122,7 +123,7 @@ def tick(df: pd.DataFrame, symbol: str, risk: Risk, max_lot: float, allow_real: 
         day_loss = (st["day_start_balance"] - acc.equity) / st["day_start_balance"] * 100 if st["day_start_balance"] else 0
 
         # 4) 막 마감된 봉의 신호로 신규 진입
-        closed = df[df.index + BAR <= now_utc]
+        closed = df[df.index + pd.Timedelta(minutes=tf) <= now_utc]
         sig = signals(closed, p)
         last_t = str(closed.index[-1])
         d = int(sig["signal"].iloc[-1])

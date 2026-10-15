@@ -4,12 +4,13 @@
   python trader.py backtest --csv xauusd_m5.csv   # 현재 챔피언 성적
   python trader.py signal   --csv xauusd_m5.csv   # 마지막 봉 기준 신호 (진입/손절/익절가)
   python trader.py history                        # 발전 기록
-  python trader.py run --mt5                      # 실시간 모의매매: 5분마다 매수·매도를 장부에 기록
+  python trader.py run --mt5                      # 실시간 모의매매: 매수·매도를 장부에 기록
   python trader.py paper --mt5                    # 모의매매 1회 처리 (작업 스케줄러로 반복 실행할 때)
   python trader.py report                         # 최근 7일 매수·매도 기록 리포트
   python trader.py auto --mt5                     # MT5 자동매매 (기본: 데모 계좌만)
 
 데이터 원본: --mt5 (MetaTrader 5 실시간), --csv 파일, --yf (yfinance GC=F), --demo (합성 데이터, 동작 확인용)
+봉 단위(1·5·15분)는 학습 때 AI가 고른다. --csv/--yf/--demo 는 원본보다 긴 봉 단위만 쓸 수 있다.
 """
 from __future__ import annotations
 
@@ -28,16 +29,47 @@ from report import weekly
 from strategy import signals
 
 
-def get_data(a):
-    if a.mt5:
-        return data.load_mt5(a.symbol, server_offset=a.server_offset)
+def base_data(a):
     if a.csv:
         return data.load_csv(a.csv)
     if a.yf:
         return data.load_yfinance(a.symbol)
     if a.demo:
-        return data.synthetic(days=a.days, seed=a.seed or 0)
-    raise SystemExit("데이터 원본을 지정하세요: --csv 파일 | --yf | --demo")
+        return data.synthetic(days=a.days, seed=a.seed or 0, minutes=1)
+    raise SystemExit("데이터 원본을 지정하세요: --mt5 | --csv 파일 | --yf | --demo")
+
+
+def get_data(a, minutes: int):
+    """선택된 봉 단위의 최근 데이터."""
+    if a.mt5:
+        return data.load_mt5(a.symbol, minutes, server_offset=a.server_offset)
+    base = base_data(a)
+    if minutes < data.bar_minutes(base):
+        raise SystemExit(f"원본 데이터가 {data.bar_minutes(base)}분봉이라 {minutes}분봉을 만들 수 없습니다")
+    return data.resample(base, minutes)
+
+
+def get_all(a) -> dict:
+    """학습용: 고를 수 있는 모든 봉 단위의 데이터."""
+    tfs = [int(x) for x in a.timeframes.split(",")]
+    if a.mt5:
+        out = {m: df for m, df in data.load_mt5_all(a.symbol, a.server_offset).items() if m in tfs}
+    else:
+        base = base_data(a)
+        out = {m: data.resample(base, m) for m in tfs if m >= data.bar_minutes(base)}
+    if not out:
+        raise SystemExit("쓸 수 있는 봉 단위가 없습니다")
+    return out
+
+
+def costs_for(a, df) -> Costs:
+    """--spread 를 주지 않으면 MT5에서 읽은 실제 스프레드, 그것도 없으면 0.30달러."""
+    spread = a.spread if a.spread is not None else (df.attrs.get("spread") or 0.30)
+    return Costs(spread, a.slippage)
+
+
+def champion_tf() -> int:
+    return load_champion().get("timeframe", 5)
 
 
 def main():
@@ -62,7 +94,8 @@ def main():
     ap.add_argument("--symbol", help="기본값: --mt5 는 XAUUSD, --yf 는 GC=F")
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--days", type=int, default=90)
-    ap.add_argument("--spread", type=float, default=0.30)
+    ap.add_argument("--spread", type=float, help="스프레드 ($). 생략하면 MT5 실제값, 없으면 0.30")
+    ap.add_argument("--timeframes", default="1,5,15", help="AI가 고를 봉 단위 후보 (분)")
     ap.add_argument("--slippage", type=float, default=0.10)
     ap.add_argument("--pop", type=int, default=24)
     ap.add_argument("--gens", type=int, default=12)
@@ -81,37 +114,42 @@ def main():
             return
         for line in f.read_text(encoding="utf-8").splitlines():
             e = json.loads(line)
+            by = "  ".join(f"{m}분 {v['score']:+.1f}" for m, v in e.get("by_timeframe", {}).items())
             print(f"{e['time']}  {'채택' if e['promoted'] else '기각'}  "
-                  f"챔피언 {e['champion_score']:+.2f} vs 도전자 {e['challenger_score']:+.2f}  "
-                  f"도전자 승률 {e['challenger_valid']['win_rate']:.0%} / {e['challenger_valid']['trades']}회")
+                  f"챔피언 {e.get('champion_timeframe', 5)}분봉 {e['champion_score']:+.2f} vs "
+                  f"도전자 {e.get('challenger_timeframe', 5)}분봉 {e['challenger_score']:+.2f}  "
+                  f"도전자 승률 {e['challenger_valid']['win_rate']:.0%} / {e['challenger_valid']['trades']}회"
+                  + (f"  [{by}]" if by else ""))
         return
 
     risk = Risk(a.risk, a.max_positions, a.leverage, a.daily_loss)
     if a.cmd == "auto":
         if not a.mt5:
             raise SystemExit("자동매매는 --mt5 로만 가능합니다")
-        run_forever(a, Costs(a.spread, a.slippage), risk, auto=True)
+        run_forever(a, risk, auto=True)
         return
-    df = get_data(a)
-    costs = Costs(a.spread, a.slippage)
+    if a.cmd == "run":
+        run_forever(a, risk)
+        return
     if a.cmd == "improve":
-        improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, seed=a.seed)
+        dfs = get_all(a)
+        improve(dfs, costs_for(a, next(iter(dfs.values()))), pop=a.pop, gens=a.gens,
+                min_trades=a.min_trades, seed=a.seed)
         STATE.mkdir(exist_ok=True)
         LAST_IMPROVE.write_text(datetime.now().date().isoformat(), encoding="utf-8")
         return
+    df = get_data(a, champion_tf())
+    costs = costs_for(a, df)
     if a.cmd == "paper":
         st = step(df, costs, a.balance, risk)
         print(f"잔고 {st['balance']:.2f}$  보유 {len(st['positions'])}개")
-        return
-    if a.cmd == "run":
-        run_forever(a, costs, risk)
         return
 
     ch = load_champion()
     flt = TradeFilter.from_dict(ch.get("filter"))
     if a.cmd == "backtest":
         res = run(df, ch["params"], costs, flt)
-        print(f"챔피언 {ch.get('generation', 0)}세대  파라미터: {ch['params']}")
+        print(f"챔피언 {ch.get('generation', 0)}세대  {ch.get('timeframe', 5)}분봉  파라미터: {ch['params']}")
         print(res.stats)
         if not res.trades.empty:
             print(res.trades[["entry_time", "dir", "entry", "exit", "r", "reason"]].tail(10).to_string(index=False))
@@ -154,22 +192,27 @@ def improve_due(a) -> bool:
         return True
 
 
-def run_improve(a, df, costs) -> None:
+def run_improve(a) -> None:
     before = load_champion().get("generation", 0)
-    print(f"{datetime.now():%Y-%m-%d %H:%M}  자기 발전 사이클 실행 중...")
-    ch = improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, verbose=False)
+    print(f"{datetime.now():%Y-%m-%d %H:%M}  자기 발전 사이클 실행 중 (봉 단위 {a.timeframes}분 비교)...")
+    dfs = get_all(a)
+    costs = costs_for(a, next(iter(dfs.values())))
+    ch = improve(dfs, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, verbose=False)
     STATE.mkdir(exist_ok=True)
     LAST_IMPROVE.write_text(datetime.now().date().isoformat(), encoding="utf-8")
     if ch.get("generation", 0) != before:
         v = ch.get("valid_stats", {})
-        print(f"  → 새 전략({ch['generation']}세대)으로 교체. 검증 승률 {v.get('win_rate', 0):.0%}, "
+        print(f"  → 새 전략({ch['generation']}세대, {ch['timeframe']}분봉)으로 교체. 검증 승률 {v.get('win_rate', 0):.0%}, "
               f"{v.get('trades', 0)}회, 손익비 합계 {v.get('total_r', 0):+.1f}R")
     else:
-        print("  → 기존 전략 유지 (새 후보가 검증에서 이기지 못함)")
+        print(f"  → 기존 전략 유지 ({ch.get('timeframe', 5)}분봉, 새 후보가 검증에서 이기지 못함)")
+    by = ch.get("by_timeframe") or {}
+    if by:
+        print("     봉 단위별 검증 점수: " + ", ".join(f"{m}분 {v['score']:+.1f}" for m, v in by.items()))
 
 
-def run_forever(a, costs, risk, auto=False):
-    """5분마다 새 봉을 처리하고, 매주 정한 요일에 스스로 전략을 갱신하며, 주간 리포트를 다시 쓴다.
+def run_forever(a, risk, auto=False):
+    """1분마다 확인해 선택된 봉 단위의 새 봉을 처리하고, 정한 요일에 스스로 전략을 갱신하며, 주간 리포트를 다시 쓴다.
 
     auto=True 이면 모의매매와 함께 MT5에 실제 주문도 넣는다.
     """
@@ -178,11 +221,17 @@ def run_forever(a, costs, risk, auto=False):
     names = ",".join(DAYS[int(x)] for x in str(a.improve_days).split(",") if x.strip())
     print(f"자기 발전: 매주 {names}요일 {a.improve_hour}시 이후 각 1회 (PC 시간)")
     print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "") + ", 리포트: reports/")
+    shown_tf = None
     while True:
         try:
-            df = get_data(a)
             if improve_due(a):
-                run_improve(a, df, costs)
+                run_improve(a)
+            tf = champion_tf()
+            if tf != shown_tf:
+                print(f"현재 전략 봉 단위: {tf}분봉")
+                shown_tf = tf
+            df = get_data(a, tf)
+            costs = costs_for(a, df)
             step(df, costs, a.balance, risk, verbose=not auto)
             if auto:
                 import live
@@ -195,7 +244,7 @@ def run_forever(a, costs, risk, auto=False):
             raise
         except Exception as e:  # 연결 끊김 등은 다음 주기에 재시도
             print(f"오류: {e}")
-        time.sleep(300 - time.time() % 300 + 5)   # 다음 5분봉 마감 직후
+        time.sleep(60 - time.time() % 60 + 3)   # 다음 1분봉 마감 직후 (1분봉 전략도 놓치지 않게)
 
 
 if __name__ == "__main__":

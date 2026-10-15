@@ -25,7 +25,6 @@ STATE_FILE = STATE / "paper.json"
 JOURNAL = STATE / "journal.csv"
 JOURNAL_COLS = ["time", "action", "side", "price", "lots", "sl", "tp", "reason", "pnl_usd", "balance",
                 "open_positions", "generation"]
-BAR = pd.Timedelta(minutes=5)
 
 
 @dataclass
@@ -72,13 +71,14 @@ def step(df: pd.DataFrame, costs: Costs = Costs(), balance: float = 10_000, risk
     st = load_state(balance)
     ch = load_champion()
     p, gen = ch["params"], ch.get("generation", 0)
+    bar = pd.Timedelta(minutes=ch.get("timeframe", 5))
     flt = TradeFilter.from_dict(ch.get("filter"))
     sig = signals(df, p)
     s = sig["signal"].to_numpy()
     if flt is not None:
         s = s * flt.allow(sig[FEATURES].to_numpy(), s)
     now = now or pd.Timestamp.now(tz="UTC")
-    closed = df.index + BAR <= now               # 아직 만들어지는 중인 봉은 건너뜀
+    closed = df.index + bar <= now               # 아직 만들어지는 중인 봉은 건너뜀
     half = costs.spread / 2 + costs.slippage
     o, h, l, c = (df[k].to_numpy() for k in ("open", "high", "low", "close"))
     atr_ = sig["atr"].to_numpy()

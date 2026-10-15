@@ -34,12 +34,12 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
 
     half = costs.spread / 2 + costs.slippage
     rows = []
-    i, n = 0, len(df)
-    while i < n - 1:
-        d = s[i]
-        if d == 0 or not allowed[i] or a[i] <= 0:
-            i += 1
+    n = len(df)
+    next_free = 0
+    for i in np.flatnonzero((s != 0) & allowed & (a > 0)):
+        if i < next_free or i >= n - 1:
             continue
+        d = s[i]
         e = i + 1                       # 다음 봉 시가에 진입
         entry = o[e] + d * half
         risk = a[i] * p["atr_sl"]
@@ -63,7 +63,7 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
         exit_px -= d * half
         r = d * (exit_px - entry) / risk
         rows.append((df.index[e], df.index[j], d, entry, exit_px, r, reason, *feats[i]))
-        i = j + 1
+        next_free = j + 1
     trades = pd.DataFrame(rows, columns=["entry_time", "exit_time", "dir", "entry", "exit", "r", "reason", *FEATURES])
     return Result(trades, stats(trades))
 
