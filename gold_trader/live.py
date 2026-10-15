@@ -84,8 +84,9 @@ def tick(df: pd.DataFrame, symbol: str, risk: Risk, max_lot: float, allow_real: 
     try:
         acc = mt5.account_info()
         if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not allow_real:
-            raise SystemExit("실계좌입니다. 자동매매를 막았습니다. 데모 계좌로 로그인하거나, "
-                             "위험을 이해했다면 --allow-real 을 붙여 실행하세요.")
+            print("\n[중지] 실계좌입니다. 자동매매를 막았습니다. 데모 계좌로 로그인하거나, "
+                  "위험을 이해했다면 --allow-real 을 붙여 실행하세요.")
+            raise SystemExit(3)   # 3 = 다시 시작해도 소용없는 중지 (실행 파일이 재시작하지 않음)
         info = mt5.symbol_info(symbol)
         st = _state()
         ch = load_champion()

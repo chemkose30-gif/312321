@@ -43,6 +43,17 @@
 서버 시간은 자동 감지하고, 장이 닫혀 있을 때는 `--server-offset 3` 처럼 직접 지정합니다.
 옵션: `--balance 10000` (가상 잔고), `--risk 3` (거래당 위험 %), `--max-positions 5`, `--leverage 100`, `--improve-days 2,5 --improve-hour 10` (자기 발전 요일·시각, 0=월 ... 6=일)
 
+## 24시간 켜 두기 (자동 시작·자동 재시작)
+
+- `auto_demo.bat`/`start.bat`은 프로그램이 오류로 멈추면 **30초 뒤 자동으로 다시 시작**합니다
+  (MT5가 아직 안 켜진 경우 포함). 창을 닫거나 Ctrl+C로 멈추면 재시작하지 않습니다.
+- `setup_autostart.bat` 더블클릭: 윈도우 로그인 1분 뒤 `auto_demo.bat` 자동 실행 + 전원 연결 시 절전 끄기.
+  "실패"가 나오면 우클릭 → 관리자 권한으로 실행. 해제는 `remove_autostart.bat`.
+- MT5는 프로그램이 연결할 때 스스로 실행합니다. MT5 로그인 때 "비밀번호 저장"을 체크해 두세요.
+- 같은 프로그램을 두 번 실행하면 두 번째는 바로 멈춥니다 (주문 중복 방지).
+- 정전 후 PC가 스스로 켜지게 하려면 BIOS의 "AC 전원 복구(Restore on AC Power Loss)"를 켜고,
+  윈도우 자동 로그인을 설정해야 합니다. 완전한 24시간 운영은 윈도우 VPS를 권합니다.
+
 ## 대시보드
 
 `start.bat`이나 `auto_demo.bat`을 실행하면 `reports\dashboard.html`이 브라우저에 열리고 1분마다 갱신됩니다.

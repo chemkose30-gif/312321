@@ -90,6 +90,7 @@ def main():
     ap.add_argument("--improve-days", default="2,5", help="자기 발전 요일들 (0=월 ... 6=일, PC 시간 기준). 기본 수,토")
     ap.add_argument("--improve-hour", type=int, default=10, help="자기 발전 시각 (PC 시간, 이 시각 이후 1회)")
     ap.add_argument("--days-report", type=int, default=7)
+    ap.add_argument("--no-browser", action="store_true", help="대시보드를 브라우저로 열지 않음 (자동 재시작 때)")
     ap.add_argument("--csv")
     ap.add_argument("--yf", action="store_true")
     ap.add_argument("--symbol", help="기본값: --mt5 는 금 심볼 자동 찾기, --yf 는 GC=F")
@@ -191,6 +192,24 @@ def make_dashboard(a):
     return dashboard.build(settings, a.symbol, a.mt5)
 
 
+def single_instance():
+    """run/auto 가 두 개 동시에 돌면 주문이 두 번 들어가므로, 잠금 파일로 하나만 허용한다."""
+    STATE.mkdir(exist_ok=True)
+    f = open(STATE / "run.lock", "a+")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("\n[중지] 이미 다른 창에서 실행 중입니다. 그 창을 닫은 뒤 다시 실행하세요.")
+        raise SystemExit(3)
+    return f   # 프로그램이 끝날 때까지 열어 둬야 잠금이 유지된다
+
+
 DAYS = "월화수목금토일"
 LAST_IMPROVE = STATE / "last_improve.txt"
 
@@ -239,7 +258,8 @@ def run_forever(a, risk, auto=False):
     print(f"자기 발전: 매주 {names}요일 {a.improve_hour}시 이후 각 1회 (PC 시간)")
     print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "")
           + ", 리포트: reports/, 대시보드: reports/dashboard.html (1분마다 갱신)")
-    shown_tf, opened = None, False
+    lock = single_instance()
+    shown_tf, opened = None, a.no_browser
     while True:
         try:
             if improve_due(a):
@@ -275,6 +295,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n종료합니다.")
+        sys.exit(3)   # 사용자가 멈춘 것이므로 실행 파일이 재시작하지 않게
     except (RuntimeError, ImportError) as e:   # MT5 연결·심볼 문제 등은 짧은 안내만
         print(f"\n[오류] {e}")
         sys.exit(1)

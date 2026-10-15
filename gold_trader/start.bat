@@ -30,10 +30,20 @@ echo [1/2] First learning from MT5 history, this can take a few minutes...
 if errorlevel 1 goto failimprove
 
 :start
+set "OPEN="
+:loop
 echo [2/2] PAPER TRADING (no real orders, records only). Close this window to stop.
-%PY% trader.py run --mt5 --symbol %SYMBOL% --risk 3 --max-positions 5 --leverage 100
+%PY% trader.py run --mt5 --symbol %SYMBOL% --risk 3 --max-positions 5 --leverage 100 %OPEN%
+if errorlevel 3 goto stopped
+set "OPEN=--no-browser"
 echo.
-echo Program stopped. See the message above.
+echo Program stopped unexpectedly. Restarting in 30 seconds... (close this window to stop)
+timeout /t 30 /nobreak > nul
+goto loop
+
+:stopped
+echo.
+echo Stopped. See the message above.
 pause
 exit /b 0
 
