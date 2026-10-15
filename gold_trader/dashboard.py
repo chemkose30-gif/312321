@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from evolve import STATE, load_champion
+from evolve import STATE, load_champions
 from paper import JOURNAL, STATE_FILE
 
 TEMPLATE = Path(__file__).parent / "dashboard_template.html"
 OUT = Path(__file__).parent / "reports" / "dashboard.html"
-MAGIC = 20261015
+from strategy import MAGIC_TO_SLOT, SLOTS
 
 
 def _utc(ts: int, offset_h: float) -> str:
@@ -48,7 +48,8 @@ def collect_mt5(symbol: str) -> dict:
         "ticket": p.ticket, "time": _utc(p.time, offset), "symbol": p.symbol,
         "side": "매수" if p.type == mt5.POSITION_TYPE_BUY else "매도", "lots": p.volume,
         "open": p.price_open, "sl": p.sl, "tp": p.tp, "price": p.price_current,
-        "profit": round(p.profit + p.swap, 2), "ai": p.magic == MAGIC,
+        "profit": round(p.profit + p.swap, 2), "ai": p.magic in MAGIC_TO_SLOT,
+        "strategy": SLOTS[MAGIC_TO_SLOT[p.magic]]["name"] if p.magic in MAGIC_TO_SLOT else "기타",
     } for p in positions]
 
     # 체결(deal)을 포지션 단위로 묶어 '완료된 거래' 목록을 만든다
@@ -56,9 +57,11 @@ def collect_mt5(symbol: str) -> dict:
     for d in deals:
         if d.type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
             continue  # 입출금, 크레딧 등은 거래가 아님
-        t = by_pos.setdefault(d.position_id, {"profit": 0.0, "lots": 0.0, "symbol": d.symbol, "ai": False})
+        t = by_pos.setdefault(d.position_id, {"profit": 0.0, "lots": 0.0, "symbol": d.symbol, "ai": False,
+                                              "strategy": "기타"})
         t["profit"] += d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
-        t["ai"] = t["ai"] or d.magic == MAGIC
+        if d.magic in MAGIC_TO_SLOT:
+            t["ai"], t["strategy"] = True, SLOTS[MAGIC_TO_SLOT[d.magic]]["name"]
         if d.entry == mt5.DEAL_ENTRY_IN:
             t.update(open_time=_utc(d.time, offset), open=d.price,
                      side="매수" if d.type == mt5.DEAL_TYPE_BUY else "매도")
@@ -78,6 +81,7 @@ def collect_paper() -> dict:
         st = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         out["balance"], out["start_balance"] = st.get("balance"), st.get("start_balance")
         out["positions"] = [{"time": pd.Timestamp(p["time"]).isoformat(), "side": "매수" if p["dir"] > 0 else "매도",
+                             "strategy": SLOTS.get(p.get("slot"), {}).get("name", ""),
                              "lots": p["lots"], "open": round(p["entry"], 2), "sl": round(p["sl"], 2),
                              "tp": round(p["tp"], 2)} for p in st.get("positions", [])]
     if JOURNAL.exists():
@@ -94,25 +98,30 @@ def collect_paper() -> dict:
                     "open_time": pd.Timestamp(o["time"]).isoformat() if o else None,
                     "close_time": pd.Timestamp(r["time"]).isoformat(), "side": r["side"], "lots": r["lots"],
                     "open": o["price"] if o else None, "close": r["price"], "profit": float(r["pnl_usd"]),
-                    "reason": r["reason"], "ai": True})
+                    "reason": r["reason"], "ai": True, "strategy": r.get("strategy") or "② 추세 5분봉"})
     return out
 
 
 def collect_ai() -> dict:
-    ch = load_champion()
+    slots = []
+    for slot, ch in load_champions().items():
+        slots.append({"slot": slot, "name": SLOTS[slot]["name"], "kind": SLOTS[slot]["kind"],
+                      "active": bool(ch.get("active")), "generation": ch.get("generation", 0),
+                      "timeframe": ch.get("timeframe", 5), "params": ch["params"], "filter": bool(ch.get("filter")),
+                      "valid_stats": ch.get("valid_stats"), "by_timeframe": ch.get("by_timeframe"),
+                      "promoted_at": ch.get("promoted_at")})
     hist = []
     f = STATE / "history.jsonl"
     if f.exists():
-        for line in f.read_text(encoding="utf-8").splitlines()[-10:]:
+        for line in f.read_text(encoding="utf-8").splitlines()[-20:]:
             e = json.loads(line)
             hist.append({"time": e["time"], "promoted": e["promoted"], "tf": e.get("challenger_timeframe", 5),
-                         "score": e["challenger_score"], "champ_score": e["champion_score"],
+                         "slot": SLOTS.get(e.get("slot", "trend_5"), {}).get("name", ""),
+                         "active": e.get("active"), "score": e["challenger_score"], "champ_score": e["champion_score"],
                          "win_rate": e["challenger_valid"].get("win_rate"), "trades": e["challenger_valid"].get("trades")})
     last = STATE / "last_improve.txt"
-    return {"generation": ch.get("generation", 0), "timeframe": ch.get("timeframe", 5), "params": ch["params"],
-            "filter": bool(ch.get("filter")), "valid_stats": ch.get("valid_stats"),
-            "by_timeframe": ch.get("by_timeframe"), "promoted_at": ch.get("promoted_at"),
-            "last_improve": last.read_text(encoding="utf-8").strip() if last.exists() else None, "history": hist}
+    return {"slots": slots, "last_improve": last.read_text(encoding="utf-8").strip() if last.exists() else None,
+            "history": hist}
 
 
 def build(settings: dict, symbol: str | None = None, use_mt5: bool = False) -> Path:

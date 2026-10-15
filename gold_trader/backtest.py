@@ -25,7 +25,8 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
     sig = signals(df, p)
     o, h, l, c = (df[k].to_numpy() for k in ("open", "high", "low", "close"))
     s = sig["signal"].to_numpy()
-    a = sig["atr"].to_numpy()
+    sl_d = sig["sl_dist"].to_numpy()
+    tp_d = sig["tp_dist"].to_numpy()
     feats = sig[FEATURES].to_numpy()
     if trade_filter is not None:
         allowed = trade_filter.allow(feats, s)
@@ -36,15 +37,15 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
     rows = []
     n = len(df)
     next_free = 0
-    for i in np.flatnonzero((s != 0) & allowed & (a > 0)):
+    for i in np.flatnonzero((s != 0) & allowed & (sl_d > 0)):
         if i < next_free or i >= n - 1:
             continue
         d = s[i]
         e = i + 1                       # 다음 봉 시가에 진입
         entry = o[e] + d * half
-        risk = a[i] * p["atr_sl"]
+        risk = sl_d[i]
         sl = entry - d * risk
-        tp = entry + d * risk * p["rr"]
+        tp = entry + d * tp_d[i]
         exit_px, j, reason = None, e, "time"
         last = min(n - 1, e + p["max_hold"])
         while j <= last:

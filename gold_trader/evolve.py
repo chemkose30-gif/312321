@@ -1,7 +1,9 @@
-"""자기 발전 루프: 진화 탐색 → 처음 보는 기간에서 검증 → 기존 챔피언보다 나을 때만 교체.
+"""자기 발전 루프: 전략 슬롯마다 진화 탐색 → 처음 보는 기간에서 검증 → 기존 챔피언보다 나을 때만 교체.
 
-state/champion.json  현재 사용 중인 전략
-state/history.jsonl  세대마다 무엇을 시도했고 왜 채택/기각했는지 기록
+검증을 통과한(검증 기간에도 수익, 손익비 1.1 이상, 거래 수 충분) 슬롯만 '운용' 상태가 되어 매매한다.
+
+state/champions/<슬롯>.json  슬롯별 현재 전략
+state/history.jsonl          회차·슬롯별로 무엇을 시도했고 왜 채택/기각했는지 기록
 """
 from __future__ import annotations
 
@@ -14,21 +16,45 @@ import pandas as pd
 
 from backtest import Costs, fitness, run
 from learner import TradeFilter
-from strategy import DEFAULT, crossover, mutate, random_params
+from strategy import DEFAULTS, SLOTS, crossover, kind_of, mutate, random_params
 
 STATE = Path(__file__).parent / "state"
+CHAMPS = STATE / "champions"
+MIN_PF = 1.1
 
 
-def load_champion() -> dict:
-    f = STATE / "champion.json"
+def _migrate() -> None:
+    """예전 버전의 단일 챔피언(state/champion.json)을 같은 봉 단위의 추세 슬롯으로 옮긴다."""
+    old = STATE / "champion.json"
+    if old.exists() and not CHAMPS.exists():
+        ch = json.loads(old.read_text(encoding="utf-8"))
+        slot = f"trend_{ch.get('timeframe', 5)}"
+        if slot in SLOTS:
+            ch["params"] = {"kind": "trend", **ch["params"]}
+            ch["active"] = True
+            save_champion(slot, ch)
+        old.rename(old.with_suffix(".json.bak"))
+
+
+def load_champion(slot: str) -> dict:
+    _migrate()
+    f = CHAMPS / f"{slot}.json"
     if f.exists():
-        return json.loads(f.read_text(encoding="utf-8"))
-    return {"timeframe": 5, "params": DEFAULT, "filter": None, "generation": 0}
+        ch = json.loads(f.read_text(encoding="utf-8"))
+        ch["params"].setdefault("kind", SLOTS[slot]["kind"])
+        return ch
+    kind = SLOTS[slot]["kind"]
+    return {"timeframe": 5 if 5 in SLOTS[slot]["tfs"] else SLOTS[slot]["tfs"][0], "params": dict(DEFAULTS[kind]),
+            "filter": None, "generation": 0, "active": False}
 
 
-def save_champion(ch: dict) -> None:
-    STATE.mkdir(exist_ok=True)
-    (STATE / "champion.json").write_text(json.dumps(ch, indent=2, ensure_ascii=False), encoding="utf-8")
+def load_champions() -> dict[str, dict]:
+    return {s: load_champion(s) for s in SLOTS}
+
+
+def save_champion(slot: str, ch: dict) -> None:
+    CHAMPS.mkdir(parents=True, exist_ok=True)
+    (CHAMPS / f"{slot}.json").write_text(json.dumps(ch, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def log(entry: dict) -> None:
@@ -37,26 +63,28 @@ def log(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def split(df: pd.DataFrame, valid_frac: float):
-    cut = int(len(df) * (1 - valid_frac))
-    return df.iloc[:cut], df.iloc[cut:]
-
-
 def evaluate(df, params, costs, flt=None, min_trades=30):
     st = run(df, params, costs, flt).stats
     return fitness(st, min_trades), st
 
 
+def passes(st: dict, min_trades: int) -> bool:
+    """실제로 매매해도 될 만큼 검증 성적이 좋은가."""
+    return bool(st.get("trades", 0) >= min_trades and st.get("total_r", 0) > 0
+                and st.get("profit_factor", 0) >= MIN_PF)
+
+
 def search(train, costs, seed_params, pop=24, gens=12, seed=None, min_trades=30, verbose=True):
     rng = random.Random(seed)
+    kind = kind_of(seed_params)
     population = [dict(seed_params)] + [mutate(seed_params, rng, 0.5) for _ in range(pop // 3)]
-    population += [random_params(rng) for _ in range(pop - len(population))]
+    population += [random_params(rng, kind) for _ in range(pop - len(population))]
     scored = []
     for g in range(gens):
         scored = sorted(((evaluate(train, p, costs, min_trades=min_trades)[0], p) for p in population),
                         key=lambda x: x[0], reverse=True)
         if verbose:
-            print(f"  세대 {g + 1:2d}/{gens}: 학습구간 최고 점수 {scored[0][0]:.2f}")
+            print(f"    세대 {g + 1:2d}/{gens}: 학습구간 최고 점수 {scored[0][0]:.2f}")
         elite = [p for _, p in scored[: max(2, pop // 4)]]
         children = []
         while len(children) < pop - len(elite):
@@ -78,45 +106,35 @@ def align(dfs: dict[int, pd.DataFrame], min_span_frac: float = 0.6) -> dict[int,
     return {m: dfs[m][(dfs[m].index >= start) & (dfs[m].index <= end)] for m in sorted(keep)}
 
 
-def improve(dfs: dict[int, pd.DataFrame] | pd.DataFrame, costs: Costs = Costs(), valid_frac=0.3, pop=24,
-            gens=12, min_trades=30, seed=None, verbose=True) -> dict:
-    """한 번의 발전 사이클. 봉 단위마다 전략을 찾고, 같은 검증 기간에서 겨뤄 가장 나은 것을 고른다.
-
-    dfs: {봉 단위(분): 데이터}. 데이터프레임 하나만 주면 그 봉 단위만 쓴다.
-    거래당 위험이 같으므로 같은 기간의 R 합계(낙폭 반영)를 비교하면 봉 단위끼리도 공정하다.
-    """
-    from data import bar_minutes
-
-    if isinstance(dfs, pd.DataFrame):
-        dfs = {bar_minutes(dfs): dfs}
-    dfs = align(dfs)
-    any_df = next(iter(dfs.values()))
-    cut = any_df.index[0] + (any_df.index[-1] - any_df.index[0]) * (1 - valid_frac)
-    champ = load_champion()
-    champ_tf = champ.get("timeframe", 5)
-    if verbose:
-        print(f"학습 {any_df.index[0]:%Y-%m-%d}~{cut:%Y-%m-%d}, 검증 {cut:%Y-%m-%d}~{any_df.index[-1]:%Y-%m-%d}, "
-              f"봉 단위 후보 {list(dfs)}분, 비용 스프레드 {costs.spread}$ + 미끄러짐 {costs.slippage}$")
-    min_valid = max(10, int(min_trades * valid_frac / (1 - valid_frac)))
+def improve_slot(slot: str, dfs: dict[int, pd.DataFrame], cut, costs: Costs, pop, gens, min_trades, min_valid,
+                 seed, verbose) -> dict:
+    cfg = SLOTS[slot]
+    champ = load_champion(slot)
+    champ_tf = champ.get("timeframe")
+    tfs = [m for m in cfg["tfs"] if m in dfs]
+    if not tfs:
+        if verbose:
+            print(f"  {cfg['name']}: 쓸 수 있는 봉 데이터가 없어 건너뜀")
+        return champ
 
     # 1) 현재 챔피언을 새 검증 구간에서 다시 평가 (시장이 바뀌었으면 점수가 떨어진다)
     if champ_tf in dfs:
-        champ_flt = TradeFilter.from_dict(champ.get("filter"))
-        champ_score, champ_st = evaluate(dfs[champ_tf][dfs[champ_tf].index >= cut], champ["params"], costs,
-                                         champ_flt, min_valid)
+        v = dfs[champ_tf][dfs[champ_tf].index >= cut]
+        champ_score, champ_st = evaluate(v, champ["params"], costs, TradeFilter.from_dict(champ.get("filter")),
+                                         min_valid)
     else:
         champ_score, champ_st = -1e9, {}
 
     # 2) 봉 단위마다 학습 구간에서 진화 탐색 → 3) 후보마다 학습 필터를 붙여 검증 구간에서 겨룸
     best, per_tf = None, {}
-    for tf, df in dfs.items():
+    for tf in tfs:
+        df = dfs[tf]
         train, valid = df[df.index < cut], df[df.index >= cut]
         if verbose:
-            print(f"\n[{tf}분봉] 학습 {len(train)}봉, 검증 {len(valid)}봉")
-        seed_params = champ["params"] if tf == champ_tf else DEFAULT
-        finalists = search(train, costs, seed_params, pop, gens, seed, min_trades, verbose)
+            print(f"  [{cfg['name']} · {tf}분봉] 학습 {len(train)}봉, 검증 {len(valid)}봉")
+        seed_params = champ["params"] if tf == champ_tf else dict(DEFAULTS[cfg["kind"]])
         tf_best = None
-        for p in finalists:
+        for p in search(train, costs, seed_params, pop, gens, seed, min_trades, verbose):
             cands = [(None, *evaluate(valid, p, costs, None, min_valid))]
             tr = run(train, p, costs).trades
             if len(tr) >= 40:
@@ -128,31 +146,54 @@ def improve(dfs: dict[int, pd.DataFrame] | pd.DataFrame, costs: Costs = Costs(),
                 if tf_best is None or sc > tf_best[3]:
                     tf_best = (tf, p, flt, sc, st)
         per_tf[tf] = {"score": round(tf_best[3], 3), **tf_best[4]}
-        if verbose:
-            print(f"  {tf}분봉 최고 후보 (검증): {tf_best[4]}  점수 {tf_best[3]:.2f}")
         if best is None or tf_best[3] > best[3]:
             best = tf_best
 
     tf, p, flt, score, st = best
-    # 4) 챔피언 교체 조건: 검증 점수가 더 높고, 검증 구간에서도 수익이 났을 것
+    # 4) 교체 조건: 검증 점수가 더 높고, 검증 구간에서도 수익이 났을 것
     promoted = bool(score > champ_score and st["total_r"] > 0)
-    entry = {
-        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "data": [str(any_df.index[0]), str(any_df.index[-1])],
-        "spread": costs.spread,
-        "champion_timeframe": champ_tf, "champion_valid": champ_st, "champion_score": round(champ_score, 3),
-        "challenger_timeframe": tf, "challenger_valid": st, "challenger_score": round(score, 3),
-        "challenger_params": p, "challenger_uses_filter": flt is not None,
-        "by_timeframe": per_tf, "promoted": promoted,
-    }
-    log(entry)
     if promoted:
         champ = {"timeframe": tf, "params": p, "filter": flt.to_dict() if flt else None,
                  "generation": champ.get("generation", 0) + 1, "valid_stats": st,
-                 "by_timeframe": per_tf, "promoted_at": entry["time"]}
-        save_champion(champ)
+                 "by_timeframe": per_tf, "promoted_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        active_st = st
+    else:
+        champ["valid_stats"] = champ_st or champ.get("valid_stats")
+        champ["by_timeframe"] = per_tf
+        active_st = champ_st
+    champ["active"] = passes(active_st, min_valid)
+    champ["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    save_champion(slot, champ)
+    log({"time": champ["checked_at"], "slot": slot,
+         "champion_timeframe": champ_tf, "champion_valid": champ_st, "champion_score": round(champ_score, 3),
+         "challenger_timeframe": tf, "challenger_valid": st, "challenger_score": round(score, 3),
+         "challenger_params": p, "challenger_uses_filter": flt is not None, "by_timeframe": per_tf,
+         "promoted": promoted, "active": champ["active"]})
     if verbose:
-        print(f"\n기존 챔피언 {champ_tf}분봉 (검증): {champ_st}  점수 {champ_score:.2f}")
-        print(f"도전자 {tf}분봉 (검증): {st}  점수 {score:.2f}  필터 {'사용' if flt else '없음'}")
-        print("→ 도전자가 새 챔피언이 되었습니다." if promoted else "→ 기존 챔피언 유지 (도전자가 검증에서 이기지 못함).")
+        vs = champ.get("valid_stats") or {}
+        print(f"  → {cfg['name']}: {'새 전략으로 교체' if promoted else '기존 유지'} "
+              f"({champ['timeframe']}분봉, 검증 {vs.get('trades', 0)}회 승률 {vs.get('win_rate', 0):.0%} "
+              f"{vs.get('total_r', 0):+.1f}R 손익비 {vs.get('profit_factor', 0)}) "
+              f"→ {'운용' if champ['active'] else '대기 (검증 기준 미달)'}")
     return champ
+
+
+def improve(dfs: dict[int, pd.DataFrame] | pd.DataFrame, costs: Costs = Costs(), valid_frac=0.3, pop=24,
+            gens=12, min_trades=30, seed=None, verbose=True, slots=None) -> dict[str, dict]:
+    """한 번의 발전 사이클. 모든 슬롯을 같은 학습/검증 기간으로 다시 학습하고 슬롯별 챔피언을 돌려준다.
+
+    거래당 위험이 같으므로 같은 기간의 R 합계(낙폭 반영)로 봉 단위끼리 비교해도 공정하다.
+    """
+    from data import bar_minutes
+
+    if isinstance(dfs, pd.DataFrame):
+        dfs = {bar_minutes(dfs): dfs}
+    dfs = align(dfs)
+    any_df = next(iter(dfs.values()))
+    cut = any_df.index[0] + (any_df.index[-1] - any_df.index[0]) * (1 - valid_frac)
+    min_valid = max(10, int(min_trades * valid_frac / (1 - valid_frac)))
+    if verbose:
+        print(f"학습 {any_df.index[0]:%Y-%m-%d}~{cut:%Y-%m-%d}, 검증 {cut:%Y-%m-%d}~{any_df.index[-1]:%Y-%m-%d}, "
+              f"봉 단위 {list(dfs)}분, 비용 스프레드 {costs.spread}$ + 미끄러짐 {costs.slippage}$")
+    return {s: improve_slot(s, dfs, cut, costs, pop, gens, min_trades, min_valid, seed, verbose)
+            for s in (slots or SLOTS)}

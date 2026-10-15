@@ -33,7 +33,7 @@ if errorlevel 1 goto failimprove
 set "OPEN="
 :loop
 echo [2/2] PAPER TRADING (no real orders, records only). Close this window to stop.
-%PY% trader.py run --mt5 --symbol %SYMBOL% --risk 3 --max-positions 5 --leverage 100 %OPEN%
+%PY% trader.py run --mt5 --symbol %SYMBOL% --risk 1 --max-positions 5 --leverage 100 %OPEN%
 if errorlevel 3 goto stopped
 set "OPEN=--no-browser"
 echo.

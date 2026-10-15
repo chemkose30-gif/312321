@@ -186,17 +186,16 @@ tr:last-child td { border-bottom: 0; }
     <div class="table-wrap" id="trades"></div>
   </section>
 
-  <section class="section grid two">
-    <div class="card">
-      <h2>AI 전략 상태</h2>
-      <dl class="kv" id="ai-kv"></dl>
-    </div>
-    <div class="card">
-      <h2>봉 단위별 최근 검증 점수</h2>
-      <div id="tf-scores"></div>
-      <h2 style="margin-top:18px">자기 발전 기록 <span class="sub">최근 10회</span></h2>
-      <div class="table-wrap" id="ai-history"></div>
-    </div>
+  <section class="section card">
+    <h2>전략별 현황 <span class="sub" id="ai-sched"></span></h2>
+    <div class="table-wrap" id="ai-slots"></div>
+    <div class="sub" style="margin-top:8px">검증 = 학습에 쓰지 않은 최근 기간의 성적. 검증에서 수익·손익비 1.1 이상·거래 수 충분해야 운용합니다.
+      실제 = 위 탭(AI 자동매매/모의매매)에서 지금까지 한 거래.</div>
+  </section>
+
+  <section class="section card">
+    <h2>자기 발전 기록 <span class="sub">최근 20건</span></h2>
+    <div class="table-wrap" id="ai-history"></div>
   </section>
 </div>
 
@@ -438,7 +437,7 @@ function render() {
   $("pos-count").textContent = ps.length + "개";
   $("positions").innerHTML = table([
     { h: "진입 시각", f: (p) => fmtTime(p.time) },
-    ...(src === "all" ? [{ h: "구분", f: (p) => p.ai ? '<span class="tag">AI</span>' : '<span class="tag">기타</span>' }] : []),
+    { h: "전략", f: (p) => `<span class="tag">${esc(p.strategy || (p.ai ? "AI" : "기타"))}</span>` },
     { h: "방향", f: (p) => esc(p.side) },
     { h: "랏", num: 1, f: (p) => fmtNum(p.lots) },
     { h: "진입가", num: 1, f: (p) => fmtNum(p.open) },
@@ -453,7 +452,7 @@ function render() {
   $("trades").innerHTML = table([
     { h: "진입", f: (t) => fmtTime(t.open_time) },
     { h: "청산", f: (t) => fmtTime(t.close_time) },
-    ...(src === "all" ? [{ h: "구분", f: (t) => t.ai ? '<span class="tag">AI</span>' : '<span class="tag">기타</span>' }] : []),
+    { h: "전략", f: (t) => `<span class="tag">${esc(t.strategy || (t.ai ? "AI" : "기타"))}</span>` },
     { h: "방향", f: (t) => esc(t.side) },
     { h: "랏", num: 1, f: (t) => fmtNum(t.lots) },
     { h: "진입가", num: 1, f: (t) => t.open == null ? "-" : fmtNum(t.open) },
@@ -463,37 +462,34 @@ function render() {
   ], shown) + (rev.length > 30 ? `<button class="more" id="more">${showAll ? "최근 30건만" : "전체 보기"}</button>` : "");
   const more = $("more"); if (more) more.onclick = () => { showAll = !showAll; render(); };
 
-  // AI 상태
-  const ai = D.ai, pr = ai.params, v = ai.valid_stats || {};
-  const days = "월화수목금토일";
+  // 전략별 현황
+  const ai = D.ai, days = "월화수목금토일";
   const improveDays = String(S.improve_days || "").split(",").filter(Boolean).map((d) => days[+d]).join("·");
-  $("ai-kv").innerHTML = [
-    ["전략 세대", ai.generation + "세대" + (ai.promoted_at ? ` (${esc(ai.promoted_at)} 교체)` : "")],
-    ["봉 단위", ai.timeframe + "분봉"],
-    ["손절 / 익절", `ATR × ${pr.atr_sl} / 손절폭 × ${pr.rr}`],
-    ["추세 EMA", `${pr.ema_fast} / ${pr.ema_slow} / ${pr.ema_trend}`],
-    ["최대 보유", `${pr.max_hold}봉 (${pr.max_hold * ai.timeframe}분)`],
-    ["거래 시간 (UTC)", `${pr.start_hour}시 ~ ${pr.end_hour}시`],
-    ["VWAP · 숏 · 학습 필터", `${pr.use_vwap ? "사용" : "안 씀"} · ${pr.allow_short ? "허용" : "롱만"} · ${ai.filter ? "사용" : "안 씀"}`],
-    ["검증 성적", v.trades ? `승률 ${fmtPct(v.win_rate)} · ${v.trades}회 · ${v.total_r >= 0 ? "+" : ""}${v.total_r}R` : "-"],
-    ["마지막 학습", ai.last_improve || "-"],
-    ["학습 일정", improveDays ? `매주 ${improveDays}요일 ${S.improve_hour}시 이후` : "-"],
-  ].map(([k, val]) => `<dt>${k}</dt><dd>${val}</dd>`).join("");
-
-  const by = ai.by_timeframe || {};
-  const ent = Object.entries(by);
-  if (ent.length) {
-    const mx = Math.max(...ent.map(([, x]) => Math.max(0, x.score)), 0.01);
-    $("tf-scores").innerHTML = ent.map(([tf, x]) => `<div class="bar-row"><span class="name">${tf}분봉</span>
-      <span class="track"><span class="fill" style="width:${Math.max(0, x.score) / mx * 100}%"></span></span>
-      <span class="v">${x.score > -50 ? fmtNum(x.score) : "거래 부족"}</span></div>`).join("") +
-      '<div class="sub">점수 = 검증 기간 손익(R) ÷ (1 + 최대 낙폭), 거래 수가 적으면 감점</div>';
-  } else $("tf-scores").innerHTML = '<div class="empty">아직 학습 기록이 없습니다</div>';
+  $("ai-sched").textContent = (improveDays ? `학습: 매주 ${improveDays}요일 ${S.improve_hour}시 이후` : "") +
+    (ai.last_improve ? ` · 마지막 ${ai.last_improve}` : "");
+  const KIND = { trend: "추세 되돌림", breakout: "세션 돌파", meanrev: "평균 회귀" };
+  const how = (x) => {
+    const p = x.params;
+    if (x.kind === "breakout") return `범위 ${p.range_start}~${p.range_start + p.range_len}시, ${p.trade_end}시까지 돌파 · 익절 손절×${p.rr}`;
+    if (x.kind === "meanrev") return `밴드 ${p.band_len}봉 ±${p.band_k}σ · 익절 평균선×${p.tp_frac}`;
+    return `EMA ${p.ema_fast}/${p.ema_slow}/${p.ema_trend} · 익절 손절×${p.rr}`;
+  };
+  const real = {};
+  for (const t of ts) { const k = t.strategy || ""; (real[k] = real[k] || []).push(t); }
+  $("ai-slots").innerHTML = table([
+    { h: "전략", f: (x) => `<b>${esc(x.name)}</b><br><span class="sub">${KIND[x.kind] || ""}</span>` },
+    { h: "상태", f: (x) => x.active ? '<span class="up">● 운용</span>' : '<span class="sub">○ 대기</span>' },
+    { h: "봉", f: (x) => x.timeframe + "분" },
+    { h: "방식", f: (x) => `<span class="sub">손절 ATR×${x.params.atr_sl} · ${how(x)}<br>최대 ${x.params.max_hold}봉 · ${x.params.allow_short ? "매수·매도" : "매수만"}${x.filter ? " · 학습 필터" : ""}</span>` },
+    { h: "검증", num: 1, f: (x) => { const v = x.valid_stats || {}; return v.trades ? `${v.trades}회 · 승률 ${fmtPct(v.win_rate)}<br>${v.total_r >= 0 ? "+" : ""}${v.total_r}R · 손익비 ${v.profit_factor}` : "-"; } },
+    { h: "실제", num: 1, f: (x) => { const r = real[x.name] || []; if (!r.length) return '<span class="sub">아직 없음</span>'; const k = stats(r); return `${k.n}회 · 승률 ${fmtPct(k.winRate)}<br>${pnlHtml(k.total)}`; } },
+  ], ai.slots);
   $("ai-history").innerHTML = table([
     { h: "시각", f: (h) => esc(h.time.slice(5, 16)) },
-    { h: "결과", f: (h) => h.promoted ? "✓ 교체" : "유지" },
+    { h: "전략", f: (h) => esc(h.slot) },
+    { h: "결과", f: (h) => (h.promoted ? "✓ 교체" : "유지") + (h.active === false ? " · 대기" : h.active ? " · 운용" : "") },
     { h: "도전자", f: (h) => h.tf + "분봉" },
-    { h: "점수", num: 1, f: (h) => `${fmtNum(h.score)} vs ${fmtNum(h.champ_score)}` },
+    { h: "점수", num: 1, f: (h) => `${h.score > -50 ? fmtNum(h.score) : "거래 부족"} vs ${h.champ_score > -50 ? fmtNum(h.champ_score) : "-"}` },
     { h: "검증 승률", num: 1, f: (h) => h.trades ? `${fmtPct(h.win_rate)} (${h.trades}회)` : "-" },
   ], ai.history.slice().reverse());
 }
