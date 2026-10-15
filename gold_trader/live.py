@@ -122,11 +122,16 @@ def tick(dfs: dict[int, pd.DataFrame], symbol: str, risk: Risk, max_lot: float, 
                 _close(mt5, pos, info, "주말 전 청산" if friday_close else "시간초과", log)
                 mine.remove(pos)
 
-        # 3) 하루 손실 한도
-        day = str(now_utc.date())
-        if st["day"] != day:
-            st["day"], st["day_start_balance"] = day, acc.balance
-        day_loss = (st["day_start_balance"] - acc.equity) / st["day_start_balance"] * 100 if st["day_start_balance"] else 0
+        # 3) 하루 손실 한도: 계좌 전체가 아니라 이 프로그램(매직 넘버) 거래의 오늘 손익만 본다.
+        #    같은 계좌의 다른 EA 손실이나 계좌 변경 때문에 잘못 멈추지 않게 하기 위함
+        day_loss = 0.0
+        if risk.daily_loss_pct:
+            day_start_srv = now_srv - now_srv % 86400                 # 브로커 서버 기준 오늘 0시
+            realized = sum(dl.profit + dl.commission + dl.swap for dl in deals
+                           if dl.magic in MAGIC_TO_SLOT and dl.time >= day_start_srv)
+            floating = sum(x.profit + x.swap for x in mine)
+            start_bal = acc.balance - realized
+            day_loss = -(realized + floating) / start_bal * 100 if start_bal > 0 else 0.0
 
         # 4) 운용 중인 전략마다 막 마감된 봉의 신호 확인
         for slot, ch in champs.items():

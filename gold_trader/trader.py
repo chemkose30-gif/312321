@@ -104,7 +104,7 @@ def main():
     ap.add_argument("--max-per-strategy", type=int, default=2, help="전략 하나가 동시에 들 수 있는 최대 포지션 수")
     ap.add_argument("--slot", choices=list(SLOTS), help="loosen/backtest/signal 에서 볼 전략 슬롯 (기본: 운용 중인 전부)")
     ap.add_argument("--leverage", type=float, default=100, help="레버리지 (모의매매 증거금 계산용)")
-    ap.add_argument("--daily-loss", type=float, default=10, help="하루 손실 한도 %% (0이면 없음)")
+    ap.add_argument("--daily-loss", type=float, default=0, help="하루 손실 한도 %% (기본 0 = 없음). AI 거래 손익만 계산")
     ap.add_argument("--max-lot", type=float, default=0.10, help="자동매매 1회 최대 랏")
     ap.add_argument("--allow-real", action="store_true", help="실계좌 자동매매 허용 (주의)")
     ap.add_argument("--improve-days", default="2,5", help="자기 발전 요일들 (0=월 ... 6=일, PC 시간 기준). 기본 수,토")

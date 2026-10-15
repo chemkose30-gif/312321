@@ -33,7 +33,7 @@ class Risk:
     risk_pct: float = 1.0         # 거래 1건당 잔고 대비 위험 %
     max_positions: int = 5        # 모든 전략 합쳐 동시에 들 수 있는 최대 포지션 수
     leverage: float = 100.0
-    daily_loss_pct: float = 10.0  # 하루 손실 한도 % (0이면 없음)
+    daily_loss_pct: float = 0.0   # 하루 손실 한도 % (0이면 없음)
     max_per_strategy: int = 2     # 전략 하나가 동시에 들 수 있는 최대 포지션 수
 
 
