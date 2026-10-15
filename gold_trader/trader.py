@@ -141,8 +141,8 @@ LAST_IMPROVE = STATE / "last_improve.txt"
 
 
 def improve_due(a) -> bool:
-    """챔피언이 아직 없거나, 정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
-    if not (STATE / "champion.json").exists():
+    """한 번도 발전한 적이 없거나, 정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
+    if not LAST_IMPROVE.exists():
         return True
     now = datetime.now()
     days = {int(x) for x in str(a.improve_days).split(",") if x.strip()}
