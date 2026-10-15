@@ -3,8 +3,8 @@ chcp 65001 > nul
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
 
-rem ==== Gold symbol name exactly as shown in MT5 Market Watch (XAUUSD, XAUUSD.GOLD, GOLD ...) ====
-set SYMBOL=XAUUSD.GOLD
+rem ==== Gold symbol: auto = find it automatically, or type the exact Market Watch name (e.g. XAUUSD) ====
+set SYMBOL=auto
 
 rem ==== Find installed Python: py launcher 3.12 first, then python, then default install folders ====
 set "PY="

@@ -98,6 +98,36 @@ def _save_offset(symbol: str, offset: float) -> None:
 TIMEFRAMES = (1, 5, 15)   # AI가 고를 수 있는 봉 단위 (분)
 
 
+def resolve_mt5_symbol(symbol: str) -> str:
+    """브로커마다 다른 금 심볼 이름을 찾는다. 지정한 이름이 있으면 그대로, 없으면 XAUUSD·GOLD 계열에서 고른다."""
+    import MetaTrader5 as mt5
+
+    mt5_connect(mt5)
+    try:
+        if symbol and symbol.lower() != "auto" and mt5.symbol_select(symbol, True):
+            return symbol
+        names = [s.name for s in (mt5.symbols_get() or [])]
+        upper = {n.upper(): n for n in names}
+
+        def rank(n: str):
+            u = n.upper()
+            return (u != "XAUUSD", not u.startswith("XAUUSD"), "XAU" not in u, len(u))
+
+        cands = sorted((n for n in names if ("XAU" in n.upper() and "USD" in n.upper())
+                        or n.upper() in ("GOLD", "GOLD.") or n.upper().startswith("GOLD")), key=rank)
+        for n in cands:
+            if mt5.symbol_select(n, True):
+                if symbol and symbol.lower() != "auto":
+                    print(f"심볼 {symbol} 없음 → {n} 사용")
+                else:
+                    print(f"금 심볼: {n}")
+                return n
+        hint = ", ".join(sorted(upper.values())[:15])
+        raise RuntimeError(f"금 심볼을 찾지 못했습니다. 이 계좌의 심볼 예: {hint}")
+    finally:
+        mt5.shutdown()
+
+
 def bar_minutes(df: pd.DataFrame) -> int:
     return int(round(pd.Series(df.index).diff().median().total_seconds() / 60))
 

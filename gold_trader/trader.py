@@ -92,7 +92,7 @@ def main():
     ap.add_argument("--days-report", type=int, default=7)
     ap.add_argument("--csv")
     ap.add_argument("--yf", action="store_true")
-    ap.add_argument("--symbol", help="기본값: --mt5 는 XAUUSD, --yf 는 GC=F")
+    ap.add_argument("--symbol", help="기본값: --mt5 는 금 심볼 자동 찾기, --yf 는 GC=F")
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--spread", type=float, help="스프레드 ($). 생략하면 MT5 실제값, 없으면 0.30")
@@ -104,7 +104,9 @@ def main():
     ap.add_argument("--seed", type=int)
     a = ap.parse_args()
 
-    a.symbol = a.symbol or ("XAUUSD.GOLD" if a.mt5 else "GC=F")
+    a.symbol = a.symbol or ("auto" if a.mt5 else "GC=F")
+    if a.mt5:
+        a.symbol = data.resolve_mt5_symbol(a.symbol)
     if a.cmd == "dashboard":
         import webbrowser
         out = make_dashboard(a)
@@ -269,4 +271,10 @@ def run_forever(a, risk, auto=False):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n종료합니다.")
+    except (RuntimeError, ImportError) as e:   # MT5 연결·심볼 문제 등은 짧은 안내만
+        print(f"\n[오류] {e}")
+        sys.exit(1)
