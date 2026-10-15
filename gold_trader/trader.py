@@ -9,6 +9,7 @@
   python trader.py report                         # 최근 7일 매수·매도 기록 리포트
   python trader.py auto --mt5                     # MT5 자동매매 (기본: 데모 계좌만)
   python trader.py dashboard --mt5                # 대시보드 페이지 만들고 브라우저로 열기
+  python trader.py loosen --mt5                   # 매수 조건을 단계별로 느슨하게 했을 때 거래 수·성적 비교
 
 데이터 원본: --mt5 (MetaTrader 5 실시간), --csv 파일, --yf (yfinance GC=F), --demo (합성 데이터, 동작 확인용)
 봉 단위(1·5·15분)는 학습 때 AI가 고른다. --csv/--yf/--demo 는 원본보다 긴 봉 단위만 쓸 수 있다.
@@ -77,7 +78,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # 윈도우 콘솔 한글 깨짐 방지
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report", "auto", "dashboard"])
+    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report", "auto", "dashboard", "loosen"])
     ap.add_argument("--mt5", action="store_true")
     ap.add_argument("--server-offset", type=float, help="MT5 서버 시간 - UTC (예: 3). 생략하면 자동 감지")
     ap.add_argument("--balance", type=float, default=10_000, help="모의 계좌 시작 잔고 ($)")
@@ -140,6 +141,20 @@ def main():
         return
     if a.cmd == "run":
         run_forever(a, risk)
+        return
+    if a.cmd == "loosen":
+        import loosen
+
+        tf = champion_tf()
+        if a.mt5:
+            df = data.load_mt5(a.symbol, tf, {1: 100_000, 5: 20_000, 15: 8_000}[tf], a.server_offset)
+        else:
+            df = data.resample(base_data(a), tf)
+        t, start, end, days = loosen.table(df, costs_for(a, df))
+        print(f"\n매수 조건 완화 비교 ({tf}분봉, 검증 기간 {start:%Y-%m-%d}~{end:%Y-%m-%d}, 거래일 {days}일)")
+        print(f"R = 손절 1번 금액 (거래당 위험 {a.risk}%면 1R = 잔고의 {a.risk}%)\n")
+        print(t.to_string(index=False))
+        print(f"\n저장: {loosen.save(t, start, end, days, tf, a.risk)}")
         return
     if a.cmd == "improve":
         dfs = get_all(a)
