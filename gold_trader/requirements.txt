@@ -1,0 +1,3 @@
+numpy
+pandas
+yfinance  # --yf 사용 시에만 필요
