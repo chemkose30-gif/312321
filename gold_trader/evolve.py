@@ -22,18 +22,18 @@ STATE = Path(__file__).parent / "state"
 def load_champion() -> dict:
     f = STATE / "champion.json"
     if f.exists():
-        return json.loads(f.read_text())
+        return json.loads(f.read_text(encoding="utf-8"))
     return {"params": DEFAULT, "filter": None, "generation": 0}
 
 
 def save_champion(ch: dict) -> None:
     STATE.mkdir(exist_ok=True)
-    (STATE / "champion.json").write_text(json.dumps(ch, indent=2, ensure_ascii=False))
+    (STATE / "champion.json").write_text(json.dumps(ch, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def log(entry: dict) -> None:
     STATE.mkdir(exist_ok=True)
-    with open(STATE / "history.jsonl", "a") as f:
+    with open(STATE / "history.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 

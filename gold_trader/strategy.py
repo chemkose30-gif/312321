@@ -1,7 +1,7 @@
-"""매개변수화된 금 단타 전략: 추세 방향 + 되돌림 진입 + ATR 손절/익절.
+"""매개변수화된 금(XAUUSD) 단타 전략: 추세 방향 + 되돌림 진입 + ATR 손절/익절.
 
   롱: 가격 > 추세 EMA, 빠른 EMA > 느린 EMA, (옵션) 가격 > VWAP,
-      스토캐스틱이 과매도선을 아래에서 위로 돌파, 허용된 시간대
+      스토캐스틱이 과매도선을 아래에서 위로 돌파, 허용된 시간대, 경제지표 발표 전후 30분 제외
   숏: 위 조건의 반대
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import random
 import numpy as np
 import pandas as pd
 
+from gold import news_blackout
 from indicators import atr, ema, session_vwap, stochastic
 
 # 진화가 탐색하는 범위: (최소, 최대, 정수 여부)
@@ -75,7 +76,8 @@ def signals(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     st = stochastic(df, p["stoch_k"])
     vw = session_vwap(df)
     hour = df.index.hour
-    in_session = (hour >= p["start_hour"]) & (hour < p["end_hour"])
+    in_session = (hour >= p["start_hour"]) & (hour < p["end_hour"]) & ~news_blackout(df.index)
+    in_session &= ~((df.index.dayofweek == 4) & (hour >= 19))  # 금요일 마감 전 신규 진입 금지
     lo, hi = p["stoch_low"], 100 - p["stoch_low"]
 
     long_ = (c > t) & (f > s) & (st.shift() < lo) & (st >= lo) & in_session

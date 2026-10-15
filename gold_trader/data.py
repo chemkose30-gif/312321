@@ -59,3 +59,42 @@ def synthetic(days: int = 90, seed: int = 0, start_price: float = 2400.0) -> pd.
     low = np.minimum(open_, close) - wick * rng.random(n)
     vol = rng.integers(50, 500, n) * session_vol
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
+
+
+_offset_cache: dict = {}
+
+
+def load_mt5(symbol: str = "XAUUSD", bars: int = 20000, server_offset: float | None = None) -> pd.DataFrame:
+    """실행 중인 MetaTrader 5 터미널에서 5분봉을 읽는다 (Windows, pip install MetaTrader5).
+
+    가격만 읽고 주문은 절대 넣지 않는다.
+    """
+    import time as _time
+
+    import MetaTrader5 as mt5
+
+    if not mt5.initialize():
+        raise RuntimeError(f"MT5 연결 실패: {mt5.last_error()} (터미널이 켜져 있고 로그인돼 있는지 확인)")
+    try:
+        if not mt5.symbol_select(symbol, True):
+            raise RuntimeError(f"심볼 {symbol} 없음 (시장 감시 창의 이름 그대로 입력: 예 XAUUSD.GOLD)")
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, bars)
+        if server_offset is None:
+            server_offset = _offset_cache.get(symbol)
+        if server_offset is None:
+            # 장중이면 최신 틱의 서버 시각과 실제 UTC 차이로 서버 시간대를 추정한다
+            tick = mt5.symbol_info_tick(symbol)
+            gap = (tick.time - _time.time()) / 3600 if tick else None
+            if gap is None or abs(gap - round(gap)) > 0.1:
+                raise RuntimeError("서버 시간대를 자동으로 알 수 없습니다 (장 마감 중). --server-offset 3 처럼 지정하세요")
+            server_offset = _offset_cache[symbol] = float(round(gap))
+            print(f"MT5 서버 시간 = UTC{server_offset:+.0f} 로 감지")
+    finally:
+        mt5.shutdown()
+    if rates is None or len(rates) == 0:
+        raise RuntimeError(f"{symbol} 데이터 없음 (브로커 심볼명 확인: XAUUSD, GOLD, XAUUSD.m 등)")
+    df = pd.DataFrame(rates)
+    # MT5 시각은 브로커 서버 시간(대부분 UTC+2/+3). server_offset 시간만큼 빼서 UTC로 맞춘다
+    df.index = pd.to_datetime(df["time"], unit="s", utc=True) - pd.Timedelta(hours=server_offset)
+    df["volume"] = df["tick_volume"]
+    return df[COLS].astype(float)

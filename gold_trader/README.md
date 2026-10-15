@@ -19,6 +19,29 @@
 - **과최적화 방지**: 검증 구간 비교, 최소 거래 수, 낙폭 페널티, 스프레드와 슬리피지 반영, 같은 봉에서 손절과 익절이 모두 닿으면 손절로 처리
 - 결과는 `state/champion.json`(현재 전략)과 `state/history.jsonl`(사이클별 채택·기각 사유)에 저장
 
+## 내 PC의 MT5로 1주일 모의매매 기록 남기기 (윈도우)
+
+이 프로그램은 MT5에서 **가격만 읽고 주문은 넣지 않습니다.** 실계좌에 로그인돼 있어도 안전하며, 매매는 가상 잔고(기본 10,000$)로 기록됩니다.
+
+1. [Python](https://www.python.org/downloads/) 설치 (설치 화면에서 "Add python.exe to PATH" 체크)
+2. 이 `gold_trader` 폴더를 PC에 내려받기
+3. MT5를 켜고 로그인한 상태로 둔다. `도구 > 옵션 > 전문가 조언자`에서 "알고리즘 트레이딩 허용" 체크
+4. `start.bat` 더블클릭
+   - 처음에는 MT5 과거 5분봉(약 70일)으로 전략을 학습
+   - 이후 5분마다 새 봉을 확인해 매수·매도를 `state\journal.csv`에 기록 (엑셀로 열림)
+   - `reports\날짜_주간기록.md`에 최근 7일 기록이 매번 갱신됨
+   - 7일마다 스스로 새 전략을 찾아 더 나으면 교체
+5. PC와 MT5를 1주일 켜 두기 (절전 모드 끄기). 창을 닫았다가 다시 실행해도 이어서 기록됨
+
+심볼명이 다르면 `python trader.py run --mt5 --symbol XAUUSD` 처럼 시장 감시 창의 이름을 그대로 넣습니다.
+서버 시간은 자동 감지하고, 장이 닫혀 있을 때는 `--server-offset 3` 처럼 직접 지정합니다.
+옵션: `--balance 10000` (가상 잔고), `--risk 1` (거래당 위험 %), `--improve-days 7`
+
+### 금 전용 규칙
+- 1랏 = 100온스. 손절 폭에 맞춰 잔고의 `--risk`%만 잃도록 랏 계산 (최소 0.01랏)
+- 미국 고용지표(NFP, 매월 첫 금요일)와 FOMC 발표 전후 30분은 진입 금지. CPI 등은 `events.csv`에 날짜 추가
+- 금요일 19시(UTC) 이후 신규 진입 금지, 20:45에 보유 포지션 청산 (주말 갭 회피)
+
 ## 사용법
 
 ```bash
@@ -31,6 +54,8 @@ python trader.py signal   --csv xauusd_m5.csv     # 마지막 봉 기준 신호
 python trader.py history                          # 발전 기록
 
 # 그 밖의 데이터 원본
+python trader.py run --mt5          # 실시간 모의매매 (start.bat 이 하는 일)
+python trader.py report             # 최근 7일 주간 리포트
 python trader.py improve --yf     # yfinance 금 선물(GC=F) 최근 60일 5분봉
 python trader.py improve --demo   # 합성 데이터 (코드 동작 확인용, 결과에 의미 없음)
 ```
