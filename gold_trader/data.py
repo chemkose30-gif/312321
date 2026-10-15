@@ -1,6 +1,9 @@
 """가격 데이터 로딩: CSV(MT5/TradingView 내보내기), yfinance, 또는 테스트용 합성 데이터."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -61,7 +64,21 @@ def synthetic(days: int = 90, seed: int = 0, start_price: float = 2400.0) -> pd.
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
 
 
-_offset_cache: dict = {}
+_OFFSET_FILE = Path(__file__).parent / "state" / "mt5_offset.json"
+
+
+def _load_offsets() -> dict:
+    try:
+        return json.loads(_OFFSET_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_offset(symbol: str, offset: float) -> None:
+    d = _load_offsets()
+    d[symbol] = offset
+    _OFFSET_FILE.parent.mkdir(exist_ok=True)
+    _OFFSET_FILE.write_text(json.dumps(d), encoding="utf-8")
 
 
 def load_mt5(symbol: str = "XAUUSD", bars: int = 20000, server_offset: float | None = None) -> pd.DataFrame:
@@ -80,15 +97,22 @@ def load_mt5(symbol: str = "XAUUSD", bars: int = 20000, server_offset: float | N
             raise RuntimeError(f"심볼 {symbol} 없음 (시장 감시 창의 이름 그대로 입력: 예 XAUUSD.GOLD)")
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, bars)
         if server_offset is None:
-            server_offset = _offset_cache.get(symbol)
-        if server_offset is None:
-            # 장중이면 최신 틱의 서버 시각과 실제 UTC 차이로 서버 시간대를 추정한다
+            # 장중이면 최신 틱의 서버 시각과 실제 UTC 차이로 서버 시간대를 추정해 저장한다.
+            # 주말처럼 장이 닫혀 있으면 마지막으로 저장한 값을 쓴다
             tick = mt5.symbol_info_tick(symbol)
             gap = (tick.time - _time.time()) / 3600 if tick else None
-            if gap is None or abs(gap - round(gap)) > 0.1:
+            saved = _load_offsets().get(symbol)
+            now = pd.Timestamp.now(tz="UTC")
+            market_open = now.dayofweek < 5 and 1 <= now.hour < 20   # 틱이 계속 들어오는 시간대에만 감지
+            if market_open and gap is not None and abs(gap - round(gap)) < 0.1 and abs(gap) <= 14:
+                server_offset = float(round(gap))
+                if saved != server_offset:
+                    _save_offset(symbol, server_offset)
+                    print(f"MT5 서버 시간 = UTC{server_offset:+.0f} 로 감지")
+            elif saved is not None:
+                server_offset = saved
+            else:
                 raise RuntimeError("서버 시간대를 자동으로 알 수 없습니다 (장 마감 중). --server-offset 3 처럼 지정하세요")
-            server_offset = _offset_cache[symbol] = float(round(gap))
-            print(f"MT5 서버 시간 = UTC{server_offset:+.0f} 로 감지")
     finally:
         mt5.shutdown()
     if rates is None or len(rates) == 0:

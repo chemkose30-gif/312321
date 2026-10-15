@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime
 
 import data
 from backtest import Costs, run
@@ -53,7 +54,8 @@ def main():
     ap.add_argument("--daily-loss", type=float, default=10, help="하루 손실 한도 %% (0이면 없음)")
     ap.add_argument("--max-lot", type=float, default=0.10, help="자동매매 1회 최대 랏")
     ap.add_argument("--allow-real", action="store_true", help="실계좌 자동매매 허용 (주의)")
-    ap.add_argument("--improve-days", type=float, default=7, help="run 중 자기 발전 주기 (일)")
+    ap.add_argument("--improve-day", type=int, default=6, help="자기 발전 요일 (0=월 ... 6=일, PC 시간 기준)")
+    ap.add_argument("--improve-hour", type=int, default=10, help="자기 발전 시각 (PC 시간, 이 시각 이후 1회)")
     ap.add_argument("--days-report", type=int, default=7)
     ap.add_argument("--csv")
     ap.add_argument("--yf", action="store_true")
@@ -94,6 +96,8 @@ def main():
     costs = Costs(a.spread, a.slippage)
     if a.cmd == "improve":
         improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, seed=a.seed)
+        STATE.mkdir(exist_ok=True)
+        LAST_IMPROVE.write_text(datetime.now().date().isoformat(), encoding="utf-8")
         return
     if a.cmd == "paper":
         st = step(df, costs, a.balance, risk)
@@ -132,22 +136,51 @@ def main():
               f"(최대 보유 {p['max_hold']}봉)")
 
 
+DAYS = "월화수목금토일"
+LAST_IMPROVE = STATE / "last_improve.txt"
+
+
+def improve_due(a) -> bool:
+    """챔피언이 아직 없거나, 정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
+    if not (STATE / "champion.json").exists():
+        return True
+    now = datetime.now()
+    if now.weekday() != a.improve_day or now.hour < a.improve_hour:
+        return False
+    try:
+        return LAST_IMPROVE.read_text(encoding="utf-8").strip() != now.date().isoformat()
+    except OSError:
+        return True
+
+
+def run_improve(a, df, costs) -> None:
+    before = load_champion().get("generation", 0)
+    print(f"{datetime.now():%Y-%m-%d %H:%M}  자기 발전 사이클 실행 중...")
+    ch = improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, verbose=False)
+    STATE.mkdir(exist_ok=True)
+    LAST_IMPROVE.write_text(datetime.now().date().isoformat(), encoding="utf-8")
+    if ch.get("generation", 0) != before:
+        v = ch.get("valid_stats", {})
+        print(f"  → 새 전략({ch['generation']}세대)으로 교체. 검증 승률 {v.get('win_rate', 0):.0%}, "
+              f"{v.get('trades', 0)}회, 손익비 합계 {v.get('total_r', 0):+.1f}R")
+    else:
+        print("  → 기존 전략 유지 (새 후보가 검증에서 이기지 못함)")
+
+
 def run_forever(a, costs, risk, auto=False):
-    """5분마다 새 봉을 처리하고, improve_days 마다 스스로 전략을 갱신하며, 주간 리포트를 다시 쓴다.
+    """5분마다 새 봉을 처리하고, 매주 정한 요일에 스스로 전략을 갱신하며, 주간 리포트를 다시 쓴다.
 
     auto=True 이면 모의매매와 함께 MT5에 실제 주문도 넣는다.
     """
-    last_improve = 0.0
     print(f"{'자동매매' if auto else '실시간 모의매매'} 시작 (Ctrl+C로 종료). 위험 {risk.risk_pct}%/건, "
           f"최대 {risk.max_positions}개, 레버리지 {risk.leverage:g}배, 하루 손실 한도 {risk.daily_loss_pct}%")
+    print(f"자기 발전: 매주 {DAYS[a.improve_day]}요일 {a.improve_hour}시 이후 1회 (PC 시간)")
     print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "") + ", 리포트: reports/")
     while True:
         try:
             df = get_data(a)
-            if time.time() - last_improve > a.improve_days * 86400:
-                print("자기 발전 사이클 실행 중...")
-                improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, verbose=False)
-                last_improve = time.time()
+            if improve_due(a):
+                run_improve(a, df, costs)
             step(df, costs, a.balance, risk, verbose=not auto)
             if auto:
                 import live
