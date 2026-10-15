@@ -157,7 +157,19 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
         if not mt5.symbol_select(symbol, True):
             raise RuntimeError(f"심볼 {symbol} 없음 (시장 감시 창의 이름 그대로 입력: 예 XAUUSD.GOLD)")
         tf = {1: mt5.TIMEFRAME_M1, 5: mt5.TIMEFRAME_M5, 15: mt5.TIMEFRAME_M15}[minutes]
-        rates = mt5.copy_rates_from_pos(symbol, tf, 0, bars)
+        # MT5 '차트 최대 봉 수'보다 많이 요청하면 아무것도 주지 않으므로 그 안으로 줄이고,
+        # 새 계좌처럼 과거 데이터가 아직 없으면 내려받는 동안 몇 번 다시 시도한다
+        term = mt5.terminal_info()
+        count = min(bars, max(500, getattr(term, "maxbars", bars) - 10))
+        rates, err = None, None
+        for attempt in range(8):
+            rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+            if rates is not None and len(rates) > 0:
+                break
+            err = mt5.last_error()
+            _time.sleep(1.5)
+            if attempt >= 2:
+                count = max(500, count // 2)
         info = mt5.symbol_info(symbol)
         tick = mt5.symbol_info_tick(symbol)
         if server_offset is None:
@@ -179,7 +191,8 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
     finally:
         mt5.shutdown()
     if rates is None or len(rates) == 0:
-        raise RuntimeError(f"{symbol} 데이터 없음 (브로커 심볼명 확인: XAUUSD, GOLD, XAUUSD.m 등)")
+        raise RuntimeError(f"{symbol} {minutes}분봉 데이터를 받지 못했습니다 (MT5 응답: {err}). "
+                           f"MT5에서 {symbol} {minutes}분 차트를 한 번 열어 과거 데이터를 내려받은 뒤 다시 실행하세요")
     df = pd.DataFrame(rates)
     # MT5 시각은 브로커 서버 시간(대부분 UTC+2/+3). server_offset 시간만큼 빼서 UTC로 맞춘다
     df.index = pd.to_datetime(df["time"], unit="s", utc=True) - pd.Timedelta(hours=server_offset)
@@ -196,4 +209,13 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
 
 def load_mt5_all(symbol: str, server_offset: float | None = None) -> dict[int, pd.DataFrame]:
     """학습용: 1·5·15분봉을 각각 넉넉히 받는다 (1분봉은 MT5 '차트 최대 봉 수' 설정만큼)."""
-    return {m: load_mt5(symbol, m, {1: 100_000, 5: 20_000, 15: 8_000}[m], server_offset) for m in TIMEFRAMES}
+    out = {}
+    for m in TIMEFRAMES:
+        try:
+            out[m] = load_mt5(symbol, m, {1: 100_000, 5: 20_000, 15: 8_000}[m], server_offset)
+            print(f"  {m}분봉 {len(out[m])}개 ({out[m].index[0]:%Y-%m-%d}부터)")
+        except RuntimeError as e:   # 한 봉 단위가 실패해도 나머지로 학습한다
+            print(f"  {m}분봉 건너뜀: {e}")
+    if not out:
+        raise RuntimeError(f"{symbol} 과거 데이터를 하나도 받지 못했습니다. MT5에서 {symbol} 차트를 열어 데이터를 내려받은 뒤 다시 실행하세요")
+    return out
