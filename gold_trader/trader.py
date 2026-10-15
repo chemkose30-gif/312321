@@ -264,8 +264,11 @@ LAST_IMPROVE = STATE / "last_improve.txt"
 
 
 def improve_due(a) -> bool:
-    """한 번도 발전한 적이 없거나, 정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
-    if not LAST_IMPROVE.exists():
+    """한 번도 발전한 적이 없거나, 아직 학습 안 한 전략 슬롯이 있거나(새 버전으로 바꾼 직후),
+    정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
+    from evolve import CHAMPS
+
+    if not LAST_IMPROVE.exists() or any(not (CHAMPS / f"{s}.json").exists() for s in SLOTS):
         return True
     now = datetime.now()
     days = {int(x) for x in str(a.improve_days).split(",") if x.strip()}
