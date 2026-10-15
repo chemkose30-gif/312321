@@ -3,3 +3,4 @@ reports/
 __pycache__/
 *.csv
 !events.csv
+STOP

@@ -20,11 +20,20 @@ FOMC = ["2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
 
 
 def lot_size(balance: float, risk_pct: float, sl_distance: float) -> float:
-    """손절까지 거리(달러)에 맞춰 잔고의 risk_pct%만 잃도록 랏을 계산."""
+    """손절까지 거리(달러)에 맞춰 잔고의 risk_pct%만 잃도록 랏을 계산.
+
+    최소 랏(0.01)으로도 위험이 한도를 넘으면 0을 돌려준다 (= 진입하지 않음).
+    """
     if sl_distance <= 0:
         return 0.0
     lots = balance * risk_pct / 100 / (sl_distance * CONTRACT_OZ)
-    return max(MIN_LOT, np.floor(lots / LOT_STEP) * LOT_STEP)
+    lots = np.floor(round(lots / LOT_STEP, 6)) * LOT_STEP
+    return round(float(lots), 2) if lots >= MIN_LOT else 0.0
+
+
+def margin_usd(price: float, lots: float, leverage: float) -> float:
+    """필요 증거금. 예: 4155달러, 0.01랏, 100배 → 41.55달러."""
+    return price * CONTRACT_OZ * lots / leverage
 
 
 def pnl_usd(direction: int, entry: float, exit_: float, lots: float) -> float:

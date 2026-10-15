@@ -7,6 +7,7 @@
   python trader.py run --mt5                      # 실시간 모의매매: 5분마다 매수·매도를 장부에 기록
   python trader.py paper --mt5                    # 모의매매 1회 처리 (작업 스케줄러로 반복 실행할 때)
   python trader.py report                         # 최근 7일 매수·매도 기록 리포트
+  python trader.py auto --mt5                     # MT5 자동매매 (기본: 데모 계좌만)
 
 데이터 원본: --mt5 (MetaTrader 5 실시간), --csv 파일, --yf (yfinance GC=F), --demo (합성 데이터, 동작 확인용)
 """
@@ -21,7 +22,7 @@ import data
 from backtest import Costs, run
 from evolve import STATE, improve, load_champion
 from learner import TradeFilter
-from paper import step
+from paper import Risk, step
 from report import weekly
 from strategy import signals
 
@@ -42,11 +43,16 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # 윈도우 콘솔 한글 깨짐 방지
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report"])
+    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report", "auto"])
     ap.add_argument("--mt5", action="store_true")
     ap.add_argument("--server-offset", type=float, help="MT5 서버 시간 - UTC (예: 3). 생략하면 자동 감지")
     ap.add_argument("--balance", type=float, default=10_000, help="모의 계좌 시작 잔고 ($)")
-    ap.add_argument("--risk", type=float, default=1.0, help="거래당 잔고 대비 위험 %%")
+    ap.add_argument("--risk", type=float, default=3.0, help="거래당 잔고 대비 위험 %%")
+    ap.add_argument("--max-positions", type=int, default=5, help="동시에 들 수 있는 최대 포지션 수")
+    ap.add_argument("--leverage", type=float, default=100, help="레버리지 (모의매매 증거금 계산용)")
+    ap.add_argument("--daily-loss", type=float, default=10, help="하루 손실 한도 %% (0이면 없음)")
+    ap.add_argument("--max-lot", type=float, default=0.10, help="자동매매 1회 최대 랏")
+    ap.add_argument("--allow-real", action="store_true", help="실계좌 자동매매 허용 (주의)")
     ap.add_argument("--improve-days", type=float, default=7, help="run 중 자기 발전 주기 (일)")
     ap.add_argument("--days-report", type=int, default=7)
     ap.add_argument("--csv")
@@ -78,17 +84,23 @@ def main():
                   f"도전자 승률 {e['challenger_valid']['win_rate']:.0%} / {e['challenger_valid']['trades']}회")
         return
 
+    risk = Risk(a.risk, a.max_positions, a.leverage, a.daily_loss)
+    if a.cmd == "auto":
+        if not a.mt5:
+            raise SystemExit("자동매매는 --mt5 로만 가능합니다")
+        run_forever(a, Costs(a.spread, a.slippage), risk, auto=True)
+        return
     df = get_data(a)
     costs = Costs(a.spread, a.slippage)
     if a.cmd == "improve":
         improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, seed=a.seed)
         return
     if a.cmd == "paper":
-        st = step(df, costs, a.balance, a.risk)
-        print(f"잔고 {st['balance']:.2f}$  보유 {st['position'] or '없음'}")
+        st = step(df, costs, a.balance, risk)
+        print(f"잔고 {st['balance']:.2f}$  보유 {len(st['positions'])}개")
         return
     if a.cmd == "run":
-        run_forever(a, costs)
+        run_forever(a, costs, risk)
         return
 
     ch = load_champion()
@@ -120,10 +132,15 @@ def main():
               f"(최대 보유 {p['max_hold']}봉)")
 
 
-def run_forever(a, costs):
-    """5분마다 새 봉을 처리하고, improve_days 마다 스스로 전략을 갱신하며, 매일 주간 리포트를 다시 쓴다."""
+def run_forever(a, costs, risk, auto=False):
+    """5분마다 새 봉을 처리하고, improve_days 마다 스스로 전략을 갱신하며, 주간 리포트를 다시 쓴다.
+
+    auto=True 이면 모의매매와 함께 MT5에 실제 주문도 넣는다.
+    """
     last_improve = 0.0
-    print("실시간 모의매매 시작 (Ctrl+C로 종료). 기록: state/journal.csv, 리포트: reports/")
+    print(f"{'자동매매' if auto else '실시간 모의매매'} 시작 (Ctrl+C로 종료). 위험 {risk.risk_pct}%/건, "
+          f"최대 {risk.max_positions}개, 레버리지 {risk.leverage:g}배, 하루 손실 한도 {risk.daily_loss_pct}%")
+    print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "") + ", 리포트: reports/")
     while True:
         try:
             df = get_data(a)
@@ -131,11 +148,16 @@ def run_forever(a, costs):
                 print("자기 발전 사이클 실행 중...")
                 improve(df, costs, pop=a.pop, gens=a.gens, min_trades=a.min_trades, verbose=False)
                 last_improve = time.time()
-            step(df, costs, a.balance, a.risk)
+            step(df, costs, a.balance, risk, verbose=not auto)
+            if auto:
+                import live
+                live.tick(df, a.symbol, risk, a.max_lot, a.allow_real)
             try:
                 weekly()
             except SystemExit:
                 pass
+        except SystemExit:
+            raise
         except Exception as e:  # 연결 끊김 등은 다음 주기에 재시도
             print(f"오류: {e}")
         time.sleep(300 - time.time() % 300 + 5)   # 다음 5분봉 마감 직후
