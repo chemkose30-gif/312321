@@ -65,6 +65,20 @@ def synthetic(days: int = 90, seed: int = 0, start_price: float = 2400.0, minute
 
 
 _OFFSET_FILE = Path(__file__).parent / "state" / "mt5_offset.json"
+MT5_CONFIG = Path(__file__).parent / "mt5_config.json"
+
+
+def mt5_connect(mt5) -> None:
+    """MT5 터미널에 연결. mt5_config.json(로그인·비밀번호·서버)이 있으면 그 계좌로 로그인한다.
+
+    mt5_config.json 은 이 PC에만 두는 파일이다 (.gitignore 처리). 예시는 mt5_config.example.json
+    """
+    cfg = json.loads(MT5_CONFIG.read_text(encoding="utf-8")) if MT5_CONFIG.exists() else {}
+    kw = {k: cfg[k] for k in ("path", "login", "password", "server") if cfg.get(k)}
+    if "login" in kw:
+        kw["login"] = int(kw["login"])
+    if not mt5.initialize(**kw):
+        raise RuntimeError(f"MT5 연결 실패: {mt5.last_error()} (터미널이 켜져 있고 로그인 정보가 맞는지 확인)")
 
 
 def _load_offsets() -> dict:
@@ -108,8 +122,7 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
 
     import MetaTrader5 as mt5
 
-    if not mt5.initialize():
-        raise RuntimeError(f"MT5 연결 실패: {mt5.last_error()} (터미널이 켜져 있고 로그인돼 있는지 확인)")
+    mt5_connect(mt5)
     try:
         if not mt5.symbol_select(symbol, True):
             raise RuntimeError(f"심볼 {symbol} 없음 (시장 감시 창의 이름 그대로 입력: 예 XAUUSD.GOLD)")

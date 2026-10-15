@@ -8,6 +8,7 @@
   python trader.py paper --mt5                    # 모의매매 1회 처리 (작업 스케줄러로 반복 실행할 때)
   python trader.py report                         # 최근 7일 매수·매도 기록 리포트
   python trader.py auto --mt5                     # MT5 자동매매 (기본: 데모 계좌만)
+  python trader.py dashboard --mt5                # 대시보드 페이지 만들고 브라우저로 열기
 
 데이터 원본: --mt5 (MetaTrader 5 실시간), --csv 파일, --yf (yfinance GC=F), --demo (합성 데이터, 동작 확인용)
 봉 단위(1·5·15분)는 학습 때 AI가 고른다. --csv/--yf/--demo 는 원본보다 긴 봉 단위만 쓸 수 있다.
@@ -76,7 +77,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # 윈도우 콘솔 한글 깨짐 방지
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report", "auto"])
+    ap.add_argument("cmd", choices=["improve", "backtest", "signal", "history", "paper", "run", "report", "auto", "dashboard"])
     ap.add_argument("--mt5", action="store_true")
     ap.add_argument("--server-offset", type=float, help="MT5 서버 시간 - UTC (예: 3). 생략하면 자동 감지")
     ap.add_argument("--balance", type=float, default=10_000, help="모의 계좌 시작 잔고 ($)")
@@ -104,6 +105,12 @@ def main():
     a = ap.parse_args()
 
     a.symbol = a.symbol or ("XAUUSD.GOLD" if a.mt5 else "GC=F")
+    if a.cmd == "dashboard":
+        import webbrowser
+        out = make_dashboard(a)
+        print(f"대시보드 저장: {out}")
+        webbrowser.open(out.resolve().as_uri())
+        return
     if a.cmd == "report":
         print(f"리포트 저장: {weekly(days=a.days_report)}")
         return
@@ -174,6 +181,14 @@ def main():
               f"(최대 보유 {p['max_hold']}봉)")
 
 
+def make_dashboard(a):
+    import dashboard
+
+    settings = {"risk": a.risk, "max_positions": a.max_positions, "leverage": a.leverage,
+                "daily_loss": a.daily_loss, "improve_days": a.improve_days, "improve_hour": a.improve_hour}
+    return dashboard.build(settings, a.symbol, a.mt5)
+
+
 DAYS = "월화수목금토일"
 LAST_IMPROVE = STATE / "last_improve.txt"
 
@@ -220,8 +235,9 @@ def run_forever(a, risk, auto=False):
           f"최대 {risk.max_positions}개, 레버리지 {risk.leverage:g}배, 하루 손실 한도 {risk.daily_loss_pct}%")
     names = ",".join(DAYS[int(x)] for x in str(a.improve_days).split(",") if x.strip())
     print(f"자기 발전: 매주 {names}요일 {a.improve_hour}시 이후 각 1회 (PC 시간)")
-    print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "") + ", 리포트: reports/")
-    shown_tf = None
+    print("기록: state/journal.csv (모의)" + (", state/live_journal.csv (실주문)" if auto else "")
+          + ", 리포트: reports/, 대시보드: reports/dashboard.html (1분마다 갱신)")
+    shown_tf, opened = None, False
     while True:
         try:
             if improve_due(a):
@@ -240,6 +256,11 @@ def run_forever(a, risk, auto=False):
                 weekly()
             except SystemExit:
                 pass
+            out = make_dashboard(a)
+            if not opened:
+                import webbrowser
+                webbrowser.open(out.resolve().as_uri())   # 처음 한 번 브라우저로 열기 (이후 페이지가 1분마다 새로고침)
+                opened = True
         except SystemExit:
             raise
         except Exception as e:  # 연결 끊김 등은 다음 주기에 재시도

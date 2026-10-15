@@ -4,3 +4,4 @@ __pycache__/
 *.csv
 !events.csv
 STOP
+mt5_config.json

@@ -78,8 +78,9 @@ def tick(df: pd.DataFrame, symbol: str, risk: Risk, max_lot: float, allow_real: 
         if verbose:
             print(f"{pd.Timestamp.now(tz='UTC'):%m-%d %H:%M}  {msg}")
 
-    if not mt5.initialize():
-        raise RuntimeError(f"MT5 연결 실패: {mt5.last_error()}")
+    from data import mt5_connect
+
+    mt5_connect(mt5)
     try:
         acc = mt5.account_info()
         if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not allow_real:
