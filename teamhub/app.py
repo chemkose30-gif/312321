@@ -1285,8 +1285,8 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
     size = max(10, min(size, 200))
     page = max(1, page)
     with db() as c:
-        total, amount = c.execute(f"SELECT COUNT(*), COALESCE(SUM(grand_total), 0) FROM quotes qt{cond}",
-                                  params).fetchone()
+        total, amount, supply = c.execute(f"SELECT COUNT(*), COALESCE(SUM(grand_total), 0), COALESCE(SUM(supply_total), 0)"
+                                          f" FROM quotes qt{cond}", params).fetchone()
         years = [r[0] for r in c.execute(
             "SELECT DISTINCT substr(quote_date, 1, 4) FROM quotes WHERE doc_type = ? ORDER BY 1 DESC", (doc_type,))]
         # 1) 이 페이지에 들어갈 문서 id 만 먼저 고르고  2) 그 30건에 대해서만 품목 요약을 계산
@@ -1305,7 +1305,7 @@ def list_quotes(q: str = "", status: str = "", doc_type: str = "quote", year: st
             f" WHERE qt.id IN ({marks}) ORDER BY qt.quote_date DESC, qt.id DESC",
             (*ids, *ids),
         ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": total, "amount": amount, "page": page, "size": size,
+    return {"items": [dict(r) for r in rows], "total": total, "amount": amount, "supply": supply, "page": page, "size": size,
             "pages": max(1, (total + size - 1) // size), "years": years}
 
 
