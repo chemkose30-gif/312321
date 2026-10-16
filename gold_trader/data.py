@@ -178,8 +178,10 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
             gap = (tick.time - _time.time()) / 3600 if tick else None
             saved = _load_offsets().get(symbol)
             now = pd.Timestamp.now(tz="UTC")
-            market_open = now.dayofweek < 5 and 1 <= now.hour < 20   # 틱이 계속 들어오는 시간대에만 감지
-            if market_open and gap is not None and abs(gap - round(gap)) < 0.1 and abs(gap) <= 14:
+            # 틱이 계속 들어오는 시간에만 감지 (금: 일 22시 ~ 금 21시 UTC, 매일 21시대 휴장)
+            market_open = (now.hour != 21 and (now.dayofweek < 4 or (now.dayofweek == 4 and now.hour < 21)
+                                               or (now.dayofweek == 6 and now.hour >= 22)))
+            if market_open and gap is not None and abs(gap - round(gap)) < 0.05 and abs(gap) <= 14:
                 server_offset = float(round(gap))
                 if saved != server_offset:
                     _save_offset(symbol, server_offset)
@@ -187,7 +189,12 @@ def load_mt5(symbol: str = "XAUUSD", minutes: int = 5, bars: int = 3000,
             elif saved is not None:
                 server_offset = saved
             else:
-                raise RuntimeError("서버 시간대를 자동으로 알 수 없습니다 (장 마감 중). --server-offset 3 처럼 지정하세요")
+                # 장이 쉬는 중이라 감지할 수 없으면, 대부분의 FX 브로커 기준(뉴욕 마감 = 서버 0시)으로 추정:
+                # 미국 서머타임이면 UTC+3, 아니면 UTC+2
+                ny = now.tz_convert("America/New_York")
+                server_offset = 3.0 if ny.dst() else 2.0
+                print(f"MT5 서버 시간대를 감지할 수 없어 UTC{server_offset:+.0f}로 추정합니다 "
+                      f"(장이 열리면 자동으로 다시 확인)")
     finally:
         mt5.shutdown()
     if rates is None or len(rates) == 0:
