@@ -3229,11 +3229,15 @@ function barChart(box, labels, values, name) {
   });
 }
 
+// 매출분석 회사 선택: 거래명세서의 이카운트 창고(이알씨창고/켐코스 창고)로 나눔
+const anCoSel = () => `<select id="anCo" style="width:auto" title="이카운트 창고명으로 회사를 나눕니다 (창고 정보가 없으면 이알씨)">${[['', '전체 회사'], ['이알씨', '이알씨 매출'], ['켐코스', '켐코스 매출']]
+  .map(([v, l]) => `<option value="${v}" ${(state.an.co || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+
 async function renderAnalytics() {
   const an = state.an ||= {mode: 'month', basis: 'supply', year: 0, cust: '', q: '', months: 12, compare: 'last_year'};
   if (an.mode === 'decline') return renderDecline(an);
   if (an.mode === 'prod') return renderProducts(an);
-  const [d, exNote] = await Promise.all([api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}`), excludeNote()]);
+  const [d, exNote] = await Promise.all([api(`/api/analytics/sales?year=${an.year}&basis=${an.basis}&company=${encodeURIComponent(an.co || '')}`), excludeNote()]);
   if (!d.years.length) {
     $('#main').innerHTML = '<div class="card"><h3>📊 매출분석</h3><div class="empty">거래명세서가 없습니다. 📄 거래명세서에서 이카운트 판매 내역을 가져오면 분석할 수 있습니다.</div></div>';
     return;
@@ -3256,7 +3260,7 @@ async function renderAnalytics() {
   $('#main').innerHTML = `<div class="card viz">
     <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 거래처별 납품금액</h3><span class="spacer"></span>
       <select id="anYear" style="width:auto">${d.years.slice().reverse().map(y => `<option value="${y}" ${y === Y ? 'selected' : ''}>${y}년</option>`).join('')}</select>
-      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
+      ${anCoSel()}<select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:180px"></div>
     <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
@@ -3293,6 +3297,7 @@ async function renderAnalytics() {
   $$('.tabs button').forEach(b => { b.classList.toggle('active', b.dataset.mode === an.mode); b.onclick = () => { an.mode = b.dataset.mode; renderAnalytics(); }; });
   $('#anYear').onchange = e => { an.year = +e.target.value; renderAnalytics(); };
   $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  $('#anCo').onchange = e => { an.co = e.target.value; renderAnalytics(); };
   let timer;
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   if ($('#anAll')) $('#anAll').onclick = () => { an.cust = ''; renderAnalytics(); };
@@ -3368,7 +3373,7 @@ function bindExcludeEdit() {
 // ---- 📦 제품·거래처 판매기록 (거래명세서 품목 줄 기준)
 async function renderProducts(an) {
   an.pv ||= 'prod';
-  const [d, exNote] = await Promise.all([api(`/api/analytics/products?basis=${an.basis}`), excludeNote()]);
+  const [d, exNote] = await Promise.all([api(`/api/analytics/products?basis=${an.basis}&company=${encodeURIComponent(an.co || '')}`), excludeNote()]);
   const years = d.years.slice(-6), Y = years[years.length - 1], P = Y - 1;
   const now = new Date(), upto = Y === now.getFullYear() ? now.toISOString().slice(5, 10) : '12-31';
   const isProd = an.pv === 'prod';
@@ -3378,7 +3383,7 @@ async function renderProducts(an) {
   const names = [...new Set([...d.products.map(e => e.name), ...d.customers.map(e => e.name)])].sort((a, b) => a.localeCompare(b));
   $('#main').innerHTML = `<div class="card viz">
     <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 매출분석</h3><span class="spacer"></span>
-      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select></div>
+      ${anCoSel()}<select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select></div>
     <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
     <div class="row" style="margin:6px 0 10px;gap:8px">
@@ -3431,6 +3436,7 @@ async function renderProducts(an) {
   $$('[data-pv]').forEach(b => b.onclick = () => { an.pv = b.dataset.pv; renderAnalytics(); });
   $('#pSort').value = an.psort || 'amount'; $('#pSort').onchange = e => { an.psort = e.target.value; draw(); };
   $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  $('#anCo').onchange = e => { an.co = e.target.value; renderAnalytics(); };
   let timer;
   $('#pQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.pq = e.target.value.trim(); $('#pQClear').style.display = an.pq ? '' : 'none'; draw(); }, 200); };
   $('#pQClear').onclick = () => { an.pq = ''; $('#pQ').value = ''; $('#pQClear').style.display = 'none'; draw(); $('#pQ').focus(); };
@@ -3455,7 +3461,7 @@ async function openCustDocs(name) {
 }
 
 async function renderDecline(an) {
-  const [d, exNote] = await Promise.all([api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}`), excludeNote()]);
+  const [d, exNote] = await Promise.all([api(`/api/analytics/decline?months=${an.months}&compare=${an.compare}&basis=${an.basis}&company=${encodeURIComponent(an.co || '')}`), excludeNote()]);
   const ql = an.q.toLowerCase(), f = r => !ql || r.name.toLowerCase().includes(ql);
   const rows = d.rows.filter(f), dormant = d.dormant.filter(f), patterns = (d.patterns || []).filter(f);
   const cycleTxt = i => i.cycle >= 300 ? `약 1년마다${i.month ? ` (보통 ${i.month}월쯤)` : ''}` : i.cycle >= 55 ? `약 ${Math.round(i.cycle / 30)}개월마다` : `약 ${i.cycle}일마다`;
@@ -3468,7 +3474,7 @@ async function renderDecline(an) {
     <div class="row" style="margin-bottom:10px"><h3 style="margin:0">📊 거래처별 납품금액</h3><span class="spacer"></span>
       <select id="dMonths" style="width:auto">${[12, 6].map(m => `<option value="${m}" ${an.months === m ? 'selected' : ''}>${m === 12 ? '최근 1년' : '최근 6개월'}</option>`).join('')}</select>
       <select id="dCmp" style="width:auto"><option value="last_year" ${an.compare === 'last_year' ? 'selected' : ''}>작년 같은 기간과 비교</option><option value="previous" ${an.compare === 'previous' ? 'selected' : ''}>직전 기간과 비교</option></select>
-      <select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
+      ${anCoSel()}<select id="anBasis" style="width:auto"><option value="supply" ${an.basis === 'supply' ? 'selected' : ''}>공급가액 기준</option><option value="total" ${an.basis === 'total' ? 'selected' : ''}>합계(VAT 포함) 기준</option></select>
       <input id="anQ" placeholder="거래처 검색" value="${esc(an.q)}" style="max-width:160px"></div>
     <div class="tabs"><button data-mode="month">월별 비교</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button></div>
     ${exNote}
@@ -3513,6 +3519,7 @@ async function renderDecline(an) {
   $('#dMonths').onchange = e => { an.months = +e.target.value; renderAnalytics(); };
   $('#dCmp').onchange = e => { an.compare = e.target.value; renderAnalytics(); };
   $('#anBasis').onchange = e => { an.basis = e.target.value; renderAnalytics(); };
+  $('#anCo').onchange = e => { an.co = e.target.value; renderAnalytics(); };
   let timer;
   $('#anQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { an.q = e.target.value; renderAnalytics().then(() => { const i = $('#anQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   bindExcludeEdit();

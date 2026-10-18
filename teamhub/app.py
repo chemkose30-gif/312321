@@ -2518,7 +2518,7 @@ def put_exclude(body: dict, _: dict = Depends(admin_user)):
 
 
 @app.get("/api/analytics/sales")
-def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(current_user)):
+def sales_analytics(year: int = 0, basis: str = "supply", company: str = "", _: dict = Depends(current_user)):
     """거래명세서(발행·출고완료) 기준 거래처별 월별/연별 납품금액."""
     col = "grand_total" if basis == "total" else "supply_total"
     base = "FROM quotes WHERE doc_type = 'statement' AND status != 'draft' AND NOT excl(customer_name)"
@@ -2526,6 +2526,7 @@ def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(curr
         is_ex, canon = exclude_matcher(c), canon_fn(c)
         c.create_function("excl", 1, lambda n: 1 if is_ex(canon(n)) else 0, deterministic=True)
         c.create_function("canon", 1, canon, deterministic=True)
+        base += co_filter(c, company)
         years = [int(r[0]) for r in c.execute(f"SELECT DISTINCT substr(quote_date, 1, 4) {base} ORDER BY 1")]
         if not years:
             return {"years": [], "year": None, "monthly": {}, "customers": [], "yearly": {}}
@@ -2555,6 +2556,19 @@ def sales_analytics(year: int = 0, basis: str = "supply", _: dict = Depends(curr
             "yearly": yearly, "year_totals": year_totals}
 
 
+def co_filter(c, company: str, alias: str = "") -> str:
+    """매출분석 회사 필터: 거래명세서 → 이알씨/켐코스 (이카운트 창고명 기준, 창고 정보가 없으면 기본 회사).
+    SQL 함수 qco(문서 id) 를 등록하고 WHERE 에 붙일 조건을 돌려줌 (전체면 "")."""
+    if company not in COMPANIES:
+        return ""
+    comp = stmt_company(c)
+    m = {r[0]: comp(r[2] or "", r[1] or "") for r in c.execute(
+        "SELECT q.id, q.ecount_wh, (SELECT wh FROM quote_items qi WHERE qi.quote_id = q.id AND qi.wh != '' ORDER BY seq LIMIT 1)"
+        " FROM quotes q WHERE q.doc_type = 'statement'")}
+    c.create_function("qco", 1, lambda i: m.get(i, ""), deterministic=True)
+    return f" AND qco({alias + '.' if alias else ''}id) = '{company}'"
+
+
 def _shift_months(d, months: int):
     """date 를 months 개월 이동 (말일 보정)."""
     import calendar
@@ -2564,7 +2578,7 @@ def _shift_months(d, months: int):
 
 
 @app.get("/api/analytics/products")
-def product_analytics(basis: str = "supply", user: dict = Depends(current_user)):
+def product_analytics(basis: str = "supply", company: str = "", user: dict = Depends(current_user)):
     """거래명세서(발행·출고완료) 품목 줄 → 제품 × 연도 · 거래처 × 연도 수량·금액.
     제품은 포장 표시('(25kg *4)')·용도 표시('_식')를 빼고 같은 이름끼리 묶는다."""
     with db() as c:
@@ -2572,7 +2586,7 @@ def product_analytics(basis: str = "supply", user: dict = Depends(current_user))
         rows = c.execute(
             "SELECT q.quote_date, q.customer_name, i.name, i.qty, i.unit, i.supply, i.vat FROM quote_items i"
             " JOIN quotes q ON q.id = i.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft' AND i.name != ''"
-        ).fetchall()
+            + co_filter(c, company, "q")).fetchall()
     prods, custs, names, units, years = {}, {}, {}, {}, set()
     for r in rows:
         cust = canon(r["customer_name"])
@@ -2620,7 +2634,7 @@ def product_analytics(basis: str = "supply", user: dict = Depends(current_user))
 
 
 @app.get("/api/analytics/decline")
-def decline_analytics(months: int = 12, compare: str = "last_year", basis: str = "supply",
+def decline_analytics(months: int = 12, compare: str = "last_year", basis: str = "supply", company: str = "",
                       _: dict = Depends(current_user)):
     """납품이 줄어든 거래처(품목별 감소 포함)와 주문이 끊긴 거래처."""
     col = "grand_total" if basis == "total" else "supply_total"
@@ -2628,7 +2642,8 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
     months = max(1, min(months, 24))
     with db() as c:
         c.create_function("canon", 1, canon_fn(c), deterministic=True)
-        last = c.execute("SELECT MAX(quote_date) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'").fetchone()[0]
+        cf, cfq = co_filter(c, company), co_filter(c, company, "q")
+        last = c.execute("SELECT MAX(quote_date) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'" + cf).fetchone()[0]
         if not last:
             return {"ref": None, "rows": [], "dormant": []}
         # 기준일: 오늘 (데이터가 오늘보다 옛날에 끝나면 마지막 거래일)
@@ -2644,14 +2659,14 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         def per_customer(r):
             return {n: v or 0 for n, v in c.execute(
                 f"SELECT canon(customer_name), SUM({col}) FROM quotes WHERE doc_type = 'statement' AND status != 'draft'"
-                " AND quote_date BETWEEN ? AND ? GROUP BY 1", r)}
+                " AND quote_date BETWEEN ? AND ?" + cf + " GROUP BY 1", r)}
 
         def per_item(r):
             out = {}
             for n, item, unit, qty, amt in c.execute(
                     f"SELECT canon(q.customer_name), qi.name, MAX(qi.unit), SUM(qi.qty), SUM(qi.{item_col})"
                     " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
-                    " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
+                    " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?" + cfq +
                     " GROUP BY 1, 2", r):
                 out.setdefault(n, {})[item] = (qty or 0, amt or 0, unit or "")
             return out
@@ -2680,7 +2695,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         since = _shift_months(ref, -36).strftime("%Y-%m-%d")
         dates = {}
         for n, d in c.execute("SELECT canon(customer_name), quote_date FROM quotes WHERE doc_type = 'statement'"
-                              " AND status != 'draft' AND quote_date BETWEEN ? AND ? GROUP BY 1, 2 ORDER BY 2",
+                              " AND status != 'draft' AND quote_date BETWEEN ? AND ?" + cf + " GROUP BY 1, 2 ORDER BY 2",
                               (since, ref.strftime("%Y-%m-%d"))):
             dates.setdefault(n, []).append(datetime.strptime(d, "%Y-%m-%d").date())
         year_amt = per_customer(rng(_shift_months(ref, -12) + timedelta(days=1), ref))
@@ -2706,7 +2721,7 @@ def decline_analytics(months: int = 12, compare: str = "last_year", basis: str =
         for n, item, d, q, a in c.execute(
                 f"SELECT canon(q.customer_name), qi.name, q.quote_date, SUM(qi.qty), SUM(qi.{item_col})"
                 " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id"
-                " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?"
+                " WHERE q.doc_type = 'statement' AND q.status != 'draft' AND q.quote_date BETWEEN ? AND ?" + cfq +
                 " GROUP BY 1, 2, 3 ORDER BY 3", (since5, ref.strftime("%Y-%m-%d"))):
             hist.setdefault((n, item), []).append((datetime.strptime(d, "%Y-%m-%d").date(), q or 0, a or 0))
         units = {(n, i): u for n, i, u in c.execute(
