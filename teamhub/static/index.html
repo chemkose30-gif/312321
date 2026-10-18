@@ -2091,7 +2091,7 @@ function openStatementImport(dt = 'statement') {
     };
     $('#impGo', bg).onclick = async e => {
       e.target.disabled = true; e.target.textContent = '가져오는 중…';
-      try { const r = await send(false); close(); toast(`${D.label} ${r.created}건 가져옴${r.updated ? `, ${r.updated}건 덮어씀` : ''}`); renderQuotes(); }
+      try { const r = await send(false); close(); toast(`${D.label} ${r.created}건 가져옴${r.updated ? `, ${r.updated}건 덮어씀` : ''}${r.wh_filled ? `, ${r.wh_filled}건 창고(회사) 채움` : ''}`); renderQuotes(); }
       catch (err) { $('#impErr', bg).textContent = err.message; e.target.disabled = false; }
     };
   });

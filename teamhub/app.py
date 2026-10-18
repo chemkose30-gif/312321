@@ -2368,7 +2368,7 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
     slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data), year)
-    created = skipped = updated = 0
+    created = skipped = updated = wh_filled = 0
     with db() as c:
         cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
         for g in slips:
@@ -2379,6 +2379,21 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
             vat_total = sum(i["vat"] for i in g["items"])
             if dup and not overwrite:
                 skipped += 1
+                if not dry_run and any(i.get("wh") or i.get("lot") for i in g["items"]):
+                    # 이미 있는 문서: 내용은 그대로 두고 비어 있는 창고·통관(로트)만 채움 → 회사(이알씨/켐코스) 구분
+                    old = [dict(r) for r in c.execute("SELECT id, name, wh, lot FROM quote_items WHERE quote_id = ? ORDER BY seq",
+                                                      (dup["id"],))]
+                    n = 0
+                    for it in g["items"]:
+                        o = next((x for x in old if not x.get("used") and x["name"].strip() == it["name"].strip()), None)
+                        if not o:
+                            continue
+                        o["used"] = True
+                        wh, lot = o["wh"] or it.get("wh", ""), o["lot"] or it.get("lot", "")
+                        if (wh, lot) != (o["wh"], o["lot"]):
+                            c.execute("UPDATE quote_items SET wh = ?, lot = ? WHERE id = ?", (wh, lot, o["id"]))
+                            n += 1
+                    wh_filled += bool(n)
                 continue
             if dry_run:
                 continue
@@ -2416,7 +2431,7 @@ async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict
     period = [by_date[0]["date"], by_date[-1]["date"]] if by_date else []
     vat_assumed = not ({"supply", "total", "vat"} & set(cols))
     return {"slips": len(slips), "lines": sum(len(g["items"]) for g in slips), "created": created,
-            "skipped": skipped, "updated": updated, "vat_assumed": vat_assumed, "years": years, "period": period, "columns": cols, "preview": preview, "dry_run": dry_run}
+            "skipped": skipped, "updated": updated, "wh_filled": wh_filled, "vat_assumed": vat_assumed, "years": years, "period": period, "columns": cols, "preview": preview, "dry_run": dry_run}
 
 
 @app.get("/api/ecount/logs")
