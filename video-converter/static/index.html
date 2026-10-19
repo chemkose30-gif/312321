@@ -105,7 +105,12 @@
   .btnrow button:disabled { opacity:.5; cursor:not-allowed; }
   .shwrap { display:flex; gap:16px; align-items:flex-start; margin-top:14px; }
   .shprev { width:240px; flex-shrink:0; }
-  #shCanvas { width:100%; aspect-ratio:9/16; background:#000; border-radius:10px; display:block; border:1px solid var(--line); }
+  #shCanvas { width:100%; aspect-ratio:9/16; background:#000; border-radius:10px; display:block; border:1px solid var(--line); cursor:grab; touch-action:none; }
+  #shCanvas.dragging { cursor:grabbing; }
+  body.wide main { max-width:1100px; }
+  body.wide .shprev { width:440px; }
+  .shhint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  .shhint.warn { color:#f0b45a; }
   .shctl { display:flex; gap:6px; align-items:center; margin-top:8px; font-size:13px; font-variant-numeric:tabular-nums; }
   .shctl button { padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
   .shctl input[type=range] { flex:1; min-width:0; }
@@ -283,6 +288,8 @@
           <div class="shprev">
             <canvas id="shCanvas" width="1080" height="1920"></canvas>
             <div class="shctl"><button id="shPlay">▶</button><input type="range" id="shSeek" min="0" max="1000" value="0"><span id="shTime">0:00</span></div>
+            <div class="shctl"><button id="shBig">🔍 크게 보기</button><button id="shReset">확대 초기화</button></div>
+            <p class="shhint">미리보기에서 <b>마우스 휠 = 확대/축소</b>, <b>드래그 = 위치 이동</b></p>
             <video id="shVid" playsinline preload="auto" hidden></video>
           </div>
           <div class="shform">
@@ -308,7 +315,8 @@
               <option value="tall">크게 확대 (세로로 길게)</option>
               <option value="fit">원본 비율 (16:9 그대로)</option>
             </select>
-            <label>확대 <b id="shZoomV">1.0배</b></label><input type="range" id="shZoom" min="1" max="3" step="0.05" value="1">
+            <label>확대 <b id="shZoomV">1.0배</b></label><input type="range" id="shZoom" min="1" max="5" step="0.05" value="1">
+            <p class="shhint" id="shQual"></p>
             <div class="row2">
               <div><label>좌우 위치</label><input type="range" id="shOx" min="-1" max="1" step="0.02" value="0"></div>
               <div><label>위아래 위치</label><input type="range" id="shOy" min="-1" max="1" step="0.02" value="0"></div>
@@ -1104,7 +1112,7 @@ function shCrop(w, h, cfg) {  // 서버의 _shorts_crop과 같은 계산
   const aspect = SW / SLAYOUT[cfg.layout];
   let cw, ch;
   if (w / h < aspect) { cw = w; ch = w / aspect; } else { cw = h * aspect; ch = h; }
-  const z = Math.min(3, Math.max(1, cfg.zoom));
+  const z = Math.min(5, Math.max(1, cfg.zoom));
   cw = Math.floor(cw / z / 2) * 2; ch = Math.floor(ch / z / 2) * 2;
   return [cw, ch, (w - cw) / 2 * (1 + cfg.offset_x), (h - ch) / 2 * (1 + cfg.offset_y)];
 }
@@ -1114,6 +1122,10 @@ function shDraw() {
   if (shV.videoWidth) {
     const [cw, ch, x, y] = shCrop(shV.videoWidth, shV.videoHeight, cfg);
     shG.drawImage(shV, x, y, cw, ch, 0, SVT, SW, vh);
+    // 원본에서 잘라 쓰는 폭이 좁을수록 늘려 쓰는 것이라 화질이 떨어짐
+    const q = $('shQual');
+    q.textContent = `원본에서 ${Math.round(cw)}×${Math.round(ch)} 부분을 ${SW}×${vh}로 키워요` + (cw < 540 ? ' · 많이 확대해서 흐릿해질 수 있어요 (원본을 더 높은 화질로 받으면 좋아요)' : '');
+    q.classList.toggle('warn', cw < 540);
   }
   const tf = cfg.font === 'nanum' ? 'NGEB' : 'BHS';
   if (cfg.subtitle.trim()) { drawLines(cfg.subtitle, 'NGB', 50, 205, '#ebebeb'); drawLines(cfg.title, tf, 96, 300, cfg.title_color, 0, 40); }
@@ -1143,6 +1155,50 @@ $('shSeek').oninput = () => { const [a, e] = shRange(); shV.currentTime = a + $(
   $('shZoomV').textContent = (+$('shZoom').value).toFixed(1) + '배'; shDraw();
 }));
 ['shStart', 'shEnd'].forEach(id => $(id).addEventListener('change', () => { const [a] = shRange(); shV.currentTime = a; }));
+
+// 미리보기에서 휠로 확대/축소, 드래그로 위치 이동
+const shSetView = (zoom, ox, oy) => {
+  $('shZoom').value = Math.min(5, Math.max(1, zoom)).toFixed(2);
+  $('shOx').value = Math.min(1, Math.max(-1, ox)); $('shOy').value = Math.min(1, Math.max(-1, oy));
+  $('shZoomV').textContent = (+$('shZoom').value).toFixed(1) + '배'; shDraw();
+};
+shC.addEventListener('wheel', e => {
+  if (!shV.videoWidth) return;
+  e.preventDefault();
+  // 마우스 아래 지점이 그대로 있도록 확대 (그림 편집 프로그램처럼)
+  const cfg = shCfg(), vh = SLAYOUT[cfg.layout], W = shV.videoWidth, H = shV.videoHeight;
+  const r = shC.getBoundingClientRect(), k = SW / r.width;
+  const px = Math.min(1, Math.max(0, (e.clientX - r.left) * k / SW));
+  const py = Math.min(1, Math.max(0, ((e.clientY - r.top) * k - SVT) / vh));
+  const [cw, ch, x, y] = shCrop(W, H, cfg);
+  const sx = x + px * cw, sy = y + py * ch;  // 마우스 아래의 원본 좌표
+  const zoom = Math.min(5, Math.max(1, cfg.zoom * Math.exp(-e.deltaY * 0.0015)));
+  const [cw2, ch2] = shCrop(W, H, {...cfg, zoom});
+  const toOff = (start, size, total) => total > size ? start / ((total - size) / 2) - 1 : 0;
+  shSetView(zoom, toOff(sx - px * cw2, cw2, W), toOff(sy - py * ch2, ch2, H));
+}, {passive: false});
+let shDrag = null;
+shC.addEventListener('pointerdown', e => {
+  if (!shV.videoWidth) return;
+  shC.setPointerCapture(e.pointerId); shC.classList.add('dragging');
+  shDrag = {x: e.clientX, y: e.clientY, ox: +$('shOx').value, oy: +$('shOy').value};
+});
+shC.addEventListener('pointermove', e => {
+  if (!shDrag) return;
+  const cfg = shCfg(), vh = SLAYOUT[cfg.layout], k = SW / shC.clientWidth;  // 화면 픽셀 → 쇼츠 픽셀
+  const [cw, ch] = shCrop(shV.videoWidth, shV.videoHeight, cfg);
+  const slackX = (shV.videoWidth - cw) / 2, slackY = (shV.videoHeight - ch) / 2;
+  // 드래그한 만큼 원본 픽셀로 바꿔서, 화면이 손가락을 따라 움직이도록 위치를 반대로 이동
+  const dxs = (e.clientX - shDrag.x) * k * cw / SW, dys = (e.clientY - shDrag.y) * k * ch / vh;
+  shSetView(+$('shZoom').value, slackX ? shDrag.ox - dxs / slackX : 0, slackY ? shDrag.oy - dys / slackY : 0);
+});
+['pointerup', 'pointercancel'].forEach(ev => shC.addEventListener(ev, () => { shDrag = null; shC.classList.remove('dragging'); }));
+$('shReset').onclick = () => shSetView(1, 0, 0);
+$('shBig').onclick = () => {
+  const on = document.body.classList.toggle('wide');
+  $('shBig').textContent = on ? '작게 보기' : '🔍 크게 보기';
+  shDraw();
+};
 
 function shRenderCaps() {
   const box = $('shCaps'); box.innerHTML = '';

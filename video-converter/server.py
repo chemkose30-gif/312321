@@ -1219,7 +1219,7 @@ class ShortsSettings(BaseModel):
     channel: str = ""
     captions: list[dict] = []        # [{"t": 초, "text": "..."}] 다음 자막 전까지 표시
     layout: str = "square"
-    zoom: float = 1.0                 # 1.0 ~ 3.0 추가 확대
+    zoom: float = 1.0                 # 1.0 ~ 5.0 추가 확대
     offset_x: float = 0.0             # -1(왼쪽) ~ 1(오른쪽)
     offset_y: float = 0.0             # -1(위) ~ 1(아래)
     font: str = "blackhan"
@@ -1307,7 +1307,7 @@ def _shorts_crop(width: int, height: int, cfg: ShortsSettings) -> tuple[int, int
     """원본에서 가운데 영상 영역 비율에 맞게 잘라낼 부분 (확대·위치 반영)."""
     aspect = SHORTS_W / SHORTS_LAYOUTS[cfg.layout]
     cw, ch = (width, width / aspect) if width / height < aspect else (height * aspect, height)
-    zoom = min(3.0, max(1.0, cfg.zoom))
+    zoom = min(5.0, max(1.0, cfg.zoom))
     cw, ch = int(cw / zoom) // 2 * 2, int(ch / zoom) // 2 * 2
     ox, oy = (max(-1.0, min(1.0, v)) for v in (cfg.offset_x, cfg.offset_y))
     x = int((width - cw) / 2 * (1 + ox))
