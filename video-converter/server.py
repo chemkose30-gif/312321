@@ -1265,11 +1265,19 @@ def _draw_lines(draw, text: str, font_path: Path, size: int, center_y: float, fi
                   anchor="mm", stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
 
 
+def _shorts_video_top(cfg: ShortsSettings) -> int:
+    """제목·부제가 있으면 그 아래(400px), 없으면 경기 화면을 세로 가운데에 둠."""
+    if cfg.title.strip() or cfg.subtitle.strip():
+        return SHORTS_VIDEO_TOP
+    return (SHORTS_H - SHORTS_LAYOUTS[cfg.layout]) // 4 * 2
+
+
 def _shorts_overlays(cfg: ShortsSettings, out_dir: Path, duration: float):
     """제목·정보·채널명이 있는 기본 레이어 1장 + 자막별 레이어 이미지들을 만든다."""
     from PIL import Image, ImageColor, ImageDraw
 
     vh = SHORTS_LAYOUTS[cfg.layout]
+    vt = _shorts_video_top(cfg)
     title_font = FONTS.get(cfg.font, FONTS["blackhan"])
     base = Image.new("RGBA", (SHORTS_W, SHORTS_H), (0, 0, 0, 0))
     d = ImageDraw.Draw(base)
@@ -1280,9 +1288,9 @@ def _shorts_overlays(cfg: ShortsSettings, out_dir: Path, duration: float):
         _draw_lines(d, cfg.title, title_font, 96, 300, (*title_rgb, 255), min_size=40)
     else:
         _draw_lines(d, cfg.title, title_font, 100, 255, (*title_rgb, 255), min_size=40)
-    _draw_lines(d, cfg.info, INFO_FONT, 36, SHORTS_VIDEO_TOP + vh + 60, (200, 200, 200, 255))
+    _draw_lines(d, cfg.info, INFO_FONT, 36, vt + vh + 60, (200, 200, 200, 255))
     if cfg.channel.strip():  # 영상 가운데 흐릿하게
-        _draw_lines(d, cfg.channel, INFO_FONT, 34, SHORTS_VIDEO_TOP + vh * 0.5 + 40, (255, 255, 255, 80))
+        _draw_lines(d, cfg.channel, INFO_FONT, 34, vt + vh * 0.5 + 40, (255, 255, 255, 80))
     base_path = out_dir / "base.png"
     base.save(base_path)
 
@@ -1296,7 +1304,7 @@ def _shorts_overlays(cfg: ShortsSettings, out_dir: Path, duration: float):
             continue
         img = Image.new("RGBA", (SHORTS_W, SHORTS_H), (0, 0, 0, 0))
         _draw_lines(ImageDraw.Draw(img), str(c["text"]), CAPTION_FONT, 58,
-                    SHORTS_VIDEO_TOP + vh * 0.74, (255, 255, 255, 255), stroke=6, wrap=True)
+                    vt + vh * 0.74, (255, 255, 255, 255), stroke=6, wrap=True)
         path = out_dir / f"cap{i}.png"
         img.save(path)
         layers.append((path, start, end))
@@ -1325,7 +1333,7 @@ def _run_shorts(job_id: str, job_dir: Path, src: Path, start: float, end: float,
         cw, ch, x, y = _shorts_crop(w, h, cfg)
         vh = SHORTS_LAYOUTS[cfg.layout]
         graph = (f"[0:v]crop={cw}:{ch}:{x}:{y},scale={SHORTS_W}:{vh},setsar=1,"
-                 f"pad={SHORTS_W}:{SHORTS_H}:0:{SHORTS_VIDEO_TOP}:black[v0];[v0][1:v]overlay=0:0[v1]")
+                 f"pad={SHORTS_W}:{SHORTS_H}:0:{_shorts_video_top(cfg)}:black[v0];[v0][1:v]overlay=0:0[v1]")
         inputs = ["-i", str(base)]
         for i, (path, a, b) in enumerate(layers):
             inputs += ["-i", str(path)]
