@@ -7,6 +7,7 @@ WORK_DIR, HOST, PORT, DISABLE_GPU
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import re
 import shutil
@@ -412,6 +413,37 @@ def _probe(path: Path) -> tuple[float, str | None, str | None]:
     return duration, vcodec, (a[1] if a else None)
 
 
+def _run_ffmpeg(job_id: str, cmd: list[str], duration: float):
+    """ffmpeg를 실행하며 -progress 출력으로 진행률을 갱신한다. cmd 끝에 출력 파일."""
+    cmd = cmd[:-1] + ["-progress", "pipe:1", "-nostats", cmd[-1]]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace")
+    # stderr가 가득 차서 멈추지 않도록 별도 스레드에서 비운다
+    err_tail: list[str] = []
+    def drain():
+        for line in proc.stderr:
+            err_tail.append(line)
+            del err_tail[:-20]
+    threading.Thread(target=drain, daemon=True).start()
+
+    for line in proc.stdout:
+        if line.startswith("out_time_us=") and duration > 0:
+            try:
+                sec = int(line.split("=")[1]) / 1_000_000
+                _update(job_id, progress=round(min(sec / duration * 100, 99), 1))
+            except ValueError:
+                pass
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError("ffmpeg 오류: " + "".join(err_tail[-3:]).strip()[:300])
+
+
+def _video_encoder_args(preset: str) -> list[str]:
+    if GPU_ENCODER:
+        return ["-c:v", GPU_ENCODER, *PRESETS[preset]["gpu"], "-rc", "vbr", "-b:v", "0"]
+    return ["-c:v", "libx264", *PRESETS[preset]["cpu"]]
+
+
 def _run_convert(job_id: str, src: Path, out: Path, preset: str):
     try:
         _update(job_id, status="running", message="파일 분석 중")
@@ -423,42 +455,18 @@ def _run_convert(job_id: str, src: Path, out: Path, preset: str):
         copy_video = vcodec == "h264"
         copy_audio = acodec in (None, "aac", "mp3")
         cmd = [FFMPEG, "-hide_banner", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?"]
-        if copy_video:
-            cmd += ["-c:v", "copy"]
-        elif GPU_ENCODER:
-            cmd += ["-c:v", GPU_ENCODER, *PRESETS[preset]["gpu"], "-rc", "vbr", "-b:v", "0"]
-        else:
-            cmd += ["-c:v", "libx264", *PRESETS[preset]["cpu"]]
+        cmd += ["-c:v", "copy"] if copy_video else _video_encoder_args(preset)
         if not copy_video:
             cmd += ["-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
         cmd += ["-c:a", "copy"] if copy_audio else ["-c:a", "aac", "-b:a", "192k"]
-        cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(out)]
+        cmd += ["-movflags", "+faststart", str(out)]
 
         if copy_video and copy_audio:
             mode = "컨테이너 변환 중 (재인코딩 없음)"
         else:
             mode = "인코딩 중" + (" (GPU)" if GPU_ENCODER and not copy_video else "")
         _update(job_id, message=mode)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, errors="replace")
-        # stderr가 가득 차서 멈추지 않도록 별도 스레드에서 비운다
-        err_tail: list[str] = []
-        def drain():
-            for line in proc.stderr:
-                err_tail.append(line)
-                del err_tail[:-20]
-        threading.Thread(target=drain, daemon=True).start()
-
-        for line in proc.stdout:
-            if line.startswith("out_time_us=") and duration > 0:
-                try:
-                    sec = int(line.split("=")[1]) / 1_000_000
-                    _update(job_id, progress=round(min(sec / duration * 100, 99), 1))
-                except ValueError:
-                    pass
-        proc.wait()
-        if proc.returncode != 0:
-            raise RuntimeError("ffmpeg 오류: " + "".join(err_tail[-3:]).strip()[:300])
+        _run_ffmpeg(job_id, cmd, duration)
         _update(job_id, status="done", progress=100, message="완료", file=str(out))
     except Exception as e:  # noqa: BLE001
         _update(job_id, status="error", message=f"실패: {e}")
@@ -466,13 +474,9 @@ def _run_convert(job_id: str, src: Path, out: Path, preset: str):
         src.unlink(missing_ok=True)
 
 
-@app.post("/api/convert")
-async def start_convert(file: UploadFile = File(...), preset: str = Form("balanced")):
-    if preset not in PRESETS:
-        raise HTTPException(400, "잘못된 속도/화질 옵션입니다")
-    _cleanup_old_jobs()
-    job_id, job_dir = _new_job("convert")
-    original = _safe_name(Path(file.filename or "video").stem)
+async def _save_upload(file: UploadFile, job_id: str, job_dir: Path) -> tuple[Path, str]:
+    """업로드를 작업 폴더에 저장하고 (저장 경로, 원본 파일 이름)을 돌려준다."""
+    original = _safe_name(Path(file.filename or "file").stem)
     suffix = re.sub(r"[^.\w]", "", Path(file.filename or "").suffix.lower()) or ".bin"
     src = job_dir / f"input{suffix}"
     limit = MAX_UPLOAD_MB * 1024 * 1024
@@ -486,9 +490,187 @@ async def start_convert(file: UploadFile = File(...), preset: str = Form("balanc
     if written > limit:
         _remove_job(job_id)
         raise HTTPException(413, f"파일이 너무 큽니다 (최대 {MAX_UPLOAD_MB} MB)")
+    return src, original
+
+
+@app.post("/api/convert")
+async def start_convert(file: UploadFile = File(...), preset: str = Form("balanced")):
+    if preset not in PRESETS:
+        raise HTTPException(400, "잘못된 속도/화질 옵션입니다")
+    _cleanup_old_jobs()
+    job_id, job_dir = _new_job("convert")
+    src, original = await _save_upload(file, job_id, job_dir)
     out = job_dir / "output.mp4"
     _update(job_id, filename=f"{original}.mp4")
     _start_worker(job_id, _run_convert, src, out, preset)
+    return {"job_id": job_id}
+
+
+# ------------------------------------------------------ Watermark 지우기
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def _parse_boxes(raw: str) -> list[tuple[int, int, int, int]]:
+    try:
+        boxes = [tuple(int(round(float(v))) for v in (b["x"], b["y"], b["w"], b["h"]))
+                 for b in json.loads(raw)]
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(400, "지울 영역 정보가 올바르지 않습니다")
+    boxes = [b for b in boxes if b[2] >= 2 and b[3] >= 2]
+    if not boxes:
+        raise HTTPException(400, "지울 영역을 하나 이상 지정하세요")
+    if len(boxes) > 20:
+        raise HTTPException(400, "영역은 20개까지 지정할 수 있습니다")
+    return boxes
+
+
+def _clamp_box(box, width: int, height: int, margin: int = 0):
+    x, y, w, h = box
+    x0, y0 = max(margin, x), max(margin, y)
+    x1, y1 = min(width - margin, x + w), min(height - margin, y + h)
+    return (x0, y0, x1 - x0, y1 - y0) if x1 - x0 >= 2 and y1 - y0 >= 2 else None
+
+
+def _harmonic(img, fill_mask):
+    """fill_mask 영역을 주변 픽셀에서 매끄럽게 이어지도록 채움 (라플라스 방정식).
+
+    큰 영역도 빨리 수렴하도록 작은 해상도에서 먼저 풀고 키워가며 다듬는다(coarse→fine).
+    그라데이션·하늘·벽처럼 부드러운 배경에서는 자국 없이 채워진다.
+    """
+    import cv2
+
+    h, w = img.shape[:2]
+    if min(h, w) <= 24:
+        out = img.copy()
+        if (~fill_mask).any():
+            out[fill_mask] = img[~fill_mask].mean(axis=0)
+        iters = 300
+    else:
+        size = ((w + 1) // 2, (h + 1) // 2)
+        small = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+        small_mask = cv2.resize(fill_mask.astype("uint8"), size, interpolation=cv2.INTER_NEAREST) > 0
+        up = cv2.resize(_harmonic(small, small_mask), (w, h), interpolation=cv2.INTER_LINEAR)
+        out = img.copy()
+        out[fill_mask] = up[fill_mask]
+        iters = 40
+    for _ in range(iters):
+        out[fill_mask] = cv2.blur(out, (3, 3))[fill_mask]
+    return out
+
+
+def _fill_regions(img, mask):
+    """mask가 있는 부분 주변만 잘라서 채움 (큰 이미지도 빠르게)."""
+    import numpy as np
+
+    ys, xs = np.nonzero(mask)
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    m = max(y1 - y0, x1 - x0) // 2 + 8
+    y0, y1 = max(0, y0 - m), min(img.shape[0], y1 + m)
+    x0, x1 = max(0, x0 - m), min(img.shape[1], x1 + m)
+    crop_mask = mask[y0:y1, x0:x1] > 0
+    filled = _harmonic(img[y0:y1, x0:x1].astype(np.float32), crop_mask)
+    out = img.copy()
+    out[y0:y1, x0:x1][crop_mask] = np.clip(filled[crop_mask], 0, 255).astype(img.dtype)
+    return out
+
+
+def _run_watermark_image(job_id: str, src: Path, out: Path, boxes):
+    import cv2
+    import numpy as np
+
+    try:
+        _update(job_id, status="running", message="지우는 중", progress=30)
+        data = np.fromfile(str(src), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+        if img is not None and (img.ndim == 2 or img.shape[2] != 4):
+            # 투명도가 없으면 EXIF 회전을 반영해 읽음 (브라우저에 보이는 방향과 좌표를 맞춤)
+            img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError("이미지를 읽을 수 없습니다")
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        if img.dtype != np.uint8:  # 16비트 PNG 등
+            img = (img / 257).astype(np.uint8)
+        h, w = img.shape[:2]
+        mask = np.zeros((h, w), np.uint8)
+        for box in boxes:
+            b = _clamp_box(box, w, h)
+            if b:
+                x, y, bw, bh = b
+                mask[y:y + bh, x:x + bw] = 255
+        if not mask.any():
+            raise RuntimeError("지정한 영역이 이미지 밖에 있습니다")
+        # 글자 테두리(안티앨리어싱)까지 지우도록 영역을 살짝 넓힘
+        mask = cv2.dilate(mask, np.ones((5, 5), np.uint8))
+        fixed = _fill_regions(img, mask)  # 투명(알파) 채널도 같이 채워짐
+        ok, buf = cv2.imencode(".png", fixed)
+        if not ok:
+            raise RuntimeError("PNG 저장에 실패했습니다")
+        out.write_bytes(buf.tobytes())
+        _update(job_id, status="done", progress=100, message="완료", file=str(out))
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+    finally:
+        src.unlink(missing_ok=True)
+
+
+def _video_display_size(path: Path) -> tuple[int, int]:
+    """회전 정보를 반영한 영상 표시 크기 (ffmpeg 필터가 보는 크기와 같음)."""
+    err = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)],
+                         capture_output=True, text=True, errors="replace").stderr
+    m = re.search(r"Stream #.*?Video: .*?(\d{2,5})x(\d{2,5})", err)
+    if not m:
+        raise RuntimeError("영상 크기를 확인할 수 없습니다")
+    w, h = int(m[1]), int(m[2])
+    if re.search(r"rotation of -?(90|270)\.|rotate\s*:\s*(90|270)", err):
+        w, h = h, w
+    return w, h
+
+
+def _run_watermark_video(job_id: str, src: Path, out: Path, boxes, preset: str):
+    try:
+        _update(job_id, status="running", message="파일 분석 중")
+        duration, vcodec, acodec = _probe(src)
+        if vcodec is None:
+            raise RuntimeError("영상 스트림을 찾을 수 없습니다")
+        w, h = _video_display_size(src)
+        # delogo는 영역이 화면 가장자리에 닿으면 오류가 나서 1px 안쪽으로 맞춤
+        regions = [b for b in (_clamp_box(box, w, h, margin=1) for box in boxes) if b]
+        if not regions:
+            raise RuntimeError("지정한 영역이 영상 밖에 있습니다")
+        vf = ",".join(f"delogo=x={x}:y={y}:w={bw}:h={bh}" for x, y, bw, bh in regions)
+        vf += ",scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        cmd = [FFMPEG, "-hide_banner", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0?",
+               "-vf", vf, *_video_encoder_args(preset), "-pix_fmt", "yuv420p"]
+        cmd += ["-c:a", "copy"] if acodec in (None, "aac", "mp3") else ["-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-movflags", "+faststart", str(out)]
+        _update(job_id, message="지우는 중" + (" (GPU)" if GPU_ENCODER else ""))
+        _run_ffmpeg(job_id, cmd, duration)
+        _update(job_id, status="done", progress=100, message="완료", file=str(out))
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+    finally:
+        src.unlink(missing_ok=True)
+
+
+@app.post("/api/watermark")
+async def start_watermark(file: UploadFile = File(...), boxes: str = Form(...),
+                          preset: str = Form("balanced")):
+    if preset not in PRESETS:
+        raise HTTPException(400, "잘못된 속도/화질 옵션입니다")
+    regions = _parse_boxes(boxes)
+    _cleanup_old_jobs()
+    job_id, job_dir = _new_job("watermark")
+    src, original = await _save_upload(file, job_id, job_dir)
+    if src.suffix in IMAGE_EXTS or (file.content_type or "").startswith("image/"):
+        out = job_dir / "output.png"
+        _update(job_id, filename=f"{original}_워터마크제거.png")
+        _start_worker(job_id, _run_watermark_image, src, out, regions)
+    else:
+        out = job_dir / "output.mp4"
+        _update(job_id, filename=f"{original}_워터마크제거.mp4")
+        _start_worker(job_id, _run_watermark_video, src, out, regions, preset)
     return {"job_id": job_id}
 
 
@@ -525,7 +707,7 @@ def download(job_id: str, background: BackgroundTasks):
     if not job or job["status"] != "done":
         raise HTTPException(404, "다운로드할 파일이 없습니다")
     background.add_task(_remove_job, job_id)
-    media = "audio/mpeg" if job["filename"].endswith(".mp3") else "video/mp4"
+    media = {".mp3": "audio/mpeg", ".png": "image/png"}.get(Path(job["filename"]).suffix, "video/mp4")
     return FileResponse(job["file"], media_type=media, filename=job["filename"],
                         background=background)
 

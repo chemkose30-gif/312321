@@ -12,6 +12,8 @@
   h1 { font-size:24px; margin:0 0 24px; }
   .tabs { display:flex; gap:8px; margin-bottom:16px; }
   .tab { flex:1; padding:12px 6px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:14px; cursor:pointer; }
+  .tab { white-space:nowrap; }
+  @media (max-width:480px) { .tabs { gap:6px; } .tab { font-size:13px; padding:12px 2px; } }
   .tab.active { background:var(--card); color:var(--text); border-color:var(--accent); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
   .panel { display:none; } .panel.active { display:block; }
@@ -68,6 +70,13 @@
   .vidbar { display:flex; gap:8px; align-items:center; margin-top:10px; }
   .vidbar button { flex:1; padding:10px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font-size:14px; cursor:pointer; }
   .vidbar span { flex:1.2; text-align:center; font-variant-numeric:tabular-nums; font-size:14px; }
+  .stage { position:relative; margin-top:12px; border-radius:8px; overflow:hidden; background:#000; line-height:0; }
+  .stage img, .stage video { width:100%; max-height:420px; object-fit:contain; display:block; }
+  .stage canvas { position:absolute; left:0; top:0; width:100%; height:100%; cursor:crosshair; touch-action:none; }
+  #wmSeek { width:100%; margin-top:8px; }
+  .compare { position:relative; margin-top:12px; line-height:0; border-radius:8px; overflow:hidden; background:#000; }
+  .compare img { width:100%; max-height:420px; object-fit:contain; }
+  .warnnote { font-size:12px; color:#f0b45a; margin-top:14px; line-height:1.6; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -77,7 +86,8 @@
   <div class="tabs">
     <button class="tab active" data-tab="yt">유튜브</button>
     <button class="tab" data-tab="conv">MP4 변환</button>
-    <button class="tab" data-tab="img">캡처 → PNG</button>
+    <button class="tab" data-tab="img">캡처→PNG</button>
+    <button class="tab" data-tab="wm">워터마크</button>
   </div>
 
   <div class="card">
@@ -131,6 +141,37 @@
       </div>
 
       <div class="shots" id="shots"></div>
+    </section>
+
+    <section class="panel" id="wm">
+      <input type="file" id="wmFile" accept="image/*,video/*,.mkv,.mov,.m4v" hidden>
+      <div class="drop" id="wmDrop">이미지나 영상을 끌어다 놓거나 클릭해서 선택<br><small>이미지는 Ctrl+V로 붙여넣어도 돼요</small></div>
+      <div id="wmBox" hidden>
+        <p class="msg" id="wmHelp">지울 부분을 <b>마우스로 드래그해서 네모</b>로 표시하세요. 여러 개 표시할 수 있어요.</p>
+        <div class="stage" id="wmStage"><canvas id="wmCanvas"></canvas></div>
+        <input type="range" id="wmSeek" min="0" max="1000" value="0" hidden title="영상 위치 (영역 확인용)">
+        <div class="pastebar">
+          <button id="wmUndo">↩ 마지막 영역 취소</button>
+          <button id="wmClear">모두 취소</button>
+          <span class="msg" id="wmCount" style="margin:0"></span>
+        </div>
+        <div id="wmPresetRow" hidden>
+          <label for="wmPreset">속도 / 화질</label>
+          <select id="wmPreset">
+            <option value="fast">빠르게 (파일이 조금 커짐)</option>
+            <option value="balanced" selected>균형 (추천)</option>
+            <option value="quality">고화질 (느림)</option>
+          </select>
+        </div>
+        <button class="go" id="wmGo" disabled>워터마크 지우기</button>
+        <div id="wmResult" hidden>
+          <label>결과 <small>(누르고 있으면 원본이 보여요)</small></label>
+          <div class="compare" id="wmCompare"><img id="wmAfter" alt="결과"></div>
+          <div class="pastebar"><button id="wmSave">PNG 다시 저장</button></div>
+        </div>
+      </div>
+      <p class="warnnote">※ 본인이 만들었거나 사용 권한이 있는 이미지·영상에만 사용하세요. 다른 사람의 워터마크를 지워 쓰면 저작권 침해가 될 수 있어요.<br>
+        ※ 하늘·벽·단색처럼 단순한 배경에서 가장 깔끔하고, 복잡한 무늬 위는 흐릿하게 채워질 수 있어요. 영상은 지정한 위치가 영상 전체에서 지워져요(고정 로고용).</p>
     </section>
 
     <div class="status" id="status">
@@ -293,9 +334,10 @@ function setBusy(b) {
   busy = b;
   $('ytGo').disabled = b || !ytChoice;
   $('convGo').disabled = b || !selectedFile;
+  if (typeof wmUpdate === 'function') wmUpdate();
 }
 
-async function poll(jobId) {
+async function poll(jobId, onDone) {
   while (true) {
     await new Promise(r => setTimeout(r, 800));
     const res = await fetch(`/api/jobs/${jobId}`);
@@ -303,6 +345,7 @@ async function poll(jobId) {
     const j = await res.json();
     if (j.status === 'error') throw new Error(j.message);
     if (j.status === 'done') {
+      if (onDone) return onDone(j, jobId);
       setStatus(100, `완료! ${j.filename} 다운로드를 시작합니다.`, 'ok');
       const a = document.createElement('a');
       a.href = `/api/jobs/${jobId}/download`;
@@ -313,9 +356,9 @@ async function poll(jobId) {
   }
 }
 
-async function run(startFn) {
+async function run(startFn, onDone) {
   setBusy(true);
-  try { await poll(await startFn()); }
+  try { await poll(await startFn(), onDone); }
   catch (e) { setStatus(100, e.message, 'err'); if (e.message.includes('쿠키')) $('admin').open = true; }
   finally { setBusy(false); }
 }
@@ -433,6 +476,7 @@ document.addEventListener('paste', e => {
   const files = [...(e.clipboardData?.items || [])].filter(i => i.type.startsWith('image/')).map(i => i.getAsFile());
   if (!files.length) return;
   e.preventDefault();
+  if (document.querySelector('.tab.active').dataset.tab === 'wm') return openWm(files[0]);
   showTab('img');
   files.forEach(addImage);
 });
@@ -528,11 +572,10 @@ $('vidFile').onchange = e => { openVideo(e.target.files[0]); e.target.value = ''
 ['dragleave', 'drop'].forEach(ev => $('vidDrop').addEventListener(ev, e => { e.preventDefault(); $('vidDrop').classList.remove('over'); }));
 $('vidDrop').addEventListener('drop', e => openVideo(e.dataTransfer.files[0]));
 
-$('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
-  // 업로드 진행률 표시를 위해 XHR 사용
-  const fd = new FormData(); fd.append('file', selectedFile); fd.append('preset', $('preset').value);
+// 업로드 진행률 표시를 위해 XHR 사용
+const uploadJob = (url, fd) => new Promise((resolve, reject) => {
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/convert');
+  xhr.open('POST', url);
   xhr.upload.onprogress = e => e.lengthComputable && setStatus(e.loaded / e.total * 100, `업로드 중 ${Math.round(e.loaded / e.total * 100)}%`);
   xhr.onload = () => {
     if (xhr.status === 401) { location.href = '/login.html'; return; }
@@ -541,7 +584,137 @@ $('convGo').onclick = () => run(() => new Promise((resolve, reject) => {
   };
   xhr.onerror = () => reject(new Error('업로드 실패'));
   xhr.send(fd);
-}));
+});
+$('convGo').onclick = () => run(() => {
+  const fd = new FormData(); fd.append('file', selectedFile); fd.append('preset', $('preset').value);
+  return uploadJob('/api/convert', fd);
+});
+
+// ---------- 워터마크 지우기
+let wmFile = null, wmMedia = null, wmBoxes = [], wmDraft = null, wmResultBlob = null, wmResultName = '';
+const wmCanvas = $('wmCanvas');
+const wmNatural = () => wmMedia ? (wmMedia.tagName === 'IMG' ? [wmMedia.naturalWidth, wmMedia.naturalHeight] : [wmMedia.videoWidth, wmMedia.videoHeight]) : [0, 0];
+
+// 화면에 보이는 미디어 영역(object-fit: contain의 여백 제외)
+function wmDisplayRect() {
+  const [nw, nh] = wmNatural(), cw = wmMedia.clientWidth, ch = wmMedia.clientHeight;
+  const scale = Math.min(cw / nw, ch / nh);
+  return {x: (cw - nw * scale) / 2, y: (ch - nh * scale) / 2, scale};
+}
+function wmDraw() {
+  if (!wmMedia) return;
+  const dpr = window.devicePixelRatio || 1, cw = wmMedia.clientWidth, ch = wmMedia.clientHeight;
+  wmCanvas.width = cw * dpr; wmCanvas.height = ch * dpr;
+  const g = wmCanvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cw, ch);
+  const r = wmDisplayRect();
+  [...wmBoxes, ...(wmDraft ? [wmDraft] : [])].forEach((b, i) => {
+    const x = r.x + b.x * r.scale, y = r.y + b.y * r.scale, w = b.w * r.scale, h = b.h * r.scale;
+    g.fillStyle = 'rgba(255,77,77,.35)'; g.fillRect(x, y, w, h);
+    g.strokeStyle = '#ff4d4d'; g.lineWidth = 2; g.strokeRect(x, y, w, h);
+    if (b !== wmDraft) { g.fillStyle = '#fff'; g.font = 'bold 13px sans-serif'; g.fillText(String(i + 1), x + 4, y + 15); }
+  });
+}
+function wmUpdate() {
+  $('wmCount').textContent = wmBoxes.length ? `영역 ${wmBoxes.length}개` : '';
+  $('wmGo').disabled = busy || !wmBoxes.length;
+  $('wmUndo').disabled = $('wmClear').disabled = !wmBoxes.length;
+}
+// 화면 좌표 → 원본 픽셀 좌표
+function wmPoint(e) {
+  const rect = wmCanvas.getBoundingClientRect(), r = wmDisplayRect(), [nw, nh] = wmNatural();
+  const x = (e.clientX - rect.left - r.x) / r.scale, y = (e.clientY - rect.top - r.y) / r.scale;
+  return [Math.min(Math.max(x, 0), nw), Math.min(Math.max(y, 0), nh)];
+}
+let wmStart = null;
+wmCanvas.addEventListener('pointerdown', e => {
+  if (!wmMedia || busy) return;
+  wmCanvas.setPointerCapture(e.pointerId);
+  wmStart = wmPoint(e); wmDraft = {x: wmStart[0], y: wmStart[1], w: 0, h: 0};
+});
+wmCanvas.addEventListener('pointermove', e => {
+  if (!wmStart) return;
+  const [x, y] = wmPoint(e);
+  wmDraft = {x: Math.min(x, wmStart[0]), y: Math.min(y, wmStart[1]), w: Math.abs(x - wmStart[0]), h: Math.abs(y - wmStart[1])};
+  wmDraw();
+});
+wmCanvas.addEventListener('pointerup', () => {
+  if (!wmStart) return;
+  const [nw] = wmNatural();
+  if (wmDraft && wmDraft.w > nw / 200 && wmDraft.h > nw / 200) wmBoxes.push(wmDraft);  // 너무 작은 건 클릭으로 보고 무시
+  wmStart = wmDraft = null; wmDraw(); wmUpdate();
+});
+$('wmUndo').onclick = () => { wmBoxes.pop(); wmDraw(); wmUpdate(); };
+$('wmClear').onclick = () => { wmBoxes = []; wmDraw(); wmUpdate(); };
+new ResizeObserver(wmDraw).observe($('wmStage'));
+
+function openWm(f) {
+  if (!f || busy) return;
+  const isImg = f.type.startsWith('image/'), isVid = f.type.startsWith('video/') || /\.(mkv|mov|m4v|mp4|webm|avi|wmv|ts)$/i.test(f.name);
+  if (!isImg && !isVid) return;
+  if (f.size > maxUploadMb * 1048576) return setStatus(0, `파일이 너무 큽니다 (최대 ${maxUploadMb} MB)`, 'err');
+  if (wmMedia) { URL.revokeObjectURL(wmMedia.src); wmMedia.remove(); }
+  wmFile = f; wmBoxes = []; wmResultBlob = null; $('wmResult').hidden = true; $('status').style.display = 'none';
+  const el = document.createElement(isImg ? 'img' : 'video');
+  el.src = URL.createObjectURL(f);
+  if (!isImg) { el.muted = true; el.playsInline = true; el.preload = 'auto'; }
+  el.addEventListener(isImg ? 'load' : 'loadeddata', () => {
+    if (!wmNatural()[0]) return el.dispatchEvent(new Event('error'));
+    $('wmHelp').innerHTML = `지울 부분을 <b>마우스로 드래그해서 네모</b>로 표시하세요. 여러 개 표시할 수 있어요. <small>(원본 ${wmNatural().join('×')})</small>`;
+    wmDraw();
+  });
+  el.addEventListener('error', () => setStatus(0, '이 브라우저에서 미리보기를 할 수 없는 형식이에요. 영상이면 "MP4 변환" 탭에서 바꾼 뒤 다시 열어주세요.', 'err'));
+  $('wmStage').prepend(el);
+  wmMedia = el;
+  $('wmSeek').hidden = isImg; $('wmSeek').value = 0;
+  $('wmPresetRow').hidden = isImg;
+  $('wmDrop').innerHTML = '<strong></strong><br><small>다른 파일을 열려면 클릭</small>';
+  $('wmDrop').querySelector('strong').textContent = f.name;
+  $('wmBox').hidden = false;
+  wmUpdate();
+}
+$('wmSeek').oninput = () => { if (wmMedia && wmMedia.duration) wmMedia.currentTime = $('wmSeek').value / 1000 * wmMedia.duration; };
+$('wmDrop').onclick = () => !busy && $('wmFile').click();
+$('wmFile').onchange = e => { openWm(e.target.files[0]); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => $('wmDrop').addEventListener(ev, e => { e.preventDefault(); $('wmDrop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('wmDrop').addEventListener(ev, e => { e.preventDefault(); $('wmDrop').classList.remove('over'); }));
+$('wmDrop').addEventListener('drop', e => openWm(e.dataTransfer.files[0]));
+
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+$('wmGo').onclick = () => {
+  const isImg = wmMedia.tagName === 'IMG';
+  run(() => {
+    const fd = new FormData();
+    fd.append('file', wmFile);
+    fd.append('boxes', JSON.stringify(wmBoxes.map(b => ({x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h)}))));
+    fd.append('preset', $('wmPreset').value);
+    return uploadJob('/api/watermark', fd);
+  }, isImg ? async (j, jobId) => {
+    // 이미지는 결과를 바로 보여주고 저장
+    const res = await fetch(`/api/jobs/${jobId}/download`);
+    if (!res.ok) throw new Error('결과를 가져오지 못했습니다');
+    wmResultBlob = await res.blob(); wmResultName = j.filename;
+    const after = $('wmAfter');
+    if (after.src) URL.revokeObjectURL(after.src);
+    after.src = URL.createObjectURL(wmResultBlob);
+    after.dataset.after = after.src;
+    $('wmResult').hidden = false;
+    saveBlob(wmResultBlob, wmResultName);
+    setStatus(100, `완료! ${j.filename} 저장했어요.`, 'ok');
+  } : undefined);
+};
+// 결과 이미지를 누르고 있으면 원본 보기
+const showBefore = on => { const a = $('wmAfter'); if (wmMedia && a.dataset.after) a.src = on ? wmMedia.src : a.dataset.after; };
+$('wmCompare').addEventListener('pointerdown', () => showBefore(true));
+['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => $('wmCompare').addEventListener(ev, () => showBefore(false)));
+$('wmSave').onclick = () => wmResultBlob && saveBlob(wmResultBlob, wmResultName);
+wmUpdate();
 </script>
 </body>
 </html>
