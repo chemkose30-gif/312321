@@ -127,6 +127,15 @@
   .cap button { padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--muted); cursor:pointer; }
   .cap.now input.t { border-color:var(--accent); }
   @media (max-width:560px) { .shwrap { flex-direction:column; } .shprev { width:100%; max-width:300px; margin:0 auto; } }
+  .yt { margin-top:18px; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--bg); }
+  .yt h4 { margin:0 0 8px; font-size:15px; }
+  .yt .lbl { font-size:12px; color:var(--muted); margin:12px 0 6px; display:flex; justify-content:space-between; align-items:center; }
+  .yt .cand { display:flex; gap:8px; align-items:center; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); margin-bottom:6px; font-size:14px; }
+  .yt .cand span { flex:1; min-width:0; word-break:break-all; }
+  .yt .cand small { color:var(--muted); white-space:nowrap; }
+  .yt button { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font-size:12px; cursor:pointer; white-space:nowrap; }
+  .yt button.done { color:var(--ok); border-color:var(--ok); }
+  .yt textarea { width:100%; min-height:170px; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -329,6 +338,13 @@
           </div>
         </div>
         <button class="go" id="shGo">쇼츠 만들기 (1080×1920 MP4)</button>
+        <div class="yt">
+          <h4>📝 유튜브 제목·설명 추천 <small style="color:var(--muted);font-weight:normal">· 위에 입력한 제목·자막·경기 정보로 자동 작성</small></h4>
+          <div class="lbl">제목 후보 <span>최대 100자 · 앞 40자 정도가 화면에 보여요</span></div>
+          <div id="ytTitles"></div>
+          <div class="lbl">설명 (고쳐 써도 돼요) <button id="ytDescCopy">설명 복사</button></div>
+          <textarea id="ytDesc"></textarea>
+        </div>
       </div>
     </section>
 
@@ -896,7 +912,7 @@ function hlRender() {
     row.className = 'hl' + (hlChecked.has(ev.i) ? '' : ' off');
     row.innerHTML = `<input type="checkbox"><img alt=""><div class="m">${hlBadge(ev)}<b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button><button title="이 장면으로 쇼츠 만들기">쇼츠</button>`;
     const [cb, img, meta, play, toShorts] = row.children;
-    toShorts.onclick = () => shFromHighlight(s, e);
+    toShorts.onclick = () => shFromHighlight(s, e, ev);
     cb.checked = hlChecked.has(ev.i);
     cb.onchange = () => { cb.checked ? hlChecked.add(ev.i) : hlChecked.delete(ev.i); row.classList.toggle('off', !cb.checked); hlCount(); };
     if (ev.thumb) img.src = `/api/highlights/${hlJob}/thumb/${hlThumb(ev)}.jpg`; else img.hidden = true;
@@ -1072,6 +1088,7 @@ const svt = cfg => (cfg.title.trim() || cfg.subtitle.trim()) ? 400 : Math.floor(
 const shV = $('shVid'), shC = $('shCanvas'), shG = shC.getContext('2d');
 let shSrc = null;  // {file} 또는 {hlJob}
 let shCaps = [];   // [{t, text}] (쇼츠 시작 기준 초)
+let shMeta = {kills: 0};  // 하이라이트에서 가져온 장면 정보 (연속 킬 수)
 const parseClock = v => { const p = String(v).trim().split(':').map(Number); if (p.some(isNaN)) return NaN; return p.reduce((a, b) => a * 60 + b, 0); };
 const fmtClock1 = t => { t = Math.max(0, t); return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`; };
 const shRange = () => { const a = parseClock($('shStart').value) || 0, b = parseClock($('shEnd').value); return [a, isNaN(b) || b <= a ? (shV.duration || a + 30) : b]; };
@@ -1221,7 +1238,7 @@ function shRenderCaps() {
 $('shCapAdd').onclick = () => {
   const [a] = shRange();
   shCaps.push({t: Math.max(0, +(shV.currentTime - a).toFixed(1)), text: ''});
-  shCaps.sort((p, q) => p.t - q.t); shRenderCaps(); shDraw();
+  shCaps.sort((p, q) => p.t - q.t); shRenderCaps(); shDraw(); ytSuggest();
   const idx = shCaps.findIndex(c => c.text === '' && Math.abs(c.t - (shV.currentTime - a)) < 0.2);
   document.querySelectorAll('#shCaps .x')[idx]?.focus();
 };
@@ -1232,11 +1249,13 @@ function shOpen(src, url, start, end) {
   shV.src = url;
   $('shStart').value = fmtClock1(start); $('shEnd').value = end ? fmtClock1(end) : '';
   shCaps = []; shRenderCaps();
+  $('ytDesc').dataset.edited = ''; ytSuggest();
   $('shBox').hidden = false;
   document.fonts.ready.then(shDraw);
 }
-function shFromHighlight(s, e) {
+function shFromHighlight(s, e, ev) {
   if (busy) return;
+  shMeta = {kills: ev && ev.kills || 0};
   shOpen({hlJob: hlJob, keepUrl: true}, hlV.src, s, Math.min(e, s + 180));
   $('shDrop').innerHTML = '<strong>하이라이트 장면</strong><br><small>다른 파일을 쓰려면 클릭</small>';
   showTab('sh'); $('status').style.display = 'none';
@@ -1245,6 +1264,7 @@ function shFromHighlight(s, e) {
 function shPick(f) {
   if (!f || busy) return;
   if (f.size > maxUploadMb * 1048576) return setStatus(0, `파일이 너무 큽니다 (최대 ${maxUploadMb} MB)`, 'err');
+  shMeta = {kills: 0};
   shOpen({file: f}, URL.createObjectURL(f), 0, 0);
   $('shDrop').innerHTML = '<strong></strong><br><small>다른 파일을 열려면 클릭</small>';
   $('shDrop').querySelector('strong').textContent = f.name;
@@ -1255,6 +1275,63 @@ $('shFile').onchange = e => { shPick(e.target.files[0]); e.target.value = ''; };
 ['dragover', 'dragenter'].forEach(ev => $('shDrop').addEventListener(ev, e => { e.preventDefault(); $('shDrop').classList.add('over'); }));
 ['dragleave', 'drop'].forEach(ev => $('shDrop').addEventListener(ev, e => { e.preventDefault(); $('shDrop').classList.remove('over'); }));
 $('shDrop').addEventListener('drop', e => shPick(e.dataTransfer.files[0]));
+// ---- 유튜브 제목·설명 추천 (입력한 내용으로 바로 만듦, 서버·AI 사용 안 함)
+const TEAMS = {  // 약칭 → 한글 이름 (해시태그용)
+  T1: '티원', SKT: 'SKT', GEN: '젠지', GENG: '젠지', HLE: '한화생명', KT: 'KT롤스터', DK: '디플러스기아', DWG: '담원',
+  DRX: 'DRX', NS: '농심', BRO: '브리온', KDF: '광동', DNF: 'DN프릭스', BFX: '피어엑스', SB: '샌드박스', LSB: '리브샌박',
+  AF: '아프리카', KZ: '킹존', GRF: '그리핀', SSG: '삼성', ROX: '락스',
+};
+const MULTI = {2: '더블킬', 3: '트리플킬', 4: '쿼드라킬', 5: '펜타킬'};
+const oneLine = t => String(t || '').split('\n').map(x => x.trim()).filter(Boolean).join(' ');
+function ytSuggest() {
+  const title = oneLine($('shTitle').value), sub = oneLine($('shSub').value), info = oneLine($('shInfo').value);
+  const caps = shCaps.map(c => oneLine(c.text)).filter(Boolean);
+  const m = info.match(/([A-Za-z0-9.]+)\s*(?:vs\.?|VS|대)\s*([A-Za-z0-9.]+)/);
+  const teams = m ? [m[1].replace(/\./g, ''), m[2].replace(/\./g, '')] : [];
+  const year = (info.match(/20\d\d/) || [])[0];
+  const multi = MULTI[Math.min(shMeta.kills || 0, 5)] || '';
+  const base = title || caps[0] || (multi ? `LCK ${multi} 장면` : 'LCK 명장면');
+  const withMulti = multi && !base.includes(multi) ? `${base} (${multi})` : base;
+  const cut = t => t.length > 100 ? t.slice(0, 99) + '…' : t;
+  const titles = [...new Set([
+    `${withMulti} #shorts`,
+    teams.length ? `${teams[0]} vs ${teams[1]} ${base}${multi && !base.includes(multi) ? ' ' + multi : ''} ㄷㄷ` : `${withMulti} ㄷㄷ`,
+    sub ? `${sub} ${base}` : /LCK/i.test(base) ? `${withMulti} | 롤 명장면` : `[LCK${year ? ' ' + year : ''}] ${withMulti}`,
+  ].map(cut))];
+  const tags = ['#shorts', '#LCK', '#롤', '#리그오브레전드',
+    ...teams.flatMap(t => [`#${t}`, TEAMS[t.toUpperCase()] ? `#${TEAMS[t.toUpperCase()]}` : null]),
+    multi ? `#${multi}` : null].filter(Boolean);
+  const desc = [
+    base + (sub ? `\n${sub}` : ''),
+    caps.length ? '\n' + caps.map(c => '▶ ' + c).join('\n') : '',
+    info ? `\n📺 ${info}` : '',
+    '🎥 영상 출처: LCK · Riot Games',
+    '\n' + [...new Set(tags)].slice(0, 12).join(' '),
+  ].filter(Boolean).join('\n');
+
+  const box = $('ytTitles'); box.innerHTML = '';
+  titles.forEach(t => {
+    const row = document.createElement('div'); row.className = 'cand';
+    row.innerHTML = '<span></span><small></small><button>복사</button>';
+    row.children[0].textContent = t; row.children[1].textContent = `${t.length}자`;
+    row.children[2].onclick = e => copyText(t, e.target);
+    box.appendChild(row);
+  });
+  if (!$('ytDesc').dataset.edited) $('ytDesc').value = desc;
+}
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+  const old = btn.textContent; btn.textContent = '복사됨 ✓'; btn.classList.add('done');
+  setTimeout(() => { btn.textContent = old; btn.classList.remove('done'); }, 1500);
+}
+// 설명을 직접 고치면 자동 덮어쓰기를 멈춤 (전부 지우면 다시 자동)
+$('ytDesc').addEventListener('input', () => { $('ytDesc').dataset.edited = $('ytDesc').value.trim() ? '1' : ''; if (!$('ytDesc').dataset.edited) ytSuggest(); });
+$('ytDescCopy').onclick = e => copyText($('ytDesc').value, e.target);
+['shTitle', 'shSub', 'shInfo'].forEach(id => $(id).addEventListener('input', ytSuggest));
+$('shCaps').addEventListener('input', ytSuggest);
+$('shCaps').addEventListener('click', () => setTimeout(ytSuggest, 0));
+
 $('shGo').onclick = () => {
   const [a, e] = shRange();
   if (e - a > 180) return setStatus(0, '쇼츠는 3분(180초)까지 만들 수 있어요. 시작/끝을 조절해 주세요.', 'err');
