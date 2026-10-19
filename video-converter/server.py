@@ -805,11 +805,16 @@ def _run_highlights(job_id: str, job_dir: Path, src: Path | None, url: str, qual
         base = 45 if url else 0
         duration, vcodec, _ = _probe(src)
         _update(job_id, source=str(src), message="소리 분석 중", progress=base)
-        levels = _audio_levels(
-            src, duration,
-            lambda f: _update(job_id, progress=round(base + f * (85 - base), 1)))
-        events = _find_highlights(levels)
-        if not events:
+        try:
+            levels = _audio_levels(
+                src, duration,
+                lambda f: _update(job_id, progress=round(base + f * (85 - base), 1)))
+            events = _find_highlights(levels)
+        except RuntimeError:
+            if not vcodec:
+                raise
+            events = []  # 소리가 없어도 화면(킬 점수)으로는 찾을 수 있음
+        if not events and not vcodec:
             raise RuntimeError("두드러지는 장면을 찾지 못했습니다")
 
         # 장면마다 썸네일 (소리가 터지기 2초 전 화면)
@@ -846,7 +851,7 @@ async def start_highlights(file: UploadFile | None = File(None), url: str = Form
         src, original = await _save_upload(file, job_id, job_dir)
         _update(job_id, title=original)
         url = ""
-    _update(job_id, ttl=HIGHLIGHT_TTL)
+    _update(job_id, ttl=HIGHLIGHT_TTL, url=url)
     _start_worker(job_id, _run_highlights, job_dir, src, url, quality)
     return {"job_id": job_id}
 
@@ -859,9 +864,11 @@ def _highlight_job(job_id: str) -> dict:
     return job
 
 
-@app.get("/api/highlights/{job_id}/thumb/{index}.jpg")
-def highlight_thumb(job_id: str, index: int):
-    path = Path(_highlight_job(job_id)["dir"]) / "thumbs" / f"{index}.jpg"
+@app.get("/api/highlights/{job_id}/thumb/{name}.jpg")
+def highlight_thumb(job_id: str, name: str):
+    if not re.fullmatch(r"k?\d+", name):
+        raise HTTPException(404)
+    path = Path(_highlight_job(job_id)["dir"]) / "thumbs" / f"{name}.jpg"
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path, media_type="image/jpeg")
@@ -871,6 +878,242 @@ def highlight_thumb(job_id: str, index: int):
 def highlight_video(job_id: str):
     """미리보기용 원본 영상 (구간 요청을 지원해 원하는 위치부터 재생 가능)."""
     return FileResponse(_highlight_job(job_id)["source"], media_type="video/mp4")
+
+
+# ---- 킬 스코어 변화로 킬 장면 찾기
+
+KILL_W, KILL_H = 64, 32  # 킬 숫자 영역을 이 크기 흑백으로 줄여서 비교
+
+
+def _kill_filter(boxes, sample_fps: float | None) -> str:
+    """킬 숫자 영역들을 잘라 같은 크기 흑백으로 만든 뒤 가로로 이어 붙이는 필터."""
+    n = len(boxes)
+    head = f"[0:v]{'fps=' + str(sample_fps) + ',' if sample_fps else ''}split={n}" + "".join(f"[s{i}]" for i in range(n)) + ";"
+    crops = "".join(f"[s{i}]crop={w}:{h}:{x}:{y},scale={KILL_W}:{KILL_H},format=gray[c{i}];"
+                    for i, (x, y, w, h) in enumerate(boxes))
+    tail = ("".join(f"[c{i}]" for i in range(n)) + f"hstack=inputs={n}," if n > 1 else "[c0]") + "showinfo[out]"
+    return head + crops + tail
+
+
+def _kill_frames(src: Path, boxes, duration: float, keyframes_only: bool, on_progress=None,
+                 start: float = 0.0, length: float | None = None, sample_fps: float = 1):
+    """킬 숫자 영역을 뽑아 (시각 배열, 프레임 배열)로 돌려준다. start/length로 일부 구간만도 가능."""
+    import numpy as np
+
+    cmd = [FFMPEG, "-v", "info", "-hide_banner"]
+    if keyframes_only:  # 키프레임만 디코딩 → 수십 배 빠름 (보통 2~5초 간격)
+        cmd += ["-skip_frame", "nokey"]
+    if start:
+        cmd += ["-ss", f"{start:.2f}"]
+    if length:
+        cmd += ["-t", f"{length:.2f}"]
+    cmd += ["-i", str(src), "-filter_complex", _kill_filter(boxes, None if keyframes_only else sample_fps),
+            "-map", "[out]", "-an", "-fps_mode", "passthrough", "-f", "rawvideo", "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    times: list[float] = []
+
+    def read_times():
+        for line in proc.stderr:
+            m = re.search(rb"pts_time:\s*([\d.]+)", line)
+            if m and b"showinfo" in line:
+                times.append(float(m[1]) + start)
+                if duration and on_progress:
+                    on_progress(min(1.0, times[-1] / duration))
+    t = threading.Thread(target=read_times, daemon=True)
+    t.start()
+    size = KILL_W * KILL_H * len(boxes)
+    frames = []
+    while chunk := proc.stdout.read(size):
+        if len(chunk) < size:
+            break
+        frames.append(np.frombuffer(chunk, np.uint8))
+    proc.wait()
+    t.join(timeout=5)
+    n = min(len(frames), len(times))
+    if not n:
+        raise RuntimeError("영상에서 화면을 읽지 못했습니다")
+    return np.array(times[:n]), np.stack(frames[:n]).reshape(n, KILL_H, KILL_W * len(boxes)).astype(np.float32)
+
+
+def _kill_reference(src: Path, boxes, ref_time: float):
+    """사용자가 영역을 그린 장면(점수판이 보이는 화면)의 킬 숫자 영역."""
+    import numpy as np
+
+    r = subprocess.run(
+        [FFMPEG, "-v", "error", "-ss", f"{ref_time:.2f}", "-i", str(src), "-filter_complex",
+         _kill_filter(boxes, None).replace(",showinfo", "").replace("showinfo", "null"),
+         "-map", "[out]", "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True)
+    size = KILL_W * KILL_H * len(boxes)
+    if len(r.stdout) < size:
+        raise RuntimeError("기준 화면을 읽지 못했습니다")
+    return np.frombuffer(r.stdout[:size], np.uint8).reshape(KILL_H, KILL_W * len(boxes)).astype(np.float32)
+
+
+def _find_kill_changes(times, frames, ref, require_stable: bool = True) -> list[tuple[float, float]]:
+    """킬 숫자가 바뀐 시각들.
+
+    - 점수판이 보이는 화면인지: 기준 화면과 비슷한지로 판단 (숫자만 다르면 조금만 다름,
+      다른 화면으로 넘어가면 크게 다름) → 장면 전환·리플레이·쉬는 시간은 무시
+    - 바뀐 뒤 다음 프레임에서도 그대로면(새 숫자로 안정) 킬로 인정
+    """
+    import numpy as np
+
+    out: list[float] = []
+    n_boxes = frames.shape[2] // KILL_W
+    for j in range(n_boxes):
+        seg = frames[:, :, j * KILL_W:(j + 1) * KILL_W]
+        r = ref[:, j * KILL_W:(j + 1) * KILL_W]
+        d_ref = np.abs(seg - r).mean(axis=(1, 2))
+        visible = d_ref < max(20.0, 2.5 * np.percentile(d_ref, 30))
+        diff = np.r_[0, np.abs(seg[1:] - seg[:-1]).mean(axis=(1, 2))]
+        both = visible & np.r_[False, visible[:-1]]
+        noise = np.median(diff[both]) if both.any() else 2.0
+        thr = max(6.0, noise * 4)
+        nxt = np.r_[np.abs(seg[1:] - seg[:-1]).mean(axis=(1, 2)), 0]  # i → i+1 변화
+        for i in np.nonzero(both & (diff > thr))[0]:
+            # 키프레임처럼 간격이 넓으면 연속 킬로 숫자가 계속 바뀔 수 있어 안정 확인은 정밀 단계에서만
+            stable = not require_stable or i + 1 >= len(seg) or (visible[i + 1] and nxt[i] < thr / 2)
+            if stable:
+                out.append((float(times[i - 1]), float(times[i])))  # 이 사이에 숫자가 바뀜
+    return sorted(out)
+
+
+def _refine_kill_changes(src: Path, boxes, ref, coarse: list[tuple[float, float]]) -> list[float]:
+    """키프레임으로 찾은 대략의 구간만 0.5초 간격으로 다시 봐서 정확한 시각과 킬 수를 얻는다."""
+    result: list[float] = []
+    windows: list[list[float]] = []
+    for a, b in coarse:  # 겹치는 구간은 합쳐서 한 번만 디코딩
+        if windows and a - 1 <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], b + 1)
+        else:
+            windows.append([max(0.0, a - 1), b + 1])
+    for wa, wb in windows:
+        try:
+            times, frames = _kill_frames(src, boxes, 0, False, start=wa, length=wb - wa, sample_fps=2)
+            fine = _find_kill_changes(times, frames, ref)
+        except RuntimeError:
+            fine = []
+        if fine:
+            result += [(x + y) / 2 for x, y in fine]
+        else:  # 정밀 확인이 실패하면 대략의 시각이라도 사용
+            result += [(x + y) / 2 for x, y in coarse if wa <= x and y <= wb]
+    return sorted(result)
+
+
+def _group_kills(change_times: list[float], gap: float = 12.0) -> list[dict]:
+    """몇 초 사이에 연달아 난 킬은 하나의 장면(더블킬·한타)으로 묶는다."""
+    groups: list[dict] = []
+    for t in change_times:
+        if groups and t - groups[-1]["last"] <= gap:
+            groups[-1]["kills"] += 1
+            groups[-1]["last"] = t
+        else:
+            groups.append({"t": t, "last": t, "kills": 1})
+    return [{"t": round(g["last"], 1), "first": round(g["t"], 1), "kills": g["kills"]} for g in groups]
+
+
+def _keyframe_skip_works(src: Path, boxes) -> bool:
+    """키프레임만 디코딩하는 방식이 이 영상에서 통하는지 (VP9·AV1 일부는 무시하고 전부 디코딩함)."""
+    try:
+        times, _ = _kill_frames(src, boxes, 0, True, length=30)
+    except RuntimeError:
+        return False
+    return len(times) <= 30  # 30초에 30프레임 이하 = 키프레임만 나옴
+
+
+def _download_analysis_proxy(source_job: dict) -> Path | None:
+    """유튜브 영상이면 분석 전용 저화질 H.264 사본을 받는다 (4K VP9도 빠르게 분석하려고)."""
+    import yt_dlp
+
+    if source_job.get("proxy") and Path(source_job["proxy"]).exists():
+        return Path(source_job["proxy"])
+    url = source_job.get("url")
+    if not url:
+        return None
+    job_dir = Path(source_job["dir"])
+    opts = _ytdlp_opts(outtmpl=str(job_dir / "proxy.%(ext)s"),
+                       format="bv*[vcodec^=avc][height<=480]/wv*[vcodec^=avc]")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+    except Exception:  # noqa: BLE001
+        return None
+    found = sorted(job_dir.glob("proxy.*"))
+    if not found:
+        return None
+    _update(source_job["id"], proxy=str(found[0]))
+    return found[0]
+
+
+def _run_kills(job_id: str, source_job: dict, boxes, ref_time: float):
+    try:
+        _update(job_id, status="running", message="킬 점수 변화 찾는 중")
+        src = Path(source_job["source"])
+        duration = (source_job.get("result") or {}).get("duration") or 0
+        vw, vh = _video_display_size(src)
+        boxes = [b for b in (_clamp_box(b, vw, vh) for b in boxes) if b]
+        if not boxes:
+            raise RuntimeError("지정한 영역이 화면 밖에 있습니다")
+        prog = lambda f: _update(job_id, progress=round(f * 85, 1))  # noqa: E731
+        slow_format = not _keyframe_skip_works(src, boxes)
+        if slow_format:
+            # 4K VP9 등: 원본을 다 디코딩하면 몇 시간 걸리므로 저화질 사본으로 분석
+            _update(job_id, message="빠른 분석용 저화질 영상 받는 중")
+            proxy = _download_analysis_proxy(source_job)
+            if proxy:
+                pw, ph = _video_display_size(proxy)
+                sx, sy = pw / vw, ph / vh
+                scaled = [_clamp_box((round(x * sx), round(y * sy), max(4, round(w * sx)), max(4, round(h * sy))), pw, ph)
+                          for x, y, w, h in boxes]
+                boxes = [b for b in scaled if b]
+                src, slow_format = proxy, False
+            _update(job_id, message="킬 점수 변화 찾는 중" + (" (이 영상 형식은 오래 걸려요)" if slow_format else ""))
+        ref = _kill_reference(src, boxes, ref_time)
+        times, frames = (_kill_frames(src, boxes, duration, False, prog) if slow_format
+                         else _kill_frames(src, boxes, duration, True, prog))
+        if slow_format:
+            changes = [(a + b) / 2 for a, b in _find_kill_changes(times, frames, ref)]
+        elif duration and len(times) < duration / 8:
+            # 키프레임 간격이 너무 길면(8초 이상) 1초마다 화면을 보는 방식으로 다시 (느림)
+            _update(job_id, message="킬 점수 변화 찾는 중 (정밀 모드)", progress=0)
+            times, frames = _kill_frames(src, boxes, duration, False, prog)
+            changes = [(a + b) / 2 for a, b in _find_kill_changes(times, frames, ref)]
+        else:
+            # 키프레임으로 대략 찾고 → 그 근처만 0.5초 간격으로 다시 확인 (빠르면서 정확)
+            _update(job_id, message="킬 장면 정밀 확인 중", progress=80)
+            changes = _refine_kill_changes(src, boxes, ref, _find_kill_changes(times, frames, ref, require_stable=False))
+        kills = _group_kills(changes)
+        thumbs = Path(source_job["dir"]) / "thumbs"
+        thumbs.mkdir(exist_ok=True)
+        for i, k in enumerate(kills):
+            subprocess.run(
+                [FFMPEG, "-v", "error", "-y", "-ss", str(max(0, k["first"] - 3)), "-i", str(src),
+                 "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(thumbs / f"k{i}.jpg")],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            k["thumb"] = f"k{i}"
+            _update(job_id, progress=round(85 + (i + 1) / max(1, len(kills)) * 15, 1), message="썸네일 만드는 중")
+        _update(job_id, status="done", progress=100, message="완료", result={"kills": kills})
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+
+
+class KillRequest(BaseModel):
+    boxes: list[dict]
+    ref_time: float = 0
+
+
+@app.post("/api/highlights/{job_id}/kills")
+def find_kills(job_id: str, req: KillRequest):
+    source_job = _highlight_job(job_id)
+    if not source_job.get("result", {}).get("has_video"):
+        raise HTTPException(400, "영상 화면이 없는 파일입니다")
+    boxes = _parse_boxes(json.dumps(req.boxes))
+    if len(boxes) > 2:
+        raise HTTPException(400, "킬 숫자 영역은 2개까지(양 팀) 지정할 수 있습니다")
+    _cleanup_old_jobs()
+    new_id, _ = _new_job("kills")
+    _start_worker(new_id, _run_kills, source_job, [(max(0, x), max(0, y), w - w % 2, h - h % 2) for x, y, w, h in boxes], req.ref_time)
+    return {"job_id": new_id}
 
 
 class HighlightExport(BaseModel):

@@ -77,7 +77,13 @@
   .compare img { width:100%; max-height:420px; object-fit:contain; }
   .warnnote { font-size:12px; color:#f0b45a; margin-top:14px; line-height:1.6; }
   .or { text-align:center; color:var(--muted); font-size:13px; margin:14px 0; }
-  #hlVid { width:100%; max-height:320px; background:#000; border-radius:8px; display:block; margin-top:16px; }
+  #hlStage { margin-top:16px; }
+  #hlVid { width:100%; max-height:320px; object-fit:contain; background:#000; display:block; }
+  #kmCanvas[hidden] { display:none; }
+  #km { margin-top:10px; padding:12px; border:1px dashed var(--accent); border-radius:10px; }
+  #kmSeek { width:100%; margin-top:8px; }
+  .badge { display:inline-block; font-size:12px; padding:1px 6px; border-radius:6px; margin-right:4px; background:var(--card); color:var(--muted); }
+  .badge.kill { background:rgba(255,77,77,.18); color:#ff8a8a; }
   .hlctl { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; margin-top:12px; font-size:14px; }
   .hlctl label { margin:0; display:flex; align-items:center; gap:6px; color:var(--text); font-size:14px; }
   .hlctl input[type=number] { width:56px; padding:6px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
@@ -207,7 +213,25 @@
       <button class="go" id="hlGo">하이라이트 찾기</button>
 
       <div id="hlRes" hidden>
-        <video id="hlVid" controls playsinline preload="metadata"></video>
+        <div class="stage" id="hlStage">
+          <video id="hlVid" controls playsinline preload="metadata"></video>
+          <canvas id="kmCanvas" hidden></canvas>
+        </div>
+        <div class="pastebar">
+          <button id="kmStart">🎯 킬 장면 찾기 (점수판 위치 지정)</button>
+          <span class="msg" id="kmInfo" style="margin:0"></span>
+        </div>
+        <div id="km" hidden>
+          <p class="msg" style="margin-top:0">① 아래 막대로 <b>게임 화면(점수판이 보이는 장면)</b>을 찾고 ② 점수판의 <b>킬 숫자만</b> 네모로 그려주세요.
+            양 팀 각각 하나씩, 최대 2개. <b>경기 시간·골드·팀 이름은 빼주세요</b> (계속 바뀌어서 킬로 오해해요).</p>
+          <input type="range" id="kmSeek" min="0" max="1000" value="0">
+          <div class="pastebar">
+            <button id="kmGo" disabled>킬 찾기 시작</button>
+            <button id="kmRedo">다시 그리기</button>
+            <button id="kmCancel">취소</button>
+            <span class="msg" id="kmCount" style="margin:0"></span>
+          </div>
+        </div>
         <div class="hlctl">
           <label>장면 수 <input type="range" id="hlN" min="1" max="60"> <b id="hlNv"></b></label>
           <label>앞 <input type="number" id="hlPre" value="20" min="0" max="120">초</label>
@@ -390,6 +414,7 @@ function setBusy(b) {
   $('convGo').disabled = b || !selectedFile;
   if (typeof wmUpdate === 'function') wmUpdate();
   if (typeof hlEvents !== 'undefined' && hlEvents.length) hlCount();
+  if (typeof kmDraw === 'function') kmDraw();
   $('hlGo').disabled = b;
 }
 
@@ -776,7 +801,9 @@ wmUpdate();
 let hlFileObj = null, hlJob = null, hlEvents = [], hlDuration = 0, hlChecked = new Set(), hlStopAt = null;
 const clock = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = String(t % 60).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`; };
-const hlRange = ev => [Math.max(0, ev.t - (+$('hlPre').value || 0)), Math.min(hlDuration || Infinity, ev.t + (+$('hlPost').value || 0))];
+const hlRange = ev => [Math.max(0, (ev.first ?? ev.t) - (+$('hlPre').value || 0)), Math.min(hlDuration || Infinity, (ev.last ?? ev.t) + (+$('hlPost').value || 0))];
+const hlThumb = ev => ev.thumb === true ? String(ev.i) : ev.thumb;  // 소리 장면은 번호, 킬 장면은 'k번호'
+const hlBadge = ev => ev.kills ? `<span class="badge kill">⚔ ${ev.kills > 1 ? ev.kills + '킬' : '킬'}</span>` : '<span class="badge">🔊 함성</span>';
 const hlShown = () => hlEvents.slice(0, +$('hlN').value).sort((a, b) => a.t - b.t);  // 점수 상위 N개를 시간순으로
 
 function hlRender() {
@@ -786,13 +813,13 @@ function hlRender() {
     const [s, e] = hlRange(ev);
     const row = document.createElement('div');
     row.className = 'hl' + (hlChecked.has(ev.i) ? '' : ' off');
-    row.innerHTML = `<input type="checkbox"><img alt=""><div class="m"><b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button>`;
+    row.innerHTML = `<input type="checkbox"><img alt=""><div class="m">${hlBadge(ev)}<b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button>`;
     const [cb, img, meta, play] = row.children;
     cb.checked = hlChecked.has(ev.i);
     cb.onchange = () => { cb.checked ? hlChecked.add(ev.i) : hlChecked.delete(ev.i); row.classList.toggle('off', !cb.checked); hlCount(); };
-    if (ev.thumb) img.src = `/api/highlights/${hlJob}/thumb/${ev.i}.jpg`; else img.hidden = true;
+    if (ev.thumb) img.src = `/api/highlights/${hlJob}/thumb/${hlThumb(ev)}.jpg`; else img.hidden = true;
     meta.querySelector('b').textContent = clock(ev.t);
-    meta.querySelector('small').textContent = `${clock(s)} ~ ${clock(e)} · 흥분도 ${ev.score}`;
+    meta.querySelector('small').textContent = `${clock(s)} ~ ${clock(e)} · 점수 ${ev.score}`;
     meta.querySelector('.bar2 > div').style.width = ev.score + '%';
     play.onclick = img.onclick = () => { const v = $('hlVid'); v.currentTime = s; hlStopAt = e; v.play(); v.scrollIntoView({block: 'nearest', behavior: 'smooth'}); };
     list.appendChild(row);
@@ -841,15 +868,20 @@ $('hlGo').onclick = () => {
     const v = $('hlVid');
     if (v.src.startsWith('blob:')) URL.revokeObjectURL(v.src);
     v.src = file ? URL.createObjectURL(file) : `/api/highlights/${jobId}/video`;  // 파일이면 내 PC에서 바로 재생
-    $('hlN').max = hlEvents.length;
+    $('hlN').max = Math.max(1, hlEvents.length);
     $('hlN').value = Math.min(hlEvents.length, Math.max(5, Math.round(hlDuration / 240)));  // 4분에 1개 정도
+    $('kmInfo').textContent = j.result.has_video ? '해설이 조용한 킬까지 잡으려면 눌러주세요' : '';
+    hlHasVideo = j.result.has_video;
+    kmExit();
     hlChecked = new Set(hlShown().map(ev => ev.i));
     $('hlRes').hidden = false;
     hlRender();
     const want = {best: 0, 2160: 2160, 1440: 1440}[$('hlQ').value];
     const got = j.result.height;
     const note = got ? ` (받은 화질 ${got}p${want !== undefined && (want === 0 || got < want) && got <= 1080 ? ' · 이 영상은 더 높은 화질이 없어요' : ''})` : '';
-    setStatus(100, `완료! 후보 ${hlEvents.length}개를 찾았어요${note}. 장면 수를 조절하고 원하는 장면을 골라 받으세요.`, 'ok');
+    setStatus(100, hlEvents.length
+      ? `완료! 후보 ${hlEvents.length}개를 찾았어요${note}. 장면 수를 조절하고 원하는 장면을 골라 받으세요.`
+      : `소리로는 두드러지는 장면을 못 찾았어요${note}. "킬 장면 찾기"로 점수판 위치를 지정해 보세요.`, hlEvents.length ? 'ok' : '');
   });
 };
 const hlExport = mode => {
@@ -860,6 +892,97 @@ const hlExport = mode => {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({segments: segs, mode})}));
   });
 };
+// ---- 킬 점수판 위치 지정
+let kmBoxes = [], kmDraft = null, kmStartPt = null, hlHasVideo = false;
+const kmCanvas = $('kmCanvas'), hlV = $('hlVid');
+function kmRect() {  // object-fit: contain 여백을 뺀 실제 영상 영역
+  const nw = hlV.videoWidth, nh = hlV.videoHeight, cw = hlV.clientWidth, ch = hlV.clientHeight;
+  const scale = Math.min(cw / nw, ch / nh);
+  return {x: (cw - nw * scale) / 2, y: (ch - nh * scale) / 2, scale};
+}
+function kmDraw() {
+  if (kmCanvas.hidden || !hlV.videoWidth) return;
+  const dpr = window.devicePixelRatio || 1, cw = hlV.clientWidth, ch = hlV.clientHeight;
+  kmCanvas.width = cw * dpr; kmCanvas.height = ch * dpr;
+  const g = kmCanvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, cw, ch);
+  const r = kmRect();
+  [...kmBoxes, ...(kmDraft ? [kmDraft] : [])].forEach(b => {
+    g.fillStyle = 'rgba(255,77,77,.3)'; g.strokeStyle = '#ff4d4d'; g.lineWidth = 2;
+    g.fillRect(r.x + b.x * r.scale, r.y + b.y * r.scale, b.w * r.scale, b.h * r.scale);
+    g.strokeRect(r.x + b.x * r.scale, r.y + b.y * r.scale, b.w * r.scale, b.h * r.scale);
+  });
+  $('kmCount').textContent = kmBoxes.length ? `영역 ${kmBoxes.length}개` : '';
+  $('kmGo').disabled = busy || !kmBoxes.length;
+}
+function kmPoint(e) {
+  const c = kmCanvas.getBoundingClientRect(), r = kmRect();
+  return [Math.min(Math.max((e.clientX - c.left - r.x) / r.scale, 0), hlV.videoWidth),
+          Math.min(Math.max((e.clientY - c.top - r.y) / r.scale, 0), hlV.videoHeight)];
+}
+kmCanvas.addEventListener('pointerdown', e => {
+  if (busy || kmBoxes.length >= 2) return;
+  kmCanvas.setPointerCapture(e.pointerId); kmStartPt = kmPoint(e);
+});
+kmCanvas.addEventListener('pointermove', e => {
+  if (!kmStartPt) return;
+  const [x, y] = kmPoint(e), [sx, sy] = kmStartPt;
+  kmDraft = {x: Math.min(x, sx), y: Math.min(y, sy), w: Math.abs(x - sx), h: Math.abs(y - sy)}; kmDraw();
+});
+kmCanvas.addEventListener('pointerup', () => {
+  if (kmDraft && kmDraft.w >= 4 && kmDraft.h >= 4) kmBoxes.push(kmDraft);
+  kmStartPt = kmDraft = null; kmDraw();
+});
+new ResizeObserver(kmDraw).observe($('hlStage'));
+function kmEnter() {
+  hlV.pause(); hlStopAt = null; hlV.controls = false;
+  kmBoxes = []; kmCanvas.hidden = false; $('km').hidden = false; $('kmStart').hidden = true;
+  $('kmSeek').value = hlV.duration ? Math.round(hlV.currentTime / hlV.duration * 1000) : 0;
+  kmDraw();
+}
+function kmExit() {
+  hlV.controls = true; kmCanvas.hidden = true; $('km').hidden = true;
+  $('kmStart').hidden = !hlHasVideo;
+}
+$('kmStart').onclick = kmEnter;
+$('kmCancel').onclick = kmExit;
+$('kmRedo').onclick = () => { kmBoxes = []; kmDraw(); };
+$('kmSeek').oninput = () => { if (hlV.duration) hlV.currentTime = $('kmSeek').value / 1000 * hlV.duration; };
+$('kmGo').onclick = () => {
+  const boxes = kmBoxes.map(b => ({x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h)}));
+  const refTime = hlV.currentTime;
+  run(async () => {
+    setStatus(0, '요청 중...');
+    return jsonOrThrow(await fetch(`/api/highlights/${hlJob}/kills`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({boxes, ref_time: refTime})}));
+  }, j => {
+    const kills = j.result.kills;
+    hlMergeKills(kills);
+    kmExit();
+    const multi = kills.filter(k => k.kills > 1).length;
+    $('kmInfo').textContent = `킬 장면 ${kills.length}개 추가됨${multi ? ` (연속 킬 ${multi}개)` : ''} · 다시 지정하려면 버튼을 누르세요`;
+    setStatus(100, kills.length ? `킬 점수가 바뀐 장면 ${kills.length}개를 찾아 목록에 넣었어요.`
+      : '킬 점수 변화를 찾지 못했어요. 킬 숫자만 정확히 감쌌는지, 점수판이 보이는 장면에서 그렸는지 확인해 주세요.', kills.length ? 'ok' : 'err');
+  });
+};
+// 킬 장면을 목록에 합치기: 소리로 찾은 장면과 15초 안이면 하나로, 아니면 새로 추가
+function hlMergeKills(kills) {
+  hlEvents = hlEvents.filter(e => !e.killOnly).map(e => ({...e, kills: 0, first: undefined, last: undefined, thumb: e.audioThumb ?? e.thumb, audioThumb: e.audioThumb ?? e.thumb}));
+  kills.forEach((k, n) => {
+    const kscore = Math.min(100, 75 + 10 * (k.kills - 1));
+    const near = hlEvents.find(e => !e.killOnly && !e.kills && Math.abs(e.t - k.t) <= 15);
+    if (near) Object.assign(near, {kills: k.kills, first: Math.min(k.first, near.t), last: Math.max(k.t, near.t), score: Math.max(near.score, kscore), thumb: k.thumb});
+    else hlEvents.push({t: k.t, first: k.first, last: k.t, kills: k.kills, score: kscore, thumb: k.thumb, killOnly: true, i: 1000 + n});
+  });
+  hlEvents.sort((a, b) => b.score - a.score);
+  // 기존에 보던 개수 + 새로 생긴 킬 장면 수만큼 늘려서 킬 장면이 빠지지 않게
+  const added = hlEvents.filter(e => e.killOnly).length;
+  const prevN = Math.min(+$('hlN').value, hlEvents.length - added);
+  $('hlN').max = Math.max(1, hlEvents.length);
+  $('hlN').value = Math.min(hlEvents.length, prevN + added);
+  hlChecked = new Set(hlShown().map(ev => ev.i));
+  hlRender();
+}
+
 $('hlMerge').onclick = () => hlExport('merged');
 $('hlClips').onclick = () => hlExport('clips');
 </script>
