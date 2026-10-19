@@ -5,12 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>영상 변환기</title>
 <style>
+  @font-face { font-family:'BHS'; src:url('/fonts/BlackHanSans-Regular.ttf'); }
+  @font-face { font-family:'NGEB'; src:url('/fonts/NanumGothic-ExtraBold.ttf'); }
+  @font-face { font-family:'NGB'; src:url('/fonts/NanumGothic-Bold.ttf'); }
   :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --text:#e8eaf0; --muted:#8b93a7; --accent:#ff4d4d; --ok:#3ecf8e; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
   main { max-width:560px; margin:0 auto; padding:40px 16px; }
   h1 { font-size:24px; margin:0 0 24px; }
-  .tabs { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; margin-bottom:16px; }
+  .tabs { display:grid; grid-template-columns:repeat(6, 1fr); gap:8px; margin-bottom:16px; }
   .tab { padding:12px 4px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:14px; cursor:pointer; white-space:nowrap; }
   @media (max-width:560px) { .tabs { grid-template-columns:repeat(3, 1fr); gap:6px; } .tab { font-size:13px; padding:11px 2px; } }
   .tab.active { background:var(--card); color:var(--text); border-color:var(--accent); }
@@ -100,6 +103,25 @@
   .hl button { padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; }
   .btnrow { display:flex; gap:8px; } .btnrow .go { flex:2; } .btnrow .go2 { flex:1; margin-top:18px; padding:14px 8px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--text); font-size:15px; cursor:pointer; }
   .btnrow button:disabled { opacity:.5; cursor:not-allowed; }
+  .shwrap { display:flex; gap:16px; align-items:flex-start; margin-top:14px; }
+  .shprev { width:240px; flex-shrink:0; }
+  #shCanvas { width:100%; aspect-ratio:9/16; background:#000; border-radius:10px; display:block; border:1px solid var(--line); }
+  .shctl { display:flex; gap:6px; align-items:center; margin-top:8px; font-size:13px; font-variant-numeric:tabular-nums; }
+  .shctl button { padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); cursor:pointer; }
+  .shctl input[type=range] { flex:1; min-width:0; }
+  .shform { flex:1; min-width:0; }
+  .shform label { margin:10px 0 4px; }
+  .shform textarea { width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); font-size:15px; font-family:inherit; resize:vertical; }
+  .shform .row2 { display:flex; gap:8px; } .shform .row2 > * { flex:1; min-width:0; }
+  .shform input[type=range] { width:100%; }
+  .shform input[type=color] { width:100%; height:42px; padding:2px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+  .caps { display:flex; flex-direction:column; gap:6px; }
+  .cap { display:flex; gap:6px; align-items:center; }
+  .cap input.t { width:70px; flex:none; padding:8px; font-size:13px; text-align:center; }
+  .cap .x { flex:1; padding:8px; font-size:14px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); font-family:inherit; resize:none; overflow:hidden; line-height:1.4; }
+  .cap button { padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--muted); cursor:pointer; }
+  .cap.now input.t { border-color:var(--accent); }
+  @media (max-width:560px) { .shwrap { flex-direction:column; } .shprev { width:100%; max-width:300px; margin:0 auto; } }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -112,6 +134,7 @@
     <button class="tab" data-tab="img">캡처→PNG</button>
     <button class="tab" data-tab="wm">워터마크</button>
     <button class="tab" data-tab="hl">하이라이트</button>
+    <button class="tab" data-tab="sh">쇼츠</button>
   </div>
 
   <div class="card">
@@ -250,6 +273,55 @@
       <p class="warnnote">※ 해설·관중 함성이 평소보다 커지는 순간(킬·한타·오브젝트 싸움 등)을 찾아요. 점수가 높은 순서로 골라 시간순으로 보여줘요.<br>
         ※ 자르기는 재인코딩 없이 해서 빠르지만, 시작이 1~2초 앞당겨질 수 있어요.<br>
         ※ LCK 중계 영상은 LCK·라이엇 게임즈의 저작물이라, 편집본을 유튜브 등에 올리면 저작권 신고를 받을 수 있어요. 공식 2차 창작 가이드라인을 확인하세요.</p>
+    </section>
+
+    <section class="panel" id="sh">
+      <input type="file" id="shFile" accept="video/*,.mkv,.mov,.m4v" hidden>
+      <div class="drop" id="shDrop">영상 파일을 끌어다 놓거나 클릭해서 선택<br><small>하이라이트 탭의 장면에서 "쇼츠" 버튼을 눌러도 바로 가져와져요</small></div>
+      <div id="shBox" hidden>
+        <div class="shwrap">
+          <div class="shprev">
+            <canvas id="shCanvas" width="1080" height="1920"></canvas>
+            <div class="shctl"><button id="shPlay">▶</button><input type="range" id="shSeek" min="0" max="1000" value="0"><span id="shTime">0:00</span></div>
+            <video id="shVid" playsinline preload="auto" hidden></video>
+          </div>
+          <div class="shform">
+            <div class="row2">
+              <div><label for="shStart">시작</label><input type="text" id="shStart" placeholder="0:00"></div>
+              <div><label for="shEnd">끝</label><input type="text" id="shEnd" placeholder="0:30"></div>
+            </div>
+            <label for="shTitle">제목 <small>(줄바꿈 가능)</small></label>
+            <textarea id="shTitle" rows="2" placeholder="LCK 최초 정글 펜타킬"></textarea>
+            <label for="shSub">윗줄 작은 글씨 <small>(선택)</small></label>
+            <input type="text" id="shSub" placeholder="게임도 잘 하고 노래도 잘 하고">
+            <label for="shInfo">아래 경기 정보 <small>(선택)</small></label>
+            <input type="text" id="shInfo" placeholder="2020. 07. 24. DWG vs SB 1set">
+            <label for="shChannel">채널명 <small>(영상 위에 흐리게 · 선택)</small></label>
+            <input type="text" id="shChannel" placeholder="@채널명">
+            <div class="row2">
+              <div><label for="shFont">제목 글꼴</label><select id="shFont"><option value="blackhan">검은고딕 (굵게)</option><option value="nanum">나눔고딕</option></select></div>
+              <div><label for="shColor">제목 색</label><input type="color" id="shColor" value="#ffffff"></div>
+            </div>
+            <label for="shLayout">화면 배치</label>
+            <select id="shLayout">
+              <option value="square" selected>확대 (정사각형) · 게임 화면 추천</option>
+              <option value="tall">크게 확대 (세로로 길게)</option>
+              <option value="fit">원본 비율 (16:9 그대로)</option>
+            </select>
+            <label>확대 <b id="shZoomV">1.0배</b></label><input type="range" id="shZoom" min="1" max="3" step="0.05" value="1">
+            <div class="row2">
+              <div><label>좌우 위치</label><input type="range" id="shOx" min="-1" max="1" step="0.02" value="0"></div>
+              <div><label>위아래 위치</label><input type="range" id="shOy" min="-1" max="1" step="0.02" value="0"></div>
+            </div>
+            <label>자막 <small>(시간은 쇼츠 시작 기준 · 빈 칸이면 그때 자막 지우기)</small></label>
+            <div class="caps" id="shCaps"></div>
+            <div class="pastebar"><button id="shCapAdd">＋ 지금 위치에 자막 추가</button></div>
+            <label for="shPreset">속도 / 화질</label>
+            <select id="shPreset"><option value="fast">빠르게</option><option value="balanced" selected>균형 (추천)</option><option value="quality">고화질 (느림)</option></select>
+          </div>
+        </div>
+        <button class="go" id="shGo">쇼츠 만들기 (1080×1920 MP4)</button>
+      </div>
     </section>
 
     <div class="status" id="status">
@@ -416,6 +488,7 @@ function setBusy(b) {
   if (typeof hlEvents !== 'undefined' && hlEvents.length) hlCount();
   if (typeof kmDraw === 'function') kmDraw();
   $('hlGo').disabled = b;
+  $('shGo').disabled = b;
 }
 
 async function poll(jobId, onDone) {
@@ -813,8 +886,9 @@ function hlRender() {
     const [s, e] = hlRange(ev);
     const row = document.createElement('div');
     row.className = 'hl' + (hlChecked.has(ev.i) ? '' : ' off');
-    row.innerHTML = `<input type="checkbox"><img alt=""><div class="m">${hlBadge(ev)}<b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button>`;
-    const [cb, img, meta, play] = row.children;
+    row.innerHTML = `<input type="checkbox"><img alt=""><div class="m">${hlBadge(ev)}<b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button><button title="이 장면으로 쇼츠 만들기">쇼츠</button>`;
+    const [cb, img, meta, play, toShorts] = row.children;
+    toShorts.onclick = () => shFromHighlight(s, e);
     cb.checked = hlChecked.has(ev.i);
     cb.onchange = () => { cb.checked ? hlChecked.add(ev.i) : hlChecked.delete(ev.i); row.classList.toggle('off', !cb.checked); hlCount(); };
     if (ev.thumb) img.src = `/api/highlights/${hlJob}/thumb/${hlThumb(ev)}.jpg`; else img.hidden = true;
@@ -982,6 +1056,159 @@ function hlMergeKills(kills) {
   hlChecked = new Set(hlShown().map(ev => ev.i));
   hlRender();
 }
+
+// ---------- 쇼츠 만들기 (미리보기는 서버와 같은 배치·글꼴로 캔버스에 그림)
+const SW = 1080, SH = 1920, SVT = 400, SLAYOUT = {fit: 608, square: 1080, tall: 1350};
+const shV = $('shVid'), shC = $('shCanvas'), shG = shC.getContext('2d');
+let shSrc = null;  // {file} 또는 {hlJob}
+let shCaps = [];   // [{t, text}] (쇼츠 시작 기준 초)
+const parseClock = v => { const p = String(v).trim().split(':').map(Number); if (p.some(isNaN)) return NaN; return p.reduce((a, b) => a * 60 + b, 0); };
+const fmtClock1 = t => { t = Math.max(0, t); return `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`; };
+const shRange = () => { const a = parseClock($('shStart').value) || 0, b = parseClock($('shEnd').value); return [a, isNaN(b) || b <= a ? (shV.duration || a + 30) : b]; };
+const shCfg = () => ({
+  title: $('shTitle').value, subtitle: $('shSub').value, info: $('shInfo').value, channel: $('shChannel').value,
+  captions: shCaps.map(c => ({t: +c.t.toFixed(2), text: c.text})), layout: $('shLayout').value,
+  zoom: +$('shZoom').value, offset_x: +$('shOx').value, offset_y: +$('shOy').value,
+  font: $('shFont').value, title_color: $('shColor').value,
+});
+
+// 서버의 _draw_lines와 같은 규칙: 너비 1000을 넘으면 글자 크기를 4씩 줄임
+function drawLines(text, family, size, cy, fill, stroke = 0, minSize = 24, wrap = false) {
+  let lines = String(text).split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+  if (wrap) {  // 서버의 _wrap_long과 같은 규칙: 긴 줄은 가운데에 가까운 띄어쓰기에서 나눔
+    shG.font = `${size}px ${family}`;
+    lines = lines.flatMap(l => {
+      const spaces = [...l].map((c, i) => c === ' ' ? i : -1).filter(i => i >= 0);
+      if (shG.measureText(l).width + stroke * 2 <= 1000 || !spaces.length) return [l];
+      const cut = spaces.reduce((a, b) => Math.abs(b - l.length / 2) < Math.abs(a - l.length / 2) ? b : a);
+      return [l.slice(0, cut).trim(), l.slice(cut + 1).trim()];
+    });
+  }
+  let font;
+  for (;;) {
+    font = `${size}px ${family}`; shG.font = font;
+    const widest = Math.max(...lines.map(l => shG.measureText(l).width));
+    if (widest + stroke * 2 <= 1000 || size <= minSize) break;
+    size -= 4;
+  }
+  const lh = Math.round(size * 1.22), top = cy - lh * lines.length / 2;
+  shG.textAlign = 'center'; shG.textBaseline = 'middle'; shG.lineJoin = 'round';
+  lines.forEach((l, i) => {
+    const y = top + i * lh + lh / 2;
+    if (stroke) { shG.strokeStyle = '#000'; shG.lineWidth = stroke * 2; shG.strokeText(l, SW / 2, y); }
+    shG.fillStyle = fill; shG.fillText(l, SW / 2, y);
+  });
+}
+function shCrop(w, h, cfg) {  // 서버의 _shorts_crop과 같은 계산
+  const aspect = SW / SLAYOUT[cfg.layout];
+  let cw, ch;
+  if (w / h < aspect) { cw = w; ch = w / aspect; } else { cw = h * aspect; ch = h; }
+  const z = Math.min(3, Math.max(1, cfg.zoom));
+  cw = Math.floor(cw / z / 2) * 2; ch = Math.floor(ch / z / 2) * 2;
+  return [cw, ch, (w - cw) / 2 * (1 + cfg.offset_x), (h - ch) / 2 * (1 + cfg.offset_y)];
+}
+function shDraw() {
+  const cfg = shCfg(), vh = SLAYOUT[cfg.layout];
+  shG.fillStyle = '#000'; shG.fillRect(0, 0, SW, SH);
+  if (shV.videoWidth) {
+    const [cw, ch, x, y] = shCrop(shV.videoWidth, shV.videoHeight, cfg);
+    shG.drawImage(shV, x, y, cw, ch, 0, SVT, SW, vh);
+  }
+  const tf = cfg.font === 'nanum' ? 'NGEB' : 'BHS';
+  if (cfg.subtitle.trim()) { drawLines(cfg.subtitle, 'NGB', 50, 205, '#ebebeb'); drawLines(cfg.title, tf, 96, 300, cfg.title_color, 0, 40); }
+  else drawLines(cfg.title, tf, 100, 255, cfg.title_color, 0, 40);
+  drawLines(cfg.info, 'NGB', 36, SVT + vh + 60, '#c8c8c8');
+  drawLines(cfg.channel, 'NGB', 34, SVT + vh * 0.5 + 40, 'rgba(255,255,255,.31)');
+  const [a] = shRange(), rel = shV.currentTime - a;
+  const sorted = [...shCaps].sort((p, q) => p.t - q.t);
+  const cur = sorted.filter(c => c.t <= rel + 1e-3).pop();
+  if (cur && cur.text.trim()) drawLines(cur.text, 'NGEB', 58, SVT + vh * 0.74, '#fff', 6, 24, true);
+  $('shTime').textContent = fmtClock1(Math.max(0, rel));
+  const [s, e] = shRange();
+  $('shSeek').value = e > s ? Math.round(rel / (e - s) * 1000) : 0;
+  document.querySelectorAll('.cap').forEach((el, i) => el.classList.toggle('now', shCaps[i] === cur));
+}
+function shLoop() { shDraw(); if (!shV.paused) { const [, e] = shRange(); if (shV.currentTime >= e) { shV.pause(); } else requestAnimationFrame(shLoop); } }
+shV.addEventListener('play', () => { $('shPlay').textContent = '❚❚'; shLoop(); });
+shV.addEventListener('pause', () => { $('shPlay').textContent = '▶'; shDraw(); });
+shV.addEventListener('seeked', shDraw);
+shV.addEventListener('loadeddata', () => { const [a] = shRange(); shV.currentTime = a; });
+$('shPlay').onclick = () => {
+  const [a, e] = shRange();
+  if (shV.paused) { if (shV.currentTime >= e - 0.05 || shV.currentTime < a) shV.currentTime = a; shV.play(); } else shV.pause();
+};
+$('shSeek').oninput = () => { const [a, e] = shRange(); shV.currentTime = a + $('shSeek').value / 1000 * (e - a); };
+['shTitle', 'shSub', 'shInfo', 'shChannel', 'shFont', 'shColor', 'shLayout', 'shZoom', 'shOx', 'shOy'].forEach(id => $(id).addEventListener('input', () => {
+  $('shZoomV').textContent = (+$('shZoom').value).toFixed(1) + '배'; shDraw();
+}));
+['shStart', 'shEnd'].forEach(id => $(id).addEventListener('change', () => { const [a] = shRange(); shV.currentTime = a; }));
+
+function shRenderCaps() {
+  const box = $('shCaps'); box.innerHTML = '';
+  shCaps.forEach((c, i) => {
+    const row = document.createElement('div'); row.className = 'cap';
+    row.innerHTML = '<input type="text" class="t"><textarea class="x" rows="1" placeholder="(빈 칸 = 자막 지우기 · Enter로 줄바꿈)"></textarea><button title="이 시간으로 이동">↦</button><button title="삭제">✕</button>';
+    const [t, x, go, del] = row.children;
+    t.value = fmtClock1(c.t); x.value = c.text;
+    t.onchange = () => { const v = parseClock(t.value); if (!isNaN(v)) c.t = v; t.value = fmtClock1(c.t); shDraw(); };
+    const fit = () => { x.style.height = 'auto'; x.style.height = x.scrollHeight + 2 + 'px'; };
+    x.oninput = () => { c.text = x.value; fit(); shDraw(); };
+    requestAnimationFrame(fit);
+    go.onclick = () => { const [a] = shRange(); shV.currentTime = a + c.t; };
+    del.onclick = () => { shCaps.splice(i, 1); shRenderCaps(); shDraw(); };
+    box.appendChild(row);
+  });
+}
+$('shCapAdd').onclick = () => {
+  const [a] = shRange();
+  shCaps.push({t: Math.max(0, +(shV.currentTime - a).toFixed(1)), text: ''});
+  shCaps.sort((p, q) => p.t - q.t); shRenderCaps(); shDraw();
+  const idx = shCaps.findIndex(c => c.text === '' && Math.abs(c.t - (shV.currentTime - a)) < 0.2);
+  document.querySelectorAll('#shCaps .x')[idx]?.focus();
+};
+
+function shOpen(src, url, start, end) {
+  shSrc = src;
+  if (shV.src && shV.src.startsWith('blob:') && !src.keepUrl) URL.revokeObjectURL(shV.src);
+  shV.src = url;
+  $('shStart').value = fmtClock1(start); $('shEnd').value = end ? fmtClock1(end) : '';
+  shCaps = []; shRenderCaps();
+  $('shBox').hidden = false;
+  document.fonts.ready.then(shDraw);
+}
+function shFromHighlight(s, e) {
+  if (busy) return;
+  shOpen({hlJob: hlJob, keepUrl: true}, hlV.src, s, Math.min(e, s + 180));
+  $('shDrop').innerHTML = '<strong>하이라이트 장면</strong><br><small>다른 파일을 쓰려면 클릭</small>';
+  showTab('sh'); $('status').style.display = 'none';
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+function shPick(f) {
+  if (!f || busy) return;
+  if (f.size > maxUploadMb * 1048576) return setStatus(0, `파일이 너무 큽니다 (최대 ${maxUploadMb} MB)`, 'err');
+  shOpen({file: f}, URL.createObjectURL(f), 0, 0);
+  $('shDrop').innerHTML = '<strong></strong><br><small>다른 파일을 열려면 클릭</small>';
+  $('shDrop').querySelector('strong').textContent = f.name;
+  shV.addEventListener('loadedmetadata', () => { if (!$('shEnd').value) $('shEnd').value = fmtClock1(Math.min(shV.duration, 60)); shDraw(); }, {once: true});
+}
+$('shDrop').onclick = () => !busy && $('shFile').click();
+$('shFile').onchange = e => { shPick(e.target.files[0]); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => $('shDrop').addEventListener(ev, e => { e.preventDefault(); $('shDrop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('shDrop').addEventListener(ev, e => { e.preventDefault(); $('shDrop').classList.remove('over'); }));
+$('shDrop').addEventListener('drop', e => shPick(e.dataTransfer.files[0]));
+$('shGo').onclick = () => {
+  const [a, e] = shRange();
+  if (e - a > 180) return setStatus(0, '쇼츠는 3분(180초)까지 만들 수 있어요. 시작/끝을 조절해 주세요.', 'err');
+  shV.pause();
+  run(() => {
+    const fd = new FormData();
+    if (shSrc.file) fd.append('file', shSrc.file); else fd.append('hl_job', shSrc.hlJob);
+    fd.append('start', a); fd.append('end', e);
+    fd.append('settings', JSON.stringify(shCfg())); fd.append('preset', $('shPreset').value);
+    return uploadJob('/api/shorts', fd);
+  });
+};
 
 $('hlMerge').onclick = () => hlExport('merged');
 $('hlClips').onclick = () => hlExport('clips');

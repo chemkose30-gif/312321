@@ -1198,6 +1198,196 @@ def export_highlights(job_id: str, req: HighlightExport):
     return {"job_id": new_id}
 
 
+# ------------------------------------------------------------ 쇼츠 만들기
+
+SHORTS_W, SHORTS_H = 1080, 1920
+SHORTS_VIDEO_TOP = 400
+# 가운데 영상 영역의 높이: 원본 비율(16:9) / 확대(1:1) / 크게 확대(4:5)
+SHORTS_LAYOUTS = {"fit": 608, "square": 1080, "tall": 1350}
+FONTS = {
+    "blackhan": BASE_DIR / "static" / "fonts" / "BlackHanSans-Regular.ttf",
+    "nanum": BASE_DIR / "static" / "fonts" / "NanumGothic-ExtraBold.ttf",
+}
+CAPTION_FONT = BASE_DIR / "static" / "fonts" / "NanumGothic-ExtraBold.ttf"
+INFO_FONT = BASE_DIR / "static" / "fonts" / "NanumGothic-Bold.ttf"
+
+
+class ShortsSettings(BaseModel):
+    title: str = ""
+    subtitle: str = ""
+    info: str = ""
+    channel: str = ""
+    captions: list[dict] = []        # [{"t": 초, "text": "..."}] 다음 자막 전까지 표시
+    layout: str = "square"
+    zoom: float = 1.0                 # 1.0 ~ 3.0 추가 확대
+    offset_x: float = 0.0             # -1(왼쪽) ~ 1(오른쪽)
+    offset_y: float = 0.0             # -1(위) ~ 1(아래)
+    font: str = "blackhan"
+    title_color: str = "#ffffff"
+
+
+def _wrap_long(lines: list[str], font, measure, max_width: int) -> list[str]:
+    """너무 긴 줄은 가운데에 가장 가까운 띄어쓰기에서 두 줄로 나눔 (자막용)."""
+    out = []
+    for ln in lines:
+        spaces = [i for i, ch in enumerate(ln) if ch == " "]
+        if measure(ln, font) <= max_width or not spaces:
+            out.append(ln)
+            continue
+        cut = min(spaces, key=lambda i: abs(i - len(ln) / 2))
+        out += [ln[:cut].strip(), ln[cut + 1:].strip()]
+    return out
+
+
+def _draw_lines(draw, text: str, font_path: Path, size: int, center_y: float, fill,
+                max_width: int = 1000, stroke: int = 0, min_size: int = 24, anchor_mid: bool = True,
+                wrap: bool = False):
+    """여러 줄 텍스트를 가운데 정렬로 그림. wrap이면 긴 줄을 나누고, 그래도 넘치면 글자 크기를 줄임."""
+    from PIL import ImageFont
+
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return
+    if wrap:
+        lines = _wrap_long(lines, ImageFont.truetype(str(font_path), size),
+                           lambda t, f: draw.textlength(t, font=f) + stroke * 2, max_width)
+    while True:
+        font = ImageFont.truetype(str(font_path), size)
+        widest = max(draw.textlength(ln, font=font) for ln in lines)
+        if widest + stroke * 2 <= max_width or size <= min_size:
+            break
+        size -= 4
+    line_h = int(size * 1.22)
+    total = line_h * len(lines)
+    top = center_y - total / 2 if anchor_mid else center_y
+    for i, ln in enumerate(lines):
+        draw.text((SHORTS_W / 2, top + i * line_h + line_h / 2), ln, font=font, fill=fill,
+                  anchor="mm", stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
+
+
+def _shorts_overlays(cfg: ShortsSettings, out_dir: Path, duration: float):
+    """제목·정보·채널명이 있는 기본 레이어 1장 + 자막별 레이어 이미지들을 만든다."""
+    from PIL import Image, ImageColor, ImageDraw
+
+    vh = SHORTS_LAYOUTS[cfg.layout]
+    title_font = FONTS.get(cfg.font, FONTS["blackhan"])
+    base = Image.new("RGBA", (SHORTS_W, SHORTS_H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(base)
+    title_rgb = ImageColor.getrgb(cfg.title_color) if re.fullmatch(r"#[0-9a-fA-F]{6}", cfg.title_color) else (255, 255, 255)
+    # 제목 영역: 영상 위쪽 (부제가 있으면 부제 아래에 제목)
+    if cfg.subtitle.strip():
+        _draw_lines(d, cfg.subtitle, INFO_FONT, 50, 205, (235, 235, 235, 255))
+        _draw_lines(d, cfg.title, title_font, 96, 300, (*title_rgb, 255), min_size=40)
+    else:
+        _draw_lines(d, cfg.title, title_font, 100, 255, (*title_rgb, 255), min_size=40)
+    _draw_lines(d, cfg.info, INFO_FONT, 36, SHORTS_VIDEO_TOP + vh + 60, (200, 200, 200, 255))
+    if cfg.channel.strip():  # 영상 가운데 흐릿하게
+        _draw_lines(d, cfg.channel, INFO_FONT, 34, SHORTS_VIDEO_TOP + vh * 0.5 + 40, (255, 255, 255, 80))
+    base_path = out_dir / "base.png"
+    base.save(base_path)
+
+    # 빈 자막도 시간 계산에 넣음 → 빈 자막 = 그 시점에 자막 지우기
+    caps = sorted(cfg.captions, key=lambda c: float(c.get("t", 0)))
+    layers = []
+    for i, c in enumerate(caps):
+        start = max(0.0, float(c.get("t", 0)))
+        end = float(caps[i + 1].get("t", 0)) if i + 1 < len(caps) else duration
+        if not str(c.get("text", "")).strip() or end - start < 0.1 or start >= duration:
+            continue
+        img = Image.new("RGBA", (SHORTS_W, SHORTS_H), (0, 0, 0, 0))
+        _draw_lines(ImageDraw.Draw(img), str(c["text"]), CAPTION_FONT, 58,
+                    SHORTS_VIDEO_TOP + vh * 0.74, (255, 255, 255, 255), stroke=6, wrap=True)
+        path = out_dir / f"cap{i}.png"
+        img.save(path)
+        layers.append((path, start, end))
+    return base_path, layers
+
+
+def _shorts_crop(width: int, height: int, cfg: ShortsSettings) -> tuple[int, int, int, int]:
+    """원본에서 가운데 영상 영역 비율에 맞게 잘라낼 부분 (확대·위치 반영)."""
+    aspect = SHORTS_W / SHORTS_LAYOUTS[cfg.layout]
+    cw, ch = (width, width / aspect) if width / height < aspect else (height * aspect, height)
+    zoom = min(3.0, max(1.0, cfg.zoom))
+    cw, ch = int(cw / zoom) // 2 * 2, int(ch / zoom) // 2 * 2
+    ox, oy = (max(-1.0, min(1.0, v)) for v in (cfg.offset_x, cfg.offset_y))
+    x = int((width - cw) / 2 * (1 + ox))
+    y = int((height - ch) / 2 * (1 + oy))
+    return cw, ch, x, y
+
+
+def _run_shorts(job_id: str, job_dir: Path, src: Path, start: float, end: float,
+                cfg: ShortsSettings, preset: str, cleanup_src: bool):
+    try:
+        _update(job_id, status="running", message="준비 중")
+        duration = end - start
+        w, h = _video_display_size(src)
+        base, layers = _shorts_overlays(cfg, job_dir, duration)
+        cw, ch, x, y = _shorts_crop(w, h, cfg)
+        vh = SHORTS_LAYOUTS[cfg.layout]
+        graph = (f"[0:v]crop={cw}:{ch}:{x}:{y},scale={SHORTS_W}:{vh},setsar=1,"
+                 f"pad={SHORTS_W}:{SHORTS_H}:0:{SHORTS_VIDEO_TOP}:black[v0];[v0][1:v]overlay=0:0[v1]")
+        inputs = ["-i", str(base)]
+        for i, (path, a, b) in enumerate(layers):
+            inputs += ["-i", str(path)]
+            graph += f";[v{i + 1}][{i + 2}:v]overlay=0:0:enable='between(t,{a:.2f},{b:.2f})'[v{i + 2}]"
+        graph += f";[v{len(layers) + 1}]format=yuv420p[out]"
+        out = job_dir / "shorts.mp4"
+        cmd = [FFMPEG, "-hide_banner", "-y", "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", "-i", str(src),
+               *inputs, "-filter_complex", graph, "-map", "[out]", "-map", "0:a:0?",
+               *_video_encoder_args(preset), "-c:a", "aac", "-b:a", "160k",
+               "-t", f"{duration:.2f}", "-movflags", "+faststart", str(out)]
+        _update(job_id, message="쇼츠 만드는 중" + (" (GPU)" if GPU_ENCODER else ""))
+        _run_ffmpeg(job_id, cmd, duration)
+        if not out.exists() or _probe(out)[1] is None:
+            raise RuntimeError("영상이 만들어지지 않았습니다. 구간이 영상 길이 안에 있는지 확인해 주세요")
+        _update(job_id, status="done", progress=100, message="완료", file=str(out))
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+    finally:
+        if cleanup_src:
+            src.unlink(missing_ok=True)
+
+
+@app.post("/api/shorts")
+async def start_shorts(settings: str = Form(...), file: UploadFile | None = File(None),
+                       hl_job: str = Form(""), start: float = Form(0), end: float = Form(0),
+                       preset: str = Form("balanced")):
+    try:
+        cfg = ShortsSettings(**json.loads(settings))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"설정이 올바르지 않습니다: {e}")
+    if cfg.layout not in SHORTS_LAYOUTS:
+        raise HTTPException(400, "잘못된 화면 배치입니다")
+    if preset not in PRESETS:
+        raise HTTPException(400, "잘못된 속도/화질 옵션입니다")
+    if len(cfg.captions) > 60:
+        raise HTTPException(400, "자막은 60개까지 넣을 수 있습니다")
+    _cleanup_old_jobs()
+    job_id, job_dir = _new_job("shorts")
+    if file:
+        src, original = await _save_upload(file, job_id, job_dir)
+        cleanup = True
+    elif hl_job:
+        source_job = _highlight_job(hl_job)
+        src, original, cleanup = Path(source_job["source"]), source_job.get("title") or "shorts", False
+    else:
+        _remove_job(job_id)
+        raise HTTPException(400, "영상 파일이나 하이라이트 장면을 선택하세요")
+    total = _probe(src)[0]
+    end = min(end, total) if end > 0 else total
+    start = max(0.0, min(start, end))
+    if end - start < 1:
+        _remove_job(job_id)
+        raise HTTPException(400, "영상 구간이 너무 짧습니다")
+    if end - start > 180:
+        _remove_job(job_id)
+        raise HTTPException(400, "쇼츠는 3분(180초)까지 만들 수 있습니다")
+    name = _safe_name(cfg.title.replace("\n", " ")) if cfg.title.strip() else original
+    _update(job_id, filename=f"{name}_쇼츠.mp4")
+    _start_worker(job_id, _run_shorts, job_dir, src, start, end, cfg, preset, cleanup)
+    return {"job_id": job_id}
+
+
 # ------------------------------------------------------------- Common
 
 
