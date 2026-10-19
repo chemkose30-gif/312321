@@ -135,7 +135,7 @@
   .yt .cand small { color:var(--muted); white-space:nowrap; }
   .yt button { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font-size:12px; cursor:pointer; white-space:nowrap; }
   .yt button.done { color:var(--ok); border-color:var(--ok); }
-  .yt textarea { width:100%; min-height:170px; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; }
+  .yt textarea { width:100%; min-height:340px; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -342,7 +342,9 @@
           <h4>📝 유튜브 제목·설명 추천 <small style="color:var(--muted);font-weight:normal">· 위에 입력한 제목·자막·경기 정보로 자동 작성</small></h4>
           <div class="lbl">제목 후보 <span>최대 100자 · 앞 40자 정도가 화면에 보여요</span></div>
           <div id="ytTitles"></div>
-          <div class="lbl">설명 (고쳐 써도 돼요) <button id="ytDescCopy">설명 복사</button></div>
+          <div class="lbl"><span>설명 (고쳐 써도 돼요)
+            <select id="ytLen" style="width:auto;padding:4px 8px;font-size:12px;margin-left:6px"><option value="long" selected>길게</option><option value="short">짧게</option></select></span>
+            <button id="ytDescCopy">설명 복사</button></div>
           <textarea id="ytDesc"></textarea>
         </div>
       </div>
@@ -1301,13 +1303,16 @@ function ytSuggest() {
   const tags = ['#shorts', '#LCK', '#롤', '#리그오브레전드',
     ...teams.flatMap(t => [`#${t}`, TEAMS[t.toUpperCase()] ? `#${TEAMS[t.toUpperCase()]}` : null]),
     multi ? `#${multi}` : null].filter(Boolean);
-  const desc = [
-    base + (sub ? `\n${sub}` : ''),
-    caps.length ? '\n' + caps.map(c => '▶ ' + c).join('\n') : '',
-    info ? `\n📺 ${info}` : '',
-    '🎥 영상 출처: LCK · Riot Games',
-    '\n' + [...new Set(tags)].slice(0, 12).join(' '),
-  ].filter(Boolean).join('\n');
+  const desc = $('ytLen').value === 'short'
+    ? [
+        base + (sub ? `\n${sub}` : ''),
+        caps.length ? '\n' + caps.map(c => '▶ ' + c).join('\n') : '',
+        info ? `\n📺 ${info}` : '',
+        '🎥 영상 출처: LCK · Riot Games',
+        '\n' + [...new Set(tags)].slice(0, 12).join(' '),
+      ].filter(Boolean).join('\n')
+    : ytLongDesc({base, withMulti, sub, info, caps, teams, year, multi, kills: shMeta.kills || 0,
+                  channel: oneLine($('shChannel').value), tags});
 
   const box = $('ytTitles'); box.innerHTML = '';
   titles.forEach(t => {
@@ -1319,6 +1324,49 @@ function ytSuggest() {
   });
   if (!$('ytDesc').dataset.edited) $('ytDesc').value = desc;
 }
+// 경기 정보 "2024. 11. 02. T1 vs BLG 결승 5세트" → 날짜 / 매치 / 나머지(대회·세트)
+function parseInfo(info) {
+  const d = info.match(/(20\d\d)\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})\s*[.일]?/);
+  const m = info.match(/([A-Za-z0-9.]+)\s*(?:vs\.?|VS|대)\s*([A-Za-z0-9.]+)/);
+  let rest = info;
+  if (d) rest = rest.replace(d[0], ' ');
+  if (m) rest = rest.replace(m[0], ' ');
+  rest = rest.replace(/\s+/g, ' ').replace(/^[\s.,·|-]+|[\s.,·|-]+$/g, '');
+  return {date: d ? `${d[1]}년 ${+d[2]}월 ${+d[3]}일` : '', match: m ? `${m[1]} vs ${m[2]}` : '', rest};
+}
+function ytLongDesc(o) {
+  const {date, match, rest} = parseInfo(o.info);
+  // 상황에 맞는 소개 문장 (연속 킬 수에 따라)
+  const intro = o.kills >= 5 ? `펜타킬! 혼자서 다섯 명을 모두 잡아낸, 다시 보기 힘든 장면입니다.`
+    : o.kills >= 3 ? `${o.multi}! 한타 한 번에 경기 흐름이 완전히 넘어간 순간입니다.`
+    : o.kills === 2 ? `순식간에 터진 더블킬! 짧지만 강렬했던 교전을 다시 확인해 보세요.`
+    : match ? `${match} 경기에서 나온 명장면을 쇼츠로 담았습니다. 해설진도 놀란 그 순간을 다시 확인해 보세요.`
+    : 'LCK에서 나온 명장면을 쇼츠로 담았습니다. 해설진도 놀란 그 순간을 다시 확인해 보세요.';
+  const sec = (title, lines) => lines.filter(Boolean).length ? `\n[${title}]\n` + lines.filter(Boolean).join('\n') : '';
+  const extraTags = ['#LoL', '#롤하이라이트', '#LCK하이라이트', o.year ? `#LCK${o.year}` : null, '#e스포츠'];
+  const allTags = [...new Set([...o.tags.slice(0, 4), ...o.tags.slice(4), ...extraTags].filter(Boolean))].slice(0, 15);
+  return [
+    o.withMulti + (o.sub ? `\n${o.sub}` : ''),
+    '',
+    intro,
+    sec('장면 요약', o.caps.map(c => '▶ ' + c)),
+    sec('경기 정보', [
+      date && `📅 날짜: ${date}`,
+      match && `⚔️ 매치: ${match}`,
+      rest && `🏆 대회: ${rest}`,
+      !date && !match && !rest && o.info ? `📺 ${o.info}` : '',
+    ]),
+    sec('채널 안내', [
+      '👍 재미있게 보셨다면 좋아요와 구독 부탁드려요!',
+      '🔔 알림 설정하시면 새 LCK 하이라이트를 가장 먼저 볼 수 있어요.',
+      '💬 이 장면, 여러분은 어떻게 보셨나요? 댓글로 남겨주세요.',
+      o.channel && `📌 ${o.channel}`,
+    ]),
+    sec('출처', ['🎥 영상 출처: LCK · Riot Games', '본 영상은 LCK 경기 장면을 편집한 하이라이트입니다.']),
+    '',
+    allTags.join(' '),
+  ].join('\n').replace(/\n{3,}/g, '\n\n');
+}
 async function copyText(text, btn) {
   try { await navigator.clipboard.writeText(text); }
   catch { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
@@ -1328,7 +1376,8 @@ async function copyText(text, btn) {
 // 설명을 직접 고치면 자동 덮어쓰기를 멈춤 (전부 지우면 다시 자동)
 $('ytDesc').addEventListener('input', () => { $('ytDesc').dataset.edited = $('ytDesc').value.trim() ? '1' : ''; if (!$('ytDesc').dataset.edited) ytSuggest(); });
 $('ytDescCopy').onclick = e => copyText($('ytDesc').value, e.target);
-['shTitle', 'shSub', 'shInfo'].forEach(id => $(id).addEventListener('input', ytSuggest));
+['shTitle', 'shSub', 'shInfo', 'shChannel'].forEach(id => $(id).addEventListener('input', ytSuggest));
+$('ytLen').onchange = () => { $('ytDesc').dataset.edited = ''; ytSuggest(); };
 $('shCaps').addEventListener('input', ytSuggest);
 $('shCaps').addEventListener('click', () => setTimeout(ytSuggest, 0));
 
