@@ -196,7 +196,10 @@
       <label for="hlUrl">유튜브 링크 <small>(LCK 다시보기 등 · 서버가 직접 받아서 업로드가 필요 없어요)</small></label>
       <div class="urlrow">
         <input type="text" id="hlUrl" placeholder="https://www.youtube.com/watch?v=...">
-        <select id="hlQ" style="width:auto"><option value="1080">1080p</option><option value="720">720p</option></select>
+        <select id="hlQ" style="width:auto">
+          <option value="best">최고 화질</option><option value="2160">4K</option><option value="1440">1440p</option>
+          <option value="1080" selected>1080p</option><option value="720">720p</option>
+        </select>
       </div>
       <div class="or">또는</div>
       <input type="file" id="hlFile" accept="video/*,.mkv,.mov,.m4v" hidden>
@@ -843,7 +846,10 @@ $('hlGo').onclick = () => {
     hlChecked = new Set(hlShown().map(ev => ev.i));
     $('hlRes').hidden = false;
     hlRender();
-    setStatus(100, `완료! 후보 ${hlEvents.length}개를 찾았어요. 장면 수를 조절하고 원하는 장면을 골라 받으세요.`, 'ok');
+    const want = {best: 0, 2160: 2160, 1440: 1440}[$('hlQ').value];
+    const got = j.result.height;
+    const note = got ? ` (받은 화질 ${got}p${want !== undefined && (want === 0 || got < want) && got <= 1080 ? ' · 이 영상은 더 높은 화질이 없어요' : ''})` : '';
+    setStatus(100, `완료! 후보 ${hlEvents.length}개를 찾았어요${note}. 장면 수를 조절하고 원하는 장면을 골라 받으세요.`, 'ok');
   });
 };
 const hlExport = mode => {

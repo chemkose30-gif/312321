@@ -775,11 +775,22 @@ def _download_for_highlights(job_id: str, job_dir: Path, url: str, quality: str)
                        ffmpeg_location=FFMPEG, merge_output_format="mp4",
                        format=_video_selector(quality))
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+        _update(job_id, message="영상 정보 확인 중")
+        info = ydl.extract_info(url, download=False)
+        # 4K 장시간 영상은 수십 GB라 디스크가 모자랄 수 있으므로 받기 전에 확인
+        # (영상·음성을 받은 뒤 합치는 동안 잠시 두 배 가까이 필요)
+        parts = info.get("requested_formats") or [info]
+        size = sum(_size(f) for f in parts)
+        free = shutil.disk_usage(job_dir).free
+        if size and size * 2 + 1024 ** 3 > free:
+            raise RuntimeError(
+                f"서버 디스크가 부족해요 (영상 약 {size / 1024 ** 3:.1f}GB, 남은 공간 "
+                f"{free / 1024 ** 3:.1f}GB). 더 낮은 화질로 시도해 주세요")
+        ydl.process_ie_result(info, download=True)
     files = sorted(job_dir.glob("source.*"), key=lambda p: p.stat().st_size)
     if not files:
         raise RuntimeError("영상을 받지 못했습니다")
-    _update(job_id, title=_safe_name(info.get("title") or "highlight"))
+    _update(job_id, title=_safe_name(info.get("title") or "highlight"), got_height=info.get("height"))
     return files[-1]
 
 
@@ -814,7 +825,8 @@ def _run_highlights(job_id: str, job_dir: Path, src: Path | None, url: str, qual
                 _update(job_id, progress=round(85 + (i + 1) / len(events) * 15, 1),
                         message="썸네일 만드는 중")
         _update(job_id, status="done", progress=100, message="완료",
-                result={"duration": duration, "events": events, "has_video": bool(vcodec)})
+                result={"duration": duration, "events": events, "has_video": bool(vcodec),
+                        "height": jobs.get(job_id, {}).get("got_height")})
     except Exception as e:  # noqa: BLE001
         _update(job_id, status="error", message=f"실패: {e}")
 
