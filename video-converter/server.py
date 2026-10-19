@@ -1396,13 +1396,115 @@ async def start_shorts(settings: str = Form(...), file: UploadFile | None = File
     return {"job_id": job_id}
 
 
+# ------------------------------------------------- AI 제목·썸네일 문구 (선택)
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+AI_MODEL = "claude-opus-5-5"
+
+AI_SYSTEM = """너는 한국 리그 오브 레전드(LCK) e스포츠 유튜브 쇼츠 채널의 편집자야.
+영상 장면 캡처와 편집자가 적은 정보로, 클릭하고 싶어지는 유튜브 제목과 썸네일 문구를 만든다.
+
+원칙:
+- 짧고 강렬하게. 감탄·놀람·궁금증을 일으키는 표현(ㄷㄷ, 미친, 역대급, 이게 된다고? 등)을 적극적으로 써도 좋다.
+- 단, 사실을 지어내지 마라. 화면이나 주어진 정보로 확인되지 않는 선수 이름, 경기 결과, 기록(예: '최초', '세계 최고')은 쓰지 않는다.
+  주어진 정보에 있는 내용은 써도 된다. 거짓 낚시는 채널 신뢰와 유튜브 정책에 해롭다.
+- 특정 선수나 팀을 비하하거나 조롱하지 마라.
+- 제목은 40자 이내가 좋다(앞 40자 정도만 화면에 보임). 썸네일 문구는 한 줄 8~12자 이내 두 줄.
+- 한국어로 쓴다."""
+
+AI_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scene": {"type": "string", "description": "장면에서 일어난 일을 한두 문장으로 (확인된 사실만)"},
+        "titles": {"type": "array", "items": {"type": "string"}, "description": "유튜브 제목 후보 5개"},
+        "thumbnail_texts": {
+            "type": "array",
+            "description": "썸네일 문구 후보 3개",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line1": {"type": "string"},
+                    "line2": {"type": "string"},
+                    "highlight": {"type": "string", "description": "강조 색으로 칠할 단어 (line1 또는 line2에 들어있는 단어)"},
+                },
+                "required": ["line1", "line2", "highlight"],
+                "additionalProperties": False,
+            },
+        },
+        "description_hook": {"type": "string", "description": "설명란 첫 줄에 쓸 한두 문장"},
+    },
+    "required": ["scene", "titles", "thumbnail_texts", "description_hook"],
+    "additionalProperties": False,
+}
+
+
+class AiSuggestRequest(BaseModel):
+    frames: list[str] = []      # JPEG base64 (data URL 접두사 없이), 최대 4장
+    title: str = ""
+    subtitle: str = ""
+    info: str = ""
+    captions: list[str] = []
+    kills: int = 0
+
+
+@app.post("/api/ai/suggest")
+def ai_suggest(req: AiSuggestRequest):
+    import anthropic
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(400, "AI 기능이 꺼져 있어요. 서버 .env에 ANTHROPIC_API_KEY를 넣으면 사용할 수 있어요")
+    frames = [f for f in req.frames if f][:4]
+    if not frames:
+        raise HTTPException(400, "분석할 장면이 없습니다")
+    multi = {2: "더블킬", 3: "트리플킬", 4: "쿼드라킬", 5: "펜타킬"}.get(min(req.kills, 5), "")
+    facts = "\n".join(line for line in [
+        f"- 편집자가 붙인 제목: {req.title}" if req.title.strip() else "",
+        f"- 부제: {req.subtitle}" if req.subtitle.strip() else "",
+        f"- 경기 정보: {req.info}" if req.info.strip() else "",
+        f"- 점수판 분석 결과: 이 장면에서 연속 {req.kills}킬({multi})이 나왔음" if multi else "",
+        ("- 영상 자막:\n" + "\n".join(f"  · {c}" for c in req.captions if c.strip())) if any(c.strip() for c in req.captions) else "",
+    ] if line) or "- (추가 정보 없음)"
+    content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": f}} for f in frames]
+    content.append({"type": "text", "text": f"위 이미지는 쇼츠 영상에서 시간순으로 뽑은 장면 {len(frames)}장이야.\n\n"
+                                            f"편집자가 준 정보:\n{facts}\n\n"
+                                            "이 영상의 유튜브 제목 후보 5개와 썸네일 문구 후보 3개를 만들어줘."})
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    try:
+        resp = client.beta.messages.create(
+            model=AI_MODEL,
+            max_tokens=16000,
+            system=AI_SYSTEM,
+            messages=[{"role": "user", "content": content}],
+            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": AI_SCHEMA}},
+            # 안전 분류기가 거절하면 서버에서 다른 모델로 다시 시도
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+        )
+    except anthropic.AuthenticationError:
+        raise HTTPException(400, "API 키가 올바르지 않아요. .env의 ANTHROPIC_API_KEY를 확인해 주세요")
+    except anthropic.RateLimitError:
+        raise HTTPException(429, "AI 요청이 너무 많아요. 잠시 후 다시 시도해 주세요")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(502, f"AI 서버 오류 ({e.status_code}). 잠시 후 다시 시도해 주세요")
+    except anthropic.APIConnectionError:
+        raise HTTPException(502, "AI 서버에 연결할 수 없어요")
+    if resp.stop_reason == "refusal":
+        raise HTTPException(400, "AI가 이 장면에 대한 요청을 처리하지 않았어요. 다른 장면으로 시도해 주세요")
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise HTTPException(502, "AI 응답을 읽지 못했어요. 다시 시도해 주세요")
+    return data
+
+
 # ------------------------------------------------------------- Common
 
 
 @app.get("/api/config")
 def config():
     return {"max_upload_mb": MAX_UPLOAD_MB, "gpu": GPU_ENCODER is not None,
-            "auth": bool(APP_PASSWORD),
+            "auth": bool(APP_PASSWORD), "ai": bool(ANTHROPIC_API_KEY),
             "max_concurrent": MAX_CONCURRENT}
 
 

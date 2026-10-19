@@ -136,6 +136,23 @@
   .yt button { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font-size:12px; cursor:pointer; white-space:nowrap; }
   .yt button.done { color:var(--ok); border-color:var(--ok); }
   .yt textarea { width:100%; min-height:340px; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); font-size:13px; font-family:inherit; line-height:1.6; resize:vertical; }
+  .thcands { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:8px; margin-top:10px; }
+  .thc { position:relative; border:2px solid transparent; border-radius:8px; overflow:hidden; cursor:pointer; background:#000; line-height:0; }
+  .thc.sel { border-color:var(--accent); }
+  .thc img { width:100%; aspect-ratio:16/9; object-fit:cover; }
+  .thc span { position:absolute; left:4px; bottom:4px; font-size:11px; line-height:1.4; background:rgba(0,0,0,.7); padding:1px 5px; border-radius:4px; }
+  .thc b { position:absolute; right:4px; top:4px; font-size:11px; line-height:1.4; background:var(--accent); padding:1px 5px; border-radius:4px; }
+  .thedit { display:flex; gap:14px; margin-top:12px; align-items:flex-start; }
+  .thedit .cv { flex:1.3; min-width:0; }
+  #thCanvas { width:100%; display:block; border-radius:8px; background:#000; cursor:grab; touch-action:none; }
+  .thedit .ctl { flex:1; min-width:0; }
+  .thedit .ctl label { margin:8px 0 4px; }
+  .thedit .chk { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; font-size:13px; }
+  .thedit .chk label { margin:0; display:flex; gap:5px; align-items:center; color:var(--text); font-size:13px; }
+  .aibox { margin-top:12px; }
+  .aibox .scene { font-size:13px; color:var(--muted); margin:8px 0; line-height:1.5; }
+  .thopt { display:inline-block; margin:4px 6px 0 0; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; font-size:13px; }
+  @media (max-width:700px) { .thedit { flex-direction:column; } .thedit .cv, .thedit .ctl { width:100%; } }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -346,6 +363,57 @@
             <select id="ytLen" style="width:auto;padding:4px 8px;font-size:12px;margin-left:6px"><option value="long" selected>길게</option><option value="short">짧게</option></select></span>
             <button id="ytDescCopy">설명 복사</button></div>
           <textarea id="ytDesc"></textarea>
+
+          <div class="aibox">
+            <button class="go2" id="aiGo" style="margin:4px 0 0;width:100%">🤖 AI로 영상 분석해서 제목·썸네일 문구 만들기</button>
+            <div class="shhint" id="aiHint"></div>
+            <div id="aiRes" hidden>
+              <div class="scene" id="aiScene"></div>
+              <div class="lbl">AI 제목 후보</div>
+              <div id="aiTitles"></div>
+              <div class="lbl">설명 첫 줄 <button id="aiHookUse">설명 맨 위에 넣기</button></div>
+              <div class="cand"><span id="aiHook"></span></div>
+              <div class="lbl">썸네일 문구 (누르면 아래 썸네일에 적용)</div>
+              <div id="aiThumbs"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="yt">
+          <h4>🖼 썸네일 만들기 <small style="color:var(--muted);font-weight:normal">· 영상에서 강렬한 장면을 골라 문구를 얹어요</small></h4>
+          <div class="pastebar">
+            <button id="thFind">🔍 썸네일 장면 후보 찾기</button>
+            <select id="thSize" style="width:auto;padding:8px">
+              <option value="1280x720">일반 영상용 1280×720</option>
+              <option value="1080x1920">쇼츠 표지용 1080×1920</option>
+            </select>
+          </div>
+          <div class="thcands" id="thCands"></div>
+          <div class="thedit" id="thEdit" hidden>
+            <div class="cv">
+              <canvas id="thCanvas" width="1280" height="720"></canvas>
+              <p class="shhint">휠 = 확대/축소 · 드래그 = 위치 이동</p>
+            </div>
+            <div class="ctl">
+              <label for="thL1">문구 1줄</label><input type="text" id="thL1" placeholder="이게 된다고?">
+              <label for="thL2">문구 2줄</label><input type="text" id="thL2" placeholder="역대급 한타">
+              <div class="row2">
+                <div><label for="thHi">강조할 단어</label><input type="text" id="thHi" placeholder="역대급"></div>
+                <div><label for="thPos">문구 위치</label><select id="thPos"><option value="bottom">아래</option><option value="top">위</option><option value="middle">가운데</option></select></div>
+              </div>
+              <div class="row2">
+                <div><label for="thColor">글자색</label><select id="thColor"><option value="#ffffff">흰색</option><option value="#ffe14d" selected>노랑</option></select></div>
+                <div><label for="thHiColor">강조색</label><select id="thHiColor"><option value="#ff3b3b" selected>빨강</option><option value="#ffe14d">노랑</option><option value="#3bd4ff">하늘</option></select></div>
+              </div>
+              <label>글자 크기</label><input type="range" id="thFs" min="0.6" max="1.6" step="0.05" value="1" style="width:100%">
+              <label for="thBadge">왼쪽 위 배지 <small>(비우면 없음)</small></label><input type="text" id="thBadge" placeholder="펜타킬">
+              <div class="chk">
+                <label><input type="checkbox" id="thBoost" checked> 색감 강하게</label>
+                <label><input type="checkbox" id="thVig" checked> 가장자리 어둡게</label>
+              </div>
+              <button class="go" id="thSave">썸네일 PNG 저장</button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1252,6 +1320,8 @@ function shOpen(src, url, start, end) {
   $('shStart').value = fmtClock1(start); $('shEnd').value = end ? fmtClock1(end) : '';
   shCaps = []; shRenderCaps();
   $('ytDesc').dataset.edited = ''; ytSuggest();
+  thCands = []; thPick = null; $('thCands').innerHTML = ''; $('thEdit').hidden = true; $('aiRes').hidden = true;
+  $('thL1').value = $('thL2').value = $('thHi').value = $('thBadge').value = '';
   $('shBox').hidden = false;
   document.fonts.ready.then(shDraw);
 }
@@ -1380,6 +1450,192 @@ $('ytDescCopy').onclick = e => copyText($('ytDesc').value, e.target);
 $('ytLen').onchange = () => { $('ytDesc').dataset.edited = ''; ytSuggest(); };
 $('shCaps').addEventListener('input', ytSuggest);
 $('shCaps').addEventListener('click', () => setTimeout(ytSuggest, 0));
+
+// ---------- 썸네일: 장면 후보 고르기 (움직임·색감·선명도 점수)
+const thV = document.createElement('video'); thV.muted = true; thV.playsInline = true; thV.preload = 'auto';
+let thCands = [], thPick = null, thView = {zoom: 1, dx: 0, dy: 0};
+const seekTo = (v, t) => new Promise(r => { if (Math.abs(v.currentTime - t) < 0.01 && !v.seeking) return r(); v.addEventListener('seeked', r, {once: true}); v.currentTime = t; });
+async function thEnsureSrc() {
+  if (thV.src !== shV.src) { thV.src = shV.src; await new Promise((r, j) => { thV.addEventListener('loadeddata', r, {once: true}); thV.addEventListener('error', j, {once: true}); }); }
+}
+function frameStats(prev) {
+  const c = document.createElement('canvas'); c.width = 160; c.height = 90;
+  const g = c.getContext('2d'); g.drawImage(thV, 0, 0, 160, 90);
+  const d = g.getImageData(0, 0, 160, 90).data;
+  let rg = 0, yb = 0, rg2 = 0, yb2 = 0, sharp = 0, motion = 0; const n = 160 * 90, lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    const a = r - gg, y = (r + gg) / 2 - b; rg += a; yb += y; rg2 += a * a; yb2 += y * y;
+    lum[i] = 0.299 * r + 0.587 * gg + 0.114 * b;
+    if (i % 160 && i >= 160) sharp += Math.abs(4 * lum[i] - lum[i - 1] - lum[i - 160] - (lum[i + 1] || lum[i]) - (lum[i + 160] || lum[i]));
+    if (prev) motion += Math.abs(lum[i] - prev[i]);
+  }
+  const color = Math.sqrt(rg2 / n - (rg / n) ** 2 + yb2 / n - (yb / n) ** 2);  // 색이 화려할수록 큼
+  return {color, sharp: sharp / n, motion: prev ? motion / n : 0, lum, url: c.toDataURL('image/jpeg', 0.7)};
+}
+async function thFind() {
+  if (!shV.src) return;
+  $('thFind').disabled = true; $('thFind').textContent = '장면 분석 중...';
+  try {
+    await thEnsureSrc();
+    const [a, e] = shRange(), N = 16, list = [];
+    let prev = null;
+    for (let i = 0; i < N; i++) {
+      const t = a + (e - a) * (i + 0.5) / N;
+      await seekTo(thV, t);
+      const st = frameStats(prev); prev = st.lum;
+      list.push({t, ...st});
+    }
+    list[0].motion = list[1] ? list[1].motion : 0;
+    // 항목별로 0~1 정규화 후 합산 (움직임 비중 크게)
+    const norm = k => { const v = list.map(x => x[k]), lo = Math.min(...v), hi = Math.max(...v); list.forEach(x => x[k + 'N'] = hi > lo ? (x[k] - lo) / (hi - lo) : 0.5); };
+    ['color', 'sharp', 'motion'].forEach(norm);
+    list.forEach(x => x.score = x.motionN * 0.45 + x.colorN * 0.3 + x.sharpN * 0.25);
+    thCands = [...list].sort((p, q) => q.score - p.score).slice(0, 6);
+    const box = $('thCands'); box.innerHTML = '';
+    thCands.forEach((c, i) => {
+      const el = document.createElement('div'); el.className = 'thc';
+      el.innerHTML = `<img alt=""><span>${fmtClock1(c.t - a)}</span>${i === 0 ? '<b>추천</b>' : ''}`;
+      el.querySelector('img').src = c.url;
+      el.onclick = () => thSelect(c, el);
+      box.appendChild(el);
+    });
+    thSelect(thCands[0], box.firstChild);
+  } catch { setStatus(0, '이 영상에서 장면을 읽지 못했어요', 'err'); }
+  finally { $('thFind').disabled = false; $('thFind').textContent = '🔍 썸네일 장면 후보 다시 찾기'; }
+}
+async function thSelect(c, el) {
+  document.querySelectorAll('.thc').forEach(x => x.classList.toggle('sel', x === el));
+  thPick = c; thView = {zoom: 1, dx: 0, dy: 0};
+  await seekTo(thV, c.t);
+  if (!$('thBadge').value && shMeta.kills >= 2) $('thBadge').value = MULTI[Math.min(shMeta.kills, 5)];
+  if (!$('thL1').value && !$('thL2').value) { $('thL1').value = oneLine($('shTitle').value).slice(0, 14); }
+  $('thEdit').hidden = false; thDraw();
+}
+// ---------- 썸네일 편집 캔버스
+const thC = $('thCanvas'), thG = thC.getContext('2d');
+function thDraw() {
+  if (!thPick || !thV.videoWidth) return;
+  const [W, H] = $('thSize').value.split('x').map(Number);
+  if (thC.width !== W) { thC.width = W; thC.height = H; }
+  const u = W / 1280 * (W < H ? 1.7 : 1);  // 세로 표지는 화면이 길어서 글자·배지를 더 크게 (너비를 넘으면 자동으로 줄어듦)
+  thG.save(); thG.fillStyle = '#000'; thG.fillRect(0, 0, W, H);
+  const vw = thV.videoWidth, vh = thV.videoHeight, sc = Math.max(W / vw, H / vh) * thView.zoom;
+  const dw = vw * sc, dh = vh * sc;
+  thView.dx = Math.min(Math.max(thView.dx, W - dw - (W - dw) / 2), (dw - W) / 2);
+  thView.dy = Math.min(Math.max(thView.dy, H - dh - (H - dh) / 2), (dh - H) / 2);
+  if ($('thBoost').checked) thG.filter = 'saturate(1.45) contrast(1.15) brightness(1.05)';
+  thG.drawImage(thV, (W - dw) / 2 + thView.dx, (H - dh) / 2 + thView.dy, dw, dh);
+  thG.filter = 'none';
+  if ($('thVig').checked) {
+    const gr = thG.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,.6)');
+    thG.fillStyle = gr; thG.fillRect(0, 0, W, H);
+  }
+  // 문구: 굵은 글씨 + 두꺼운 검은 테두리, 강조 단어는 다른 색
+  const lines = [$('thL1').value.trim(), $('thL2').value.trim()].filter(Boolean);
+  let fs = 150 * u * +$('thFs').value;
+  thG.font = `${fs}px BHS`;
+  const maxW = W * 0.92;
+  const widest = Math.max(0, ...lines.map(l => thG.measureText(l).width));
+  if (widest > maxW) { fs *= maxW / widest; thG.font = `${fs}px BHS`; }
+  const lh = fs * 1.08, total = lh * lines.length, pos = $('thPos').value;
+  let y0 = pos === 'top' ? H * 0.06 + lh / 2 : pos === 'middle' ? H / 2 - total / 2 + lh / 2 : H - H * 0.06 - total + lh / 2;
+  const hi = $('thHi').value.trim();
+  thG.textBaseline = 'middle'; thG.lineJoin = 'round'; thG.textAlign = 'left';
+  lines.forEach((l, i) => {
+    const y = y0 + i * lh, x0 = (W - thG.measureText(l).width) / 2;
+    const k = hi ? l.indexOf(hi) : -1;
+    const parts = k < 0 ? [[l, $('thColor').value]] : [[l.slice(0, k), $('thColor').value], [hi, $('thHiColor').value], [l.slice(k + hi.length), $('thColor').value]];
+    let x = x0;
+    parts.forEach(([t, col]) => {
+      if (!t) return;
+      thG.strokeStyle = '#000'; thG.lineWidth = fs * 0.18; thG.strokeText(t, x, y);
+      thG.fillStyle = col; thG.fillText(t, x, y);
+      x += thG.measureText(t).width;
+    });
+  });
+  // 왼쪽 위 배지
+  const badge = $('thBadge').value.trim();
+  if (badge) {
+    const bs = 64 * u; thG.font = `${bs}px BHS`;
+    const bw = thG.measureText(badge).width + bs * 0.9, bh = bs * 1.45, bx = W * 0.03, by = H * 0.04;
+    thG.fillStyle = '#e8102e'; thG.beginPath(); thG.roundRect(bx, by, bw, bh, bh * 0.2); thG.fill();
+    thG.fillStyle = '#fff'; thG.textAlign = 'center'; thG.fillText(badge, bx + bw / 2, by + bh / 2 + bs * 0.04);
+  }
+  thG.restore();
+}
+['thL1', 'thL2', 'thHi', 'thPos', 'thColor', 'thHiColor', 'thFs', 'thBadge', 'thBoost', 'thVig', 'thSize'].forEach(id => $(id).addEventListener('input', thDraw));
+$('thSize').addEventListener('change', () => { thView = {zoom: 1, dx: 0, dy: 0}; thDraw(); });
+thC.addEventListener('wheel', e => { if (!thPick) return; e.preventDefault(); thView.zoom = Math.min(4, Math.max(1, thView.zoom * Math.exp(-e.deltaY * 0.0015))); thDraw(); }, {passive: false});
+let thDrag = null;
+thC.addEventListener('pointerdown', e => { if (!thPick) return; thC.setPointerCapture(e.pointerId); thDrag = {x: e.clientX, y: e.clientY, dx: thView.dx, dy: thView.dy}; });
+thC.addEventListener('pointermove', e => { if (!thDrag) return; const k = thC.width / thC.clientWidth; thView.dx = thDrag.dx + (e.clientX - thDrag.x) * k; thView.dy = thDrag.dy + (e.clientY - thDrag.y) * k; thDraw(); });
+['pointerup', 'pointercancel'].forEach(ev => thC.addEventListener(ev, () => { thDrag = null; }));
+$('thFind').onclick = thFind;
+$('thSave').onclick = () => {
+  thDraw();
+  const name = (oneLine($('shTitle').value) || [$('thL1').value, $('thL2').value].join(' ').trim() || '썸네일').replace(/[\\/:*?"<>|]+/g, '_');
+  thC.toBlob(b => saveBlob(b, `${name}_썸네일_${thC.width}x${thC.height}.png`), 'image/png');
+};
+
+// ---------- AI 분석 (서버에 ANTHROPIC_API_KEY가 있을 때만)
+let aiEnabled = false;
+fetch('/api/config').then(r => r.json()).then(c => {
+  aiEnabled = !!c.ai;
+  $('aiGo').disabled = !aiEnabled;
+  $('aiHint').textContent = aiEnabled
+    ? '장면 4장과 입력한 제목·자막·경기 정보를 AI가 보고 제목과 썸네일 문구를 만들어요. (한 번에 몇십 원 정도의 API 요금)'
+    : 'AI 기능이 꺼져 있어요. 관리자가 서버 .env에 ANTHROPIC_API_KEY를 넣으면 켜져요. 위의 자동 추천과 아래 썸네일 만들기는 그대로 쓸 수 있어요.';
+}).catch(() => {});
+function frameJpeg(maxW = 768) {
+  const sc = Math.min(1, maxW / thV.videoWidth), c = document.createElement('canvas');
+  c.width = Math.round(thV.videoWidth * sc); c.height = Math.round(thV.videoHeight * sc);
+  c.getContext('2d').drawImage(thV, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8).split(',')[1];
+}
+$('aiGo').onclick = async () => {
+  if (!aiEnabled || !shV.src) return;
+  $('aiGo').disabled = true; $('aiGo').textContent = '🤖 AI가 영상을 보는 중... (10~30초)';
+  try {
+    if (!thCands.length) await thFind();
+    const picks = [...thCands].slice(0, 4).sort((p, q) => p.t - q.t), frames = [];
+    for (const c of picks) { await seekTo(thV, c.t); frames.push(frameJpeg()); }
+    if (thPick) await seekTo(thV, thPick.t);
+    const res = await fetch('/api/ai/suggest', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+      frames, title: $('shTitle').value, subtitle: $('shSub').value, info: $('shInfo').value,
+      captions: shCaps.map(c => c.text).filter(t => t.trim()), kills: shMeta.kills || 0})});
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.detail || 'AI 요청 실패');
+    $('aiScene').textContent = '🔎 AI가 본 장면: ' + d.scene;
+    const tbox = $('aiTitles'); tbox.innerHTML = '';
+    d.titles.forEach(t => {
+      const row = document.createElement('div'); row.className = 'cand';
+      row.innerHTML = '<span></span><small></small><button>복사</button>';
+      row.children[0].textContent = t; row.children[1].textContent = `${t.length}자`;
+      row.children[2].onclick = e => copyText(t, e.target);
+      tbox.appendChild(row);
+    });
+    $('aiHook').textContent = d.description_hook;
+    const th = $('aiThumbs'); th.innerHTML = '';
+    d.thumbnail_texts.forEach(o => {
+      const b = document.createElement('button'); b.className = 'thopt';
+      b.textContent = `${o.line1} / ${o.line2}`;
+      b.onclick = async () => {
+        $('thL1').value = o.line1; $('thL2').value = o.line2; $('thHi').value = o.highlight;
+        if (!thPick) await thFind(); else thDraw();
+        $('thEdit').scrollIntoView({block: 'nearest', behavior: 'smooth'});
+      };
+      th.appendChild(b);
+    });
+    $('aiRes').hidden = false;
+  } catch (e) { setStatus(0, e.message, 'err'); }
+  finally { $('aiGo').disabled = !aiEnabled; $('aiGo').textContent = '🤖 AI로 영상 분석해서 제목·썸네일 문구 만들기'; }
+};
+$('aiHookUse').onclick = () => {
+  const hook = $('aiHook').textContent.trim(); if (!hook) return;
+  $('ytDesc').value = hook + '\n\n' + $('ytDesc').value; $('ytDesc').dataset.edited = '1';
+};
 
 $('shGo').onclick = () => {
   const [a, e] = shRange();

@@ -6,3 +6,4 @@ imageio-ffmpeg>=0.4.9
 bgutil-ytdlp-pot-provider>=1.0
 opencv-python-headless>=4.8
 pillow>=10.0
+anthropic>=1.15
