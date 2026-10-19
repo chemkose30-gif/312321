@@ -10,10 +10,9 @@
   body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; }
   main { max-width:560px; margin:0 auto; padding:40px 16px; }
   h1 { font-size:24px; margin:0 0 24px; }
-  .tabs { display:flex; gap:8px; margin-bottom:16px; }
-  .tab { flex:1; padding:12px 6px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:14px; cursor:pointer; }
-  .tab { white-space:nowrap; }
-  @media (max-width:480px) { .tabs { gap:6px; } .tab { font-size:13px; padding:12px 2px; } }
+  .tabs { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; margin-bottom:16px; }
+  .tab { padding:12px 4px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:10px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  @media (max-width:560px) { .tabs { grid-template-columns:repeat(3, 1fr); gap:6px; } .tab { font-size:13px; padding:11px 2px; } }
   .tab.active { background:var(--card); color:var(--text); border-color:var(--accent); }
   .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; }
   .panel { display:none; } .panel.active { display:block; }
@@ -77,6 +76,24 @@
   .compare { position:relative; margin-top:12px; line-height:0; border-radius:8px; overflow:hidden; background:#000; }
   .compare img { width:100%; max-height:420px; object-fit:contain; }
   .warnnote { font-size:12px; color:#f0b45a; margin-top:14px; line-height:1.6; }
+  .or { text-align:center; color:var(--muted); font-size:13px; margin:14px 0; }
+  #hlVid { width:100%; max-height:320px; background:#000; border-radius:8px; display:block; margin-top:16px; }
+  .hlctl { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; margin-top:12px; font-size:14px; }
+  .hlctl label { margin:0; display:flex; align-items:center; gap:6px; color:var(--text); font-size:14px; }
+  .hlctl input[type=number] { width:56px; padding:6px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+  .hlctl input[type=range] { width:120px; }
+  .hllist { display:flex; flex-direction:column; gap:8px; margin-top:12px; max-height:520px; overflow-y:auto; }
+  .hl { display:flex; gap:10px; align-items:center; padding:8px; border:1px solid var(--line); border-radius:10px; background:var(--bg); }
+  .hl.off { opacity:.45; }
+  .hl input[type=checkbox] { width:18px; height:18px; flex-shrink:0; }
+  .hl img { width:96px; aspect-ratio:16/9; object-fit:cover; border-radius:6px; background:#000; flex-shrink:0; cursor:pointer; }
+  .hl .m { flex:1; min-width:0; font-size:14px; }
+  .hl .m small { color:var(--muted); }
+  .hl .bar2 { height:5px; background:var(--card); border-radius:3px; margin-top:6px; overflow:hidden; }
+  .hl .bar2 > div { height:100%; background:var(--accent); }
+  .hl button { padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); cursor:pointer; }
+  .btnrow { display:flex; gap:8px; } .btnrow .go { flex:2; } .btnrow .go2 { flex:1; margin-top:18px; padding:14px 8px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--text); font-size:15px; cursor:pointer; }
+  .btnrow button:disabled { opacity:.5; cursor:not-allowed; }
   .note { font-size:12px; color:var(--muted); margin-top:20px; line-height:1.6; }
 </style>
 </head>
@@ -88,6 +105,7 @@
     <button class="tab" data-tab="conv">MP4 변환</button>
     <button class="tab" data-tab="img">캡처→PNG</button>
     <button class="tab" data-tab="wm">워터마크</button>
+    <button class="tab" data-tab="hl">하이라이트</button>
   </div>
 
   <div class="card">
@@ -172,6 +190,39 @@
       </div>
       <p class="warnnote">※ 본인이 만들었거나 사용 권한이 있는 이미지·영상에만 사용하세요. 다른 사람의 워터마크를 지워 쓰면 저작권 침해가 될 수 있어요.<br>
         ※ 하늘·벽·단색처럼 단순한 배경에서 가장 깔끔하고, 복잡한 무늬 위는 흐릿하게 채워질 수 있어요. 영상은 지정한 위치가 영상 전체에서 지워져요(고정 로고용).</p>
+    </section>
+
+    <section class="panel" id="hl">
+      <label for="hlUrl">유튜브 링크 <small>(LCK 다시보기 등 · 서버가 직접 받아서 업로드가 필요 없어요)</small></label>
+      <div class="urlrow">
+        <input type="text" id="hlUrl" placeholder="https://www.youtube.com/watch?v=...">
+        <select id="hlQ" style="width:auto"><option value="1080">1080p</option><option value="720">720p</option></select>
+      </div>
+      <div class="or">또는</div>
+      <input type="file" id="hlFile" accept="video/*,.mkv,.mov,.m4v" hidden>
+      <div class="drop" id="hlDrop">영상 파일을 끌어다 놓거나 클릭해서 선택</div>
+      <button class="go" id="hlGo">하이라이트 찾기</button>
+
+      <div id="hlRes" hidden>
+        <video id="hlVid" controls playsinline preload="metadata"></video>
+        <div class="hlctl">
+          <label>장면 수 <input type="range" id="hlN" min="1" max="60"> <b id="hlNv"></b></label>
+          <label>앞 <input type="number" id="hlPre" value="20" min="0" max="120">초</label>
+          <label>뒤 <input type="number" id="hlPost" value="10" min="0" max="120">초</label>
+        </div>
+        <div class="pastebar">
+          <button id="hlAll">전체 선택</button><button id="hlNone">선택 해제</button>
+          <span class="msg" id="hlSel" style="margin:0"></span>
+        </div>
+        <div class="hllist" id="hlList"></div>
+        <div class="btnrow">
+          <button class="go" id="hlMerge">선택 장면 합쳐서 받기</button>
+          <button class="go2" id="hlClips">클립 따로 (ZIP)</button>
+        </div>
+      </div>
+      <p class="warnnote">※ 해설·관중 함성이 평소보다 커지는 순간(킬·한타·오브젝트 싸움 등)을 찾아요. 점수가 높은 순서로 골라 시간순으로 보여줘요.<br>
+        ※ 자르기는 재인코딩 없이 해서 빠르지만, 시작이 1~2초 앞당겨질 수 있어요.<br>
+        ※ LCK 중계 영상은 LCK·라이엇 게임즈의 저작물이라, 편집본을 유튜브 등에 올리면 저작권 신고를 받을 수 있어요. 공식 2차 창작 가이드라인을 확인하세요.</p>
     </section>
 
     <div class="status" id="status">
@@ -335,6 +386,8 @@ function setBusy(b) {
   $('ytGo').disabled = b || !ytChoice;
   $('convGo').disabled = b || !selectedFile;
   if (typeof wmUpdate === 'function') wmUpdate();
+  if (typeof hlEvents !== 'undefined' && hlEvents.length) hlCount();
+  $('hlGo').disabled = b;
 }
 
 async function poll(jobId, onDone) {
@@ -715,6 +768,94 @@ $('wmCompare').addEventListener('pointerdown', () => showBefore(true));
 ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => $('wmCompare').addEventListener(ev, () => showBefore(false)));
 $('wmSave').onclick = () => wmResultBlob && saveBlob(wmResultBlob, wmResultName);
 wmUpdate();
+
+// ---------- 하이라이트
+let hlFileObj = null, hlJob = null, hlEvents = [], hlDuration = 0, hlChecked = new Set(), hlStopAt = null;
+const clock = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`; };
+const hlRange = ev => [Math.max(0, ev.t - (+$('hlPre').value || 0)), Math.min(hlDuration || Infinity, ev.t + (+$('hlPost').value || 0))];
+const hlShown = () => hlEvents.slice(0, +$('hlN').value).sort((a, b) => a.t - b.t);  // 점수 상위 N개를 시간순으로
+
+function hlRender() {
+  $('hlNv').textContent = `${$('hlN').value}개`;
+  const list = $('hlList'); list.innerHTML = '';
+  hlShown().forEach(ev => {
+    const [s, e] = hlRange(ev);
+    const row = document.createElement('div');
+    row.className = 'hl' + (hlChecked.has(ev.i) ? '' : ' off');
+    row.innerHTML = `<input type="checkbox"><img alt=""><div class="m"><b></b> <small></small><div class="bar2"><div></div></div></div><button title="미리보기">▶</button>`;
+    const [cb, img, meta, play] = row.children;
+    cb.checked = hlChecked.has(ev.i);
+    cb.onchange = () => { cb.checked ? hlChecked.add(ev.i) : hlChecked.delete(ev.i); row.classList.toggle('off', !cb.checked); hlCount(); };
+    if (ev.thumb) img.src = `/api/highlights/${hlJob}/thumb/${ev.i}.jpg`; else img.hidden = true;
+    meta.querySelector('b').textContent = clock(ev.t);
+    meta.querySelector('small').textContent = `${clock(s)} ~ ${clock(e)} · 흥분도 ${ev.score}`;
+    meta.querySelector('.bar2 > div').style.width = ev.score + '%';
+    play.onclick = img.onclick = () => { const v = $('hlVid'); v.currentTime = s; hlStopAt = e; v.play(); v.scrollIntoView({block: 'nearest', behavior: 'smooth'}); };
+    list.appendChild(row);
+  });
+  hlCount();
+}
+function hlCount() {
+  const sel = hlShown().filter(ev => hlChecked.has(ev.i));
+  const total = sel.reduce((sum, ev) => { const [s, e] = hlRange(ev); return sum + (e - s); }, 0);
+  $('hlSel').textContent = `${sel.length}개 선택 · 약 ${clock(total)} (겹치는 부분은 합쳐져요)`;
+  $('hlMerge').disabled = $('hlClips').disabled = busy || !sel.length;
+}
+$('hlVid').addEventListener('timeupdate', () => { if (hlStopAt !== null && $('hlVid').currentTime >= hlStopAt) { $('hlVid').pause(); hlStopAt = null; } });
+$('hlN').oninput = () => { hlShown().forEach(ev => hlChecked.add(ev.i)); hlRender(); };
+$('hlPre').oninput = $('hlPost').oninput = hlRender;
+$('hlAll').onclick = () => { hlShown().forEach(ev => hlChecked.add(ev.i)); hlRender(); };
+$('hlNone').onclick = () => { hlChecked.clear(); hlRender(); };
+
+function hlPick(f) {
+  if (!f || busy) return;
+  if (f.size > maxUploadMb * 1048576) return setStatus(0, `파일이 너무 큽니다 (최대 ${maxUploadMb} MB). 유튜브 링크로 분석해 보세요.`, 'err');
+  hlFileObj = f; $('hlUrl').value = '';
+  $('hlDrop').innerHTML = '<strong></strong><br><small>' + (f.size / 1073741824).toFixed(2) + ' GB · 다른 파일을 열려면 클릭</small>';
+  $('hlDrop').querySelector('strong').textContent = f.name;
+}
+$('hlDrop').onclick = () => !busy && $('hlFile').click();
+$('hlFile').onchange = e => { hlPick(e.target.files[0]); e.target.value = ''; };
+['dragover', 'dragenter'].forEach(ev => $('hlDrop').addEventListener(ev, e => { e.preventDefault(); $('hlDrop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => $('hlDrop').addEventListener(ev, e => { e.preventDefault(); $('hlDrop').classList.remove('over'); }));
+$('hlDrop').addEventListener('drop', e => hlPick(e.dataTransfer.files[0]));
+$('hlUrl').oninput = () => { if ($('hlUrl').value.trim() && hlFileObj) { hlFileObj = null; $('hlDrop').innerHTML = '영상 파일을 끌어다 놓거나 클릭해서 선택'; } };
+
+$('hlGo').onclick = () => {
+  const url = $('hlUrl').value.trim();
+  if (!url && !hlFileObj) return setStatus(0, '유튜브 링크를 넣거나 영상 파일을 선택하세요', 'err');
+  const file = url ? null : hlFileObj;
+  $('hlRes').hidden = true;
+  run(() => {
+    const fd = new FormData();
+    if (file) fd.append('file', file); else fd.append('url', url);
+    fd.append('quality', $('hlQ').value);
+    return uploadJob('/api/highlights', fd);
+  }, (j, jobId) => {
+    hlJob = jobId; hlDuration = j.result.duration;
+    hlEvents = j.result.events.map((ev, i) => ({...ev, i}));
+    const v = $('hlVid');
+    if (v.src.startsWith('blob:')) URL.revokeObjectURL(v.src);
+    v.src = file ? URL.createObjectURL(file) : `/api/highlights/${jobId}/video`;  // 파일이면 내 PC에서 바로 재생
+    $('hlN').max = hlEvents.length;
+    $('hlN').value = Math.min(hlEvents.length, Math.max(5, Math.round(hlDuration / 240)));  // 4분에 1개 정도
+    hlChecked = new Set(hlShown().map(ev => ev.i));
+    $('hlRes').hidden = false;
+    hlRender();
+    setStatus(100, `완료! 후보 ${hlEvents.length}개를 찾았어요. 장면 수를 조절하고 원하는 장면을 골라 받으세요.`, 'ok');
+  });
+};
+const hlExport = mode => {
+  const segs = hlShown().filter(ev => hlChecked.has(ev.i)).map(hlRange);
+  run(async () => {
+    setStatus(0, '요청 중...');
+    return jsonOrThrow(await fetch(`/api/highlights/${hlJob}/export`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({segments: segs, mode})}));
+  });
+};
+$('hlMerge').onclick = () => hlExport('merged');
+$('hlClips').onclick = () => hlExport('clips');
 </script>
 </body>
 </html>

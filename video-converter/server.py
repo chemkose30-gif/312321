@@ -176,7 +176,10 @@ def _update(job_id: str, **fields):
 def _cleanup_old_jobs():
     now = time.time()
     with jobs_lock:
-        expired = [j for j in jobs.values() if now - j["created"] > JOB_TTL_SECONDS]
+        # 진행 중인 작업은 지우지 않음. 하이라이트 분석처럼 원본을 오래 쓰는 작업은 ttl을 따로 둠
+        expired = [j for j in jobs.values()
+                   if j["status"] not in ("queued", "running")
+                   and now - j["created"] > j.get("ttl", JOB_TTL_SECONDS)]
         for j in expired:
             jobs.pop(j["id"], None)
     for j in expired:
@@ -674,6 +677,272 @@ async def start_watermark(file: UploadFile = File(...), boxes: str = Form(...),
     return {"job_id": job_id}
 
 
+# ------------------------------------------------- 하이라이트 (LCK 등 중계 영상)
+
+HIGHLIGHT_TTL = 3 * 60 * 60  # 분석 후 장면을 고르고 내려받을 시간
+HL_STEP = 0.5                 # 소리 크기를 재는 단위 (초)
+
+
+def _audio_levels(src: Path, duration: float, on_progress) -> "np.ndarray":
+    """영상 소리를 0.5초 단위 음량(dB) 배열로 만든다. 저용량 모노 8kHz로 빠르게 디코딩."""
+    import numpy as np
+
+    rate = 8000
+    win = int(rate * HL_STEP)
+    proc = subprocess.Popen(
+        [FFMPEG, "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate),
+         "-f", "s16le", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    levels, buf = [], b""
+    while chunk := proc.stdout.read(win * 2 * 240):  # 2분 분량씩
+        buf += chunk
+        n = len(buf) // (win * 2)
+        if n:
+            x = np.frombuffer(buf[:n * win * 2], dtype=np.int16).astype(np.float32).reshape(n, win)
+            buf = buf[n * win * 2:]
+            levels.append(20 * np.log10(np.sqrt((x ** 2).mean(axis=1)) + 1.0))
+            if duration:
+                on_progress(min(1.0, sum(map(len, levels)) * HL_STEP / duration))
+    proc.wait()
+    if not levels:
+        raise RuntimeError("소리를 찾을 수 없습니다. 오디오가 있는 영상인지 확인해 주세요")
+    return np.concatenate(levels)
+
+
+def _find_highlights(levels, max_n: int = 60, min_gap: float = 25.0) -> list[dict]:
+    """해설·함성이 평소보다 크게 올라가는 순간을 찾아 점수 순으로 돌려준다.
+
+    평소 음량(앞뒤 90초 중앙값)과 비교하므로 방송 전체 음량이나 쉬는 시간 음악에 덜 휘둘린다.
+    """
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    n = len(levels)
+    if n < 20:
+        return []
+    # 2초 평균으로 순간 잡음 제거
+    k = 4
+    smooth = np.convolve(np.pad(levels, (k // 2, k - 1 - k // 2), mode="edge"), np.ones(k) / k, mode="valid")
+    # 평소 음량: 앞뒤 90초 구간의 중앙값
+    half = int(90 / HL_STEP)
+    padded = np.pad(smooth, half, mode="edge")
+    baseline = np.median(sliding_window_view(padded, 2 * half + 1), axis=1)[:n]
+    excite = smooth - baseline
+    # 소리가 거의 없는 구간(무음)은 제외
+    excite[smooth < np.percentile(smooth, 10)] = 0
+
+    # 함성·해설 고조는 수십 초 안에 가라앉지만, 쉬는 시간 음악·광고는 계속 크다.
+    # 20~45초 뒤에도 여전히 크면 그만큼 점수를 깎는다 (영상 끝이면 앞쪽 구간으로 판단).
+    import warnings
+
+    a, b = int(20 / HL_STEP), int(45 / HL_STEP)
+    padded_ex = np.pad(excite, b, mode="constant", constant_values=np.nan)
+    with warnings.catch_warnings():  # 영상 앞뒤 끝의 빈 구간은 NaN으로 두고 무시
+        warnings.simplefilter("ignore", RuntimeWarning)
+        after = np.nanmedian(sliding_window_view(padded_ex[b + a:], b - a)[:n], axis=1)
+        before = np.nanmedian(sliding_window_view(padded_ex[:n + b - a], b - a)[:n], axis=1)
+    sustained = np.where(np.isnan(after), before, after)
+    excite = excite - np.clip(np.nan_to_num(sustained), 0, None)
+
+    gap = int(min_gap / HL_STEP)
+    order = np.argsort(excite)[::-1]
+    picked: list[int] = []
+    taken = np.zeros(n, bool)
+    for i in order:
+        if excite[i] < 2.0 or len(picked) >= max_n:  # 평소보다 2dB 이상 커진 순간만
+            break
+        if taken[i]:
+            continue
+        picked.append(int(i))
+        taken[max(0, i - gap):i + gap] = True
+    if not picked:
+        return []
+    top = float(excite[picked[0]])
+    return [{"t": round(i * HL_STEP, 1), "score": round(float(excite[i]) / top * 100)}
+            for i in picked]
+
+
+def _download_for_highlights(job_id: str, job_dir: Path, url: str, quality: str) -> Path:
+    import yt_dlp
+
+    def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            pct = (d.get("downloaded_bytes") or 0) / total * 45 if total else 0
+            _update(job_id, progress=round(pct, 1), message="영상 받는 중")
+
+    opts = _ytdlp_opts(outtmpl=str(job_dir / "source.%(ext)s"), progress_hooks=[hook],
+                       ffmpeg_location=FFMPEG, merge_output_format="mp4",
+                       format=_video_selector(quality))
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    files = sorted(job_dir.glob("source.*"), key=lambda p: p.stat().st_size)
+    if not files:
+        raise RuntimeError("영상을 받지 못했습니다")
+    _update(job_id, title=_safe_name(info.get("title") or "highlight"))
+    return files[-1]
+
+
+def _run_highlights(job_id: str, job_dir: Path, src: Path | None, url: str, quality: str):
+    try:
+        _update(job_id, status="running", message="준비 중")
+        if src is None:
+            try:
+                src = _download_for_highlights(job_id, job_dir, url, quality)
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(_ytdlp_error(e)) from e
+        base = 45 if url else 0
+        duration, vcodec, _ = _probe(src)
+        _update(job_id, source=str(src), message="소리 분석 중", progress=base)
+        levels = _audio_levels(
+            src, duration,
+            lambda f: _update(job_id, progress=round(base + f * (85 - base), 1)))
+        events = _find_highlights(levels)
+        if not events:
+            raise RuntimeError("두드러지는 장면을 찾지 못했습니다")
+
+        # 장면마다 썸네일 (소리가 터지기 2초 전 화면)
+        thumbs = job_dir / "thumbs"
+        thumbs.mkdir(exist_ok=True)
+        if vcodec:
+            for i, ev in enumerate(events):
+                subprocess.run(
+                    [FFMPEG, "-v", "error", "-y", "-ss", str(max(0, ev["t"] - 2)), "-i", str(src),
+                     "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(thumbs / f"{i}.jpg")],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                ev["thumb"] = (thumbs / f"{i}.jpg").exists()
+                _update(job_id, progress=round(85 + (i + 1) / len(events) * 15, 1),
+                        message="썸네일 만드는 중")
+        _update(job_id, status="done", progress=100, message="완료",
+                result={"duration": duration, "events": events, "has_video": bool(vcodec)})
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+
+
+@app.post("/api/highlights")
+async def start_highlights(file: UploadFile | None = File(None), url: str = Form(""),
+                           quality: str = Form("1080")):
+    url = url.strip()
+    if not file and not re.match(r"^https?://", url):
+        raise HTTPException(400, "영상 파일이나 유튜브 링크를 넣어주세요")
+    if quality != "best" and not quality.isdigit():
+        raise HTTPException(400, "잘못된 화질 값입니다")
+    _cleanup_old_jobs()
+    job_id, job_dir = _new_job("highlights")
+    src = None
+    if file:
+        src, original = await _save_upload(file, job_id, job_dir)
+        _update(job_id, title=original)
+        url = ""
+    _update(job_id, ttl=HIGHLIGHT_TTL)
+    _start_worker(job_id, _run_highlights, job_dir, src, url, quality)
+    return {"job_id": job_id}
+
+
+def _highlight_job(job_id: str) -> dict:
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job or job.get("kind") != "highlights" or not job.get("source"):
+        raise HTTPException(404, "분석 결과가 없습니다. 만료됐을 수 있으니 다시 분석해 주세요")
+    return job
+
+
+@app.get("/api/highlights/{job_id}/thumb/{index}.jpg")
+def highlight_thumb(job_id: str, index: int):
+    path = Path(_highlight_job(job_id)["dir"]) / "thumbs" / f"{index}.jpg"
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/highlights/{job_id}/video")
+def highlight_video(job_id: str):
+    """미리보기용 원본 영상 (구간 요청을 지원해 원하는 위치부터 재생 가능)."""
+    return FileResponse(_highlight_job(job_id)["source"], media_type="video/mp4")
+
+
+class HighlightExport(BaseModel):
+    segments: list[tuple[float, float]]
+    mode: str = "merged"  # merged | clips
+
+
+def _fmt_clock(t: float) -> str:
+    t = int(t)
+    return f"{t // 3600}시간{t % 3600 // 60:02d}분{t % 60:02d}초" if t >= 3600 else f"{t // 60}분{t % 60:02d}초"
+
+
+def _run_highlight_export(job_id: str, job_dir: Path, src: Path, title: str,
+                          segments: list[tuple[float, float]], mode: str):
+    import zipfile
+
+    try:
+        _update(job_id, status="running", message="장면 자르는 중")
+        parts = []
+        for i, (start, end) in enumerate(segments):
+            part = job_dir / f"part{i:03d}.mp4"
+            # 재인코딩 없이 잘라서 빠르고 화질 손실이 없음 (시작점은 가까운 키프레임 기준)
+            r = subprocess.run(
+                [FFMPEG, "-v", "error", "-y", "-ss", f"{start:.2f}", "-i", str(src),
+                 "-t", f"{end - start:.2f}", "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+                 "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(part)],
+                capture_output=True, text=True, errors="replace")
+            if r.returncode != 0 or not part.exists():
+                raise RuntimeError("자르기 실패: " + r.stderr.strip()[-200:])
+            parts.append((part, start))
+            _update(job_id, progress=round((i + 1) / len(segments) * 85, 1))
+
+        if mode == "clips":
+            out = job_dir / "clips.zip"
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+                for n, (part, start) in enumerate(parts, 1):
+                    z.write(part, f"{title}_{n:02d}_{_fmt_clock(start)}.mp4")
+            filename = f"{title}_하이라이트_클립{len(parts)}개.zip"
+        else:
+            _update(job_id, message="하나로 합치는 중")
+            listing = job_dir / "list.txt"
+            listing.write_text("".join(f"file '{p.name}'\n" for p, _ in parts))
+            out = job_dir / "highlights.mp4"
+            r = subprocess.run(
+                [FFMPEG, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+                 "-c", "copy", "-movflags", "+faststart", str(out)],
+                capture_output=True, text=True, errors="replace", cwd=job_dir)
+            if r.returncode != 0:
+                raise RuntimeError("합치기 실패: " + r.stderr.strip()[-200:])
+            filename = f"{title}_하이라이트.mp4"
+        for part, _ in parts:
+            if part != out:
+                part.unlink(missing_ok=True)
+        _update(job_id, status="done", progress=100, message="완료", file=str(out), filename=filename)
+    except Exception as e:  # noqa: BLE001
+        _update(job_id, status="error", message=f"실패: {e}")
+
+
+@app.post("/api/highlights/{job_id}/export")
+def export_highlights(job_id: str, req: HighlightExport):
+    source_job = _highlight_job(job_id)
+    if req.mode not in ("merged", "clips"):
+        raise HTTPException(400, "잘못된 내보내기 방식입니다")
+    duration = (source_job.get("result") or {}).get("duration") or 0
+    segs = sorted((max(0.0, s), min(e, duration) if duration else e) for s, e in req.segments)
+    segs = [(s, e) for s, e in segs if e - s >= 1]
+    if not segs:
+        raise HTTPException(400, "장면을 하나 이상 선택하세요")
+    if len(segs) > 100:
+        raise HTTPException(400, "장면은 100개까지 선택할 수 있습니다")
+    # 겹치는 구간은 하나로 합침
+    merged = [list(segs[0])]
+    for s, e in segs[1:]:
+        if s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    _cleanup_old_jobs()
+    new_id, new_dir = _new_job("highlight-export")
+    _start_worker(new_id, _run_highlight_export, new_dir, Path(source_job["source"]),
+                  source_job.get("title") or "highlight", [tuple(m) for m in merged], req.mode)
+    return {"job_id": new_id}
+
+
 # ------------------------------------------------------------- Common
 
 
@@ -690,7 +959,10 @@ def job_status(job_id: str):
         job = jobs.get(job_id)
         if not job:
             raise HTTPException(404, "작업을 찾을 수 없습니다")
-        return {k: job[k] for k in ("id", "status", "progress", "message", "filename")}
+        data = {k: job[k] for k in ("id", "status", "progress", "message", "filename")}
+        if job.get("result") is not None:
+            data["result"] = job["result"]
+        return data
 
 
 def _remove_job(job_id: str):
@@ -707,7 +979,8 @@ def download(job_id: str, background: BackgroundTasks):
     if not job or job["status"] != "done":
         raise HTTPException(404, "다운로드할 파일이 없습니다")
     background.add_task(_remove_job, job_id)
-    media = {".mp3": "audio/mpeg", ".png": "image/png"}.get(Path(job["filename"]).suffix, "video/mp4")
+    media = {".mp3": "audio/mpeg", ".png": "image/png", ".zip": "application/zip"}.get(
+        Path(job["filename"]).suffix, "video/mp4")
     return FileResponse(job["file"], media_type=media, filename=job["filename"],
                         background=background)
 
