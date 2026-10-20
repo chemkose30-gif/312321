@@ -2662,6 +2662,65 @@ def product_analytics(basis: str = "supply", company: str = "", user: dict = Dep
             "customers": pack(custs, lambda k: k, lambda k: pname[k])}
 
 
+@app.get("/api/analytics/new")
+def new_analytics(year: int = 0, basis: str = "supply", company: str = "", user: dict = Depends(current_user)):
+    """🆕 그 해 신규: 처음 거래한 거래처 · 처음 판 품목 · 기존 거래처가 처음 산 품목 (거래명세서 발행·출고완료 기준)."""
+    with db() as c:
+        is_ex, canon = exclude_matcher(c), canon_fn(c)
+        rows = c.execute(
+            "SELECT q.id, q.quote_date, q.customer_name, i.name, i.qty, i.unit, i.supply, i.vat FROM quote_items i"
+            " JOIN quotes q ON q.id = i.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft' AND i.name != ''"
+            + co_filter(c, company, "q") + " ORDER BY q.quote_date, q.id").fetchall()
+    years = sorted({int(r["quote_date"][:4]) for r in rows if r["quote_date"][:4].isdigit()})
+    if not years:
+        return {"years": [], "year": None, "customers": [], "products": [], "pairs": [], "since": ""}
+    year = year if year in years else years[-1]
+    ys = str(year)
+    first_c, first_p, first_cp, names = {}, {}, {}, {}
+    cust, prod, pairs = {}, {}, {}
+    since = ""
+    for r in rows:
+        name = canon(r["customer_name"])
+        if is_ex(name) or not r["quote_date"][:4].isdigit():
+            continue
+        d = r["quote_date"]
+        since = since or d
+        base = item_base(r["name"])
+        key = _item_norm(_CODE_RE.sub("", base)) or _item_norm(base)
+        if not key:
+            continue
+        names.setdefault(key, {}).setdefault(base, 0)
+        names[key][base] += 1
+        first_c.setdefault(name, d)
+        first_p.setdefault(key, d)
+        first_cp.setdefault((name, key), d)
+        if d[:4] != ys:
+            continue
+        amt = (r["supply"] or 0) + ((r["vat"] or 0) if basis == "total" else 0)
+        qty, unit = r["qty"] or 0, (r["unit"] or "").strip() or "kg"
+        e = cust.setdefault(name, {"name": name, "first": first_c[name], "amount": 0, "docs": set(), "items": {}})
+        e["amount"] += amt
+        e["docs"].add(r["id"])
+        e["items"][key] = e["items"].get(key, 0) + amt
+        p = prod.setdefault(key, {"key": key, "first": first_p[key], "amount": 0, "qty": 0, "unit": unit, "customers": {}})
+        p["amount"] += amt
+        p["qty"] += qty
+        p["customers"][name] = p["customers"].get(name, 0) + qty
+        pr = pairs.setdefault((name, key), {"name": name, "key": key, "first": first_cp[(name, key)], "amount": 0, "qty": 0, "unit": unit})
+        pr["amount"] += amt
+        pr["qty"] += qty
+    pname = {k: max(v, key=v.get) for k, v in names.items()}
+    new_c = sorted((dict(e, docs=len(e["docs"]), items=[pname[k] for k, _v in sorted(e["items"].items(), key=lambda x: -x[1])])
+                    for e in cust.values() if e["first"][:4] == ys), key=lambda e: e["first"])
+    new_p = sorted((dict(p, name=pname[p["key"]], customers=[{"name": n, "qty": q} for n, q in sorted(p["customers"].items(), key=lambda x: -x[1])])
+                    for p in prod.values() if p["first"][:4] == ys), key=lambda p: p["first"])
+    new_pair = sorted((dict(x, item=pname[x["key"]]) for x in pairs.values()
+                       if x["first"][:4] == ys and first_c[x["name"]][:4] != ys and first_p[x["key"]][:4] != ys),
+                      key=lambda x: -x["amount"])
+    return {"years": years, "year": year, "since": since, "customers": new_c, "products": new_p, "pairs": new_pair,
+            "total": sum(e["amount"] for e in cust.values())}
+
+
 @app.get("/api/analytics/decline")
 def decline_analytics(months: int = 12, compare: str = "last_year", basis: str = "supply", company: str = "",
                       _: dict = Depends(current_user)):
