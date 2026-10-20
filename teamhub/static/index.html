@@ -2333,6 +2333,57 @@ function expTag(d, today) {
   return `<small class="muted">${esc(d)}</small>`;
 }
 const isDead = l => /폐기|불용/.test(l.kind + ' ' + l.location);
+// 📑 서류 갱신 (식향/향장): 로트마다 등록한 갱신 기록
+const DOC_KIND_CLS = {'식향': 's-done', '향장': 'p-low', '공통': 's-hold'};
+const lotDocTags = l => (l.docs || []).length ? Object.values((l.docs || []).reduce((m, x) => (m[x.kind] ||= x, m), {}))
+  .map(x => `<span class="tag ${DOC_KIND_CLS[x.kind] || ''}" title="${esc(x.doc_date)} 갱신${x.note ? ' · ' + esc(x.note) : ''}">${esc(x.kind)} ✓${x.new_expiry ? ' ~' + esc(x.new_expiry) : ''}</span>`).join(' ')
+  : '<span class="muted" style="font-size:12px">갱신 전</span>';
+function openLotDocs(l, after) {
+  const today = todayStr();
+  const draw = () => (l.docs || []).length ? `<table class="an-table"><thead><tr><th>구분</th><th>갱신일</th><th>새 소비기한</th><th>메모</th><th>파일</th><th>등록</th><th></th></tr></thead><tbody>
+    ${l.docs.map(x => `<tr><td><span class="tag ${DOC_KIND_CLS[x.kind] || ''}">${esc(x.kind)}</span></td><td>${esc(x.doc_date)}</td><td>${esc(x.new_expiry || '-')}</td><td><small>${esc(x.note)}</small></td>
+      <td>${x.filename ? `<a href="#" data-df="${x.id}"><small>${esc(x.filename)}</small></a>` : ''}</td><td><small class="muted">${esc(x.by_name || '')}</small></td>
+      <td>${state.me.role === 'admin' || x.created_by === state.me.id ? `<button class="btn sm" data-dx="${x.id}">✕</button>` : ''}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="muted" style="font-size:13px">아직 등록한 갱신 서류가 없습니다.</div>';
+  openModal(`<h2>📑 서류 갱신 — ${esc(l.item)}</h2>
+    <div class="muted" style="font-size:13px">${esc(l.lot_no || '(재고번호 없음)')}${l.kind ? ' · ' + esc(l.kind) : ''} · 재고 ${kg(l.stock_qty)} kg · 소비기한 ${expTag(l.expiry, today) || '-'}</div>
+    <div id="ldList" style="margin:10px 0">${draw()}</div>
+    <h3 style="font-size:15px;margin:12px 0 4px">+ 갱신 서류 등록</h3>
+    <div class="row" style="gap:12px;flex-wrap:wrap">
+      <div><label>구분</label><div class="row" style="gap:10px">${['식향', '향장', '공통'].map((k, i) => `<label style="margin:0;font-weight:400;display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><input type="radio" name="ldKind" value="${k}" ${i === 0 ? 'checked' : ''} style="width:auto;margin:0"> ${k}${k === '공통' ? ' (둘 다)' : ' 서류'}</label>`).join('')}</div></div>
+      <div><label>갱신일</label><input type="date" id="ldDate" value="${today}" style="width:auto"></div>
+      <div><label>새 소비기한 <small class="muted">(연장됐으면)</small></label><input type="date" id="ldExp" style="width:auto"></div></div>
+    <label>메모</label><input id="ldNote" placeholder="예: COA 재시험, 식약처 수입신고 갱신">
+    <label>파일 <small class="muted">(선택 · PDF/사진)</small></label><input type="file" id="ldFile" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.doc,.docx">
+    <div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ldSave">등록</button></div>`, (bg, close) => {
+    const bind = () => {
+      $$('[data-df]', bg).forEach(a => a.onclick = async e => {
+        e.preventDefault();
+        const res = await fetch(`/api/inventory/docs/${a.dataset.df}/file`, {headers: {Authorization: 'Bearer ' + state.token}});
+        if (!res.ok) return toast('파일을 열 수 없습니다.');
+        window.open(URL.createObjectURL(await res.blob()), '_blank');
+      });
+      $$('[data-dx]', bg).forEach(b => b.onclick = async () => {
+        if (!confirm('이 서류 기록을 지울까요?')) return;
+        await api(`/api/inventory/docs/${b.dataset.dx}`, {method: 'DELETE'});
+        l.docs = l.docs.filter(x => x.id !== +b.dataset.dx); $('#ldList', bg).innerHTML = draw(); bind(); after && after();
+      });
+    };
+    bind();
+    $('#ldSave', bg).onclick = async () => {
+      const fd = new FormData();
+      Object.entries({lot_key: l.key, item: l.item, lot_no: l.lot_no || '', kind: $('[name=ldKind]:checked', bg).value, doc_date: $('#ldDate', bg).value,
+                      new_expiry: $('#ldExp', bg).value, note: $('#ldNote', bg).value}).forEach(([k, v]) => fd.append(k, v));
+      if ($('#ldFile', bg).files[0]) fd.append('file', $('#ldFile', bg).files[0]);
+      $('#ldSave', bg).disabled = true;
+      const res = await fetch('/api/inventory/docs', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      $('#ldSave', bg).disabled = false;
+      if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '등록하지 못했습니다.'; return; }
+      close(); toast('서류 갱신을 등록했습니다.'); after && after();
+    };
+  });
+}
 
 function invMetaLine(meta) {
   if (!meta || !meta.filename) return '<span class="muted">아직 올린 재고 엑셀이 없습니다.</span>';
@@ -2602,6 +2653,10 @@ async function renderInventory() {
             loc: [...new Set(stockLots.map(l => l.location).filter(Boolean))].join(', ')};
   }).sort((a, b) => a.item.localeCompare(b.item));
   const live = d.lots.filter(l => has(l) && !isDead(l));
+  const soonLots = d.lots.filter(l => has(l) && soon(l) && match(l)).sort((a, b) => (a.expiry || '').localeCompare(b.expiry || ''));
+  const soonTodo = d.lots.filter(l => has(l) && soon(l) && !(l.docs || []).length).length;
+  iv.docf ||= 'todo';
+  const soonShow = soonLots.filter(l => iv.docf === 'all' || (iv.docf === 'done') === !!(l.docs || []).length);
   const cnt = {stock: live.length, soon: d.lots.filter(l => has(l) && soon(l)).length, dead: d.lots.filter(l => has(l) && isDead(l)).length, all: d.lots.length};
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:4px"><h3 style="margin:0">📦 재고</h3><span class="spacer"></span>${tools}</div>
@@ -2612,9 +2667,17 @@ async function renderInventory() {
       ${d.can_cost ? `<div class="stat" style="cursor:default"><span class="muted">재고금액 (원가)</span><b>${krw(sum(live.map(l => l.stock_amt || 0)))}원</b></div>` : ''}
       <div class="stat" data-goto="soon"><span class="muted">소비기한 6개월 이내</span><b style="color:#b45309">${cnt.soon}개</b></div>
     </div>
-    <div class="tabs"><button data-t="stock">재고 있음 (${cnt.stock})</button><button data-t="soon">소비기한 임박 (${cnt.soon})</button><button data-t="dead">불용·폐기 (${cnt.dead})</button><button data-t="all">전체 로트 (${cnt.all})</button><button data-t="fc">📈 판매 예상</button></div>
-    <div class="row" style="margin-bottom:10px"><input id="invQ" placeholder="품목 / CAS / 재고번호 / Origin / 위치" value="${esc(iv.q)}" style="max-width:300px"><span class="muted">${rows.length}품목</span></div>
-    ${rows.length ? `<div class="mlist">${rows.map(r => `<div class="mrow" data-item="${esc(r.item)}">
+    <div class="tabs"><button data-t="stock">재고 있음 (${cnt.stock})</button><button data-t="soon">소비기한 임박 (${cnt.soon}${soonTodo ? ` · 갱신 전 ${soonTodo}` : ''})</button><button data-t="dead">불용·폐기 (${cnt.dead})</button><button data-t="all">전체 로트 (${cnt.all})</button><button data-t="fc">📈 판매 예상</button></div>
+    <div class="row" style="margin-bottom:10px"><input id="invQ" placeholder="품목 / CAS / 재고번호 / Origin / 위치" value="${esc(iv.q)}" style="max-width:300px">
+      ${iv.tab === 'soon' ? `<select id="invDocF" style="width:auto">${[['todo', '서류 갱신 전'], ['done', '서류 갱신함'], ['all', '전체']].map(([v, t]) => `<option value="${v}" ${iv.docf === v ? 'selected' : ''}>${t}</option>`).join('')}</select><span class="muted">${soonShow.length}로트</span>` : `<span class="muted">${rows.length}품목</span>`}</div>
+    ${iv.tab === 'soon' ? (soonShow.length ? `<div class="mlist">${soonShow.map(l => `<div class="mrow" data-lotdoc="${esc(l.key)}">
+        <div class="l1"><b>${esc(l.item)}</b><span class="amt">${kg(l.stock_qty)} kg</span></div>
+        <div class="l2"><span>${esc(l.lot_no || '')}</span>${expTag(l.expiry, today)}${lotDocTags(l)}</div></div>`).join('')}</div>
+      <div class="qscroll dtable"><table><thead><tr><th>품목</th><th>재고번호</th><th>유형</th><th style="text-align:right">재고량(kg)</th><th style="white-space:nowrap">소비기한</th><th>서류 갱신 (식향/향장)</th><th></th></tr></thead><tbody>
+      ${soonShow.map(l => `<tr data-lotdoc="${esc(l.key)}"><td class="title">${esc(l.item)}</td><td><small>${esc(l.lot_no || '')}</small></td><td><small>${esc(l.kind || '')}</small></td><td class="money">${kg(l.stock_qty)}</td>
+        <td style="white-space:nowrap">${expTag(l.expiry, today)}</td><td>${lotDocTags(l)}</td><td><button class="btn sm">📑 ${(l.docs || []).length ? '서류' : '갱신 등록'}</button></td></tr>`).join('')}
+      </tbody></table></div>` : `<div class="empty">${iv.docf === 'todo' ? '서류 갱신이 필요한 임박 로트가 없습니다. 👍' : '해당하는 로트가 없습니다.'}</div>`)
+    : rows.length ? `<div class="mlist">${rows.map(r => `<div class="mrow" data-item="${esc(r.item)}">
         <div class="l1"><b>${esc(r.item)}</b><span class="amt">${kg(r.qty)} kg</span></div>
         <div class="l2"><span>로트 ${r.lots.length}</span>${r.loc ? `<span>${esc(r.loc)}</span>` : ''}${d.can_cost && r.amt ? `<span>${krw(r.amt)}원</span>` : ''}${r.exp ? expTag(r.exp, today) : ''}</div></div>`).join('')}</div>
       <div class="qscroll dtable"><table><thead><tr><th>품목</th><th style="text-align:right">재고량(kg)</th>${d.can_cost ? '<th style="text-align:right">재고금액</th>' : ''}<th style="white-space:nowrap">로트</th><th>위치</th><th style="white-space:nowrap">가장 빠른 소비기한</th><th style="white-space:nowrap">최근 출고</th></tr></thead><tbody>
@@ -2628,6 +2691,9 @@ async function renderInventory() {
   let timer;
   $('#invQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { iv.q = e.target.value; renderInventory().then(() => { const i = $('#invQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
   $$('[data-item]').forEach(el => el.onclick = () => openInvItem(groups[el.dataset.item], d.can_cost, today));
+  if ($('#invDocF')) $('#invDocF').onchange = e => { iv.docf = e.target.value; renderInventory(); };
+  const byKey = Object.fromEntries(d.lots.map(l => [l.key, l]));
+  $$('[data-lotdoc]').forEach(el => el.onclick = () => openLotDocs(byKey[el.dataset.lotdoc], renderInventory));
 }
 
 function openInvItem(lots, canCost, today) {
@@ -2639,7 +2705,7 @@ function openInvItem(lots, canCost, today) {
       <div class="muted" style="font-size:12px;line-height:1.7">
         ${[l.location && '위치 ' + l.location, l.info, l.origin && 'Origin ' + l.origin, l.packing && 'Packing ' + l.packing, l.bat_no && 'Bat ' + l.bat_no,
            l.customs_date && '통관 ' + l.customs_date, l.import_qty != null && '수입 ' + kg(l.import_qty) + 'kg', l.transport].filter(Boolean).map(esc).join(' · ')}
-        <br>소비기한 ${expTag(l.expiry, today) || '-'}
+        <br>소비기한 ${expTag(l.expiry, today) || '-'} · 서류 ${lotDocTags(l)} <a href="#" data-lotdoc2="${esc(l.key)}">📑 서류 갱신</a>
         ${canCost ? `<br>원가 <b>${l.cost_krw ? won(l.cost_krw) + '원/kg' : '-'}</b>${l.cost_est === 1 ? ' (외화×환율로 계산)' : l.cost_est === 2 ? ' <span class="tag p-high">원가 없음 → 같은 품목 최근 원가 참고</span>' : ''}${l.cost_fx ? ` · 외화 ${l.cost_fx}${l.rate ? ' × ' + l.rate : ''}` : ''}${l.stock_amt ? ` · 재고금액 ${won(l.stock_amt)}원` : ''}` : ''}
         ${l.order_note ? `<br>발주: ${esc(l.order_note)}` : ''}
       </div>
@@ -2647,6 +2713,7 @@ function openInvItem(lots, canCost, today) {
     </div>`).join('')}
     <div class="actions"><button class="btn primary" data-close>닫기</button></div>`, bg => {
     bg.firstElementChild.classList.add('wide');
+    $$('[data-lotdoc2]', bg).forEach(a => a.onclick = e => { e.preventDefault(); openLotDocs(lots.find(x => x.key === a.dataset.lotdoc2), renderInventory); });
     $$('[data-lot]', bg).forEach(a => a.onclick = async e => {
       e.preventDefault();
       const box = a.nextElementSibling;

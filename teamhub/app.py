@@ -311,6 +311,20 @@ def init_db():
                 note TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
+            CREATE TABLE IF NOT EXISTS lot_docs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lot_key TEXT NOT NULL,
+                item TEXT NOT NULL DEFAULT '',
+                lot_no TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                doc_date TEXT NOT NULL DEFAULT '',
+                new_expiry TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                filename TEXT NOT NULL DEFAULT '',
+                created_by INTEGER,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lot_docs_key ON lot_docs(lot_key);
             CREATE INDEX IF NOT EXISTS idx_inv_ships_lot ON inv_ships(lot_id);
             CREATE TABLE IF NOT EXISTS settlements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3012,6 +3026,68 @@ def inv_settings(c) -> dict:
             "settle_dir": get_setting(c, "settle_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서")}
 
 
+# ---- 📑 소비기한 임박 로트의 서류 갱신 (식향/향장) — 재고 엑셀은 올릴 때마다 바뀌므로 재고번호 기준으로 따로 보관
+LOT_DOC_DIR = Path(os.getenv("TEAMHUB_LOT_DOC_DIR", str(Path(DB_PATH).parent / "lot_docs")))
+LOT_DOC_KINDS = ("식향", "향장", "공통")
+
+
+def lot_key(l: dict) -> str:
+    """로트 구분: 재고번호, 없으면 품목|Bat|통관일."""
+    no = str(l.get("lot_no") or "").strip()
+    return no.lower() if no else f"{str(l.get('item') or '').strip().lower()}|{l.get('bat_no') or ''}|{l.get('customs_date') or ''}"
+
+
+@app.post("/api/inventory/docs")
+async def lot_doc_add(lot_key_: str = Form(..., alias="lot_key"), item: str = Form(""), lot_no: str = Form(""),
+                      kind: str = Form(...), doc_date: str = Form(""), new_expiry: str = Form(""), note: str = Form(""),
+                      file: Optional[UploadFile] = File(None), user: dict = Depends(current_user)):
+    if kind not in LOT_DOC_KINDS:
+        raise HTTPException(400, "서류 구분(식향/향장/공통)을 골라 주세요.")
+    for d in (doc_date, new_expiry):
+        if d and not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+            raise HTTPException(400, "날짜는 YYYY-MM-DD 로 넣어 주세요.")
+    data, fname = b"", ""
+    if file is not None and file.filename:
+        data = await file.read()
+        if len(data) > 20 * 1024 * 1024:
+            raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
+        fname = file.filename.split("/")[-1].split("\\")[-1]
+    with db() as c:
+        did = c.execute("INSERT INTO lot_docs (lot_key, item, lot_no, kind, doc_date, new_expiry, note, filename, created_by, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (lot_key_.strip().lower(), item.strip(), lot_no.strip(), kind, doc_date or datetime.now().strftime("%Y-%m-%d"),
+                         new_expiry, note.strip(), fname, user["id"], now())).lastrowid
+    if data:
+        LOT_DOC_DIR.mkdir(parents=True, exist_ok=True)
+        (LOT_DOC_DIR / str(did)).write_bytes(data)
+    return {"ok": True, "id": did}
+
+
+@app.delete("/api/inventory/docs/{did}")
+def lot_doc_delete(did: int, user: dict = Depends(current_user)):
+    with db() as c:
+        r = c.execute("SELECT created_by FROM lot_docs WHERE id = ?", (did,)).fetchone()
+        if not r:
+            raise HTTPException(404, "서류 기록이 없습니다.")
+        if user["role"] != "admin" and r["created_by"] != user["id"]:
+            raise HTTPException(403, "등록한 사람이나 관리자만 지울 수 있습니다.")
+        c.execute("DELETE FROM lot_docs WHERE id = ?", (did,))
+    (LOT_DOC_DIR / str(did)).unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.get("/api/inventory/docs/{did}/file")
+def lot_doc_file(did: int, user: dict = Depends(current_user)):
+    with db() as c:
+        r = c.execute("SELECT filename FROM lot_docs WHERE id = ?", (did,)).fetchone()
+    f = LOT_DOC_DIR / str(did)
+    if not r or not f.exists():
+        raise HTTPException(404, "파일이 없습니다.")
+    import mimetypes
+    return Response(content=f.read_bytes(), media_type=mimetypes.guess_type(r["filename"])[0] or "application/octet-stream",
+                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + urllib.parse.quote(r["filename"])})
+
+
 @app.get("/api/inventory")
 def inventory_list(user: dict = Depends(current_user)):
     """로트 목록(품목별로 화면에서 묶음). 원가는 볼 수 있는 사람에게만."""
@@ -3021,8 +3097,14 @@ def inventory_list(user: dict = Depends(current_user)):
         last = {r[0]: (r[1], r[2]) for r in c.execute(
             "SELECT lot_id, MAX(ship_date), COUNT(*) FROM inv_ships GROUP BY lot_id")}
         meta = inv_meta(c)
+        docs = {}
+        for r in c.execute("SELECT d.*, u.name AS by_name FROM lot_docs d LEFT JOIN users u ON u.id = d.created_by"
+                           " ORDER BY d.doc_date DESC, d.id DESC"):
+            docs.setdefault(r["lot_key"], []).append(dict(r))
     for l in lots:
         l["last_ship"], l["ship_count"] = last.get(l["id"], ("", 0))
+        l["key"] = lot_key(l)
+        l["docs"] = docs.get(l["key"], [])
         if not cost:
             for k in ("cost_fx", "rate", "cost_krw", "cost_est", "stock_amt"):
                 l.pop(k, None)
