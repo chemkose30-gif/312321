@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from strategy import FEATURES
+from strategy import FEATURES, SIGNED_FEATURES, UNIT_FEATURES
 
 
 class TradeFilter:
@@ -22,10 +22,11 @@ class TradeFilter:
         # 숏 신호는 방향성 특징의 부호를 뒤집어 롱과 같은 의미가 되게 한다
         x = feats.astype(float).copy()
         d = np.where(direction == 0, 1, direction)
-        for name in ("dist_slow", "dist_vwap", "slope"):
+        for name in SIGNED_FEATURES:
             x[:, FEATURES.index(name)] *= d
-        k = FEATURES.index("stoch")
-        x[:, k] = np.where(d > 0, x[:, k], 1 - x[:, k])
+        for name in UNIT_FEATURES:
+            k = FEATURES.index(name)
+            x[:, k] = np.where(d > 0, x[:, k], 1 - x[:, k])
         return x
 
     def fit(self, trades, l2: float = 1.0, epochs: int = 500, lr: float = 0.1) -> "TradeFilter":
@@ -55,4 +56,6 @@ class TradeFilter:
 
     @classmethod
     def from_dict(cls, d: dict | None):
-        return None if not d else cls(**d)
+        if not d or len(d.get("w") or []) != len(FEATURES):   # 특징 수가 다른 예전 필터는 쓰지 않음
+            return None
+        return cls(**d)

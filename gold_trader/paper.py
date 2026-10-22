@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from backtest import Costs
+from backtest import COOLDOWN_MIN, Costs
 from evolve import STATE, load_champion
 from gold import lot_size, margin_usd, pnl_usd
 from learner import TradeFilter
@@ -146,6 +146,8 @@ def _step_slot(st, slot, ch, df, costs, risk, now, verbose) -> None:
     def close_pos(pos, ts, px, reason):
         exit_px = px - pos["dir"] * half
         pnl = pnl_usd(pos["dir"], pos["entry"], exit_px, pos["lots"])
+        if pnl < 0:   # 손실 뒤에는 이 전략이 잠시 쉰다
+            sl_state["cool_until"] = str(pd.Timestamp(ts) + pd.Timedelta(minutes=COOLDOWN_MIN))
         st["balance"] = round(st["balance"] + pnl, 2)
         positions.remove(pos)
         log(ts, f"청산({reason}) {side(pos['dir'])} {exit_px:.2f}  {pos['lots']}랏  손익 {pnl:+.2f}$  "
@@ -205,7 +207,8 @@ def _step_slot(st, slot, ch, df, costs, risk, now, verbose) -> None:
         # 3) 새 신호: 전체·전략별 최대 개수, 전략 안에서는 같은 방향만, 하루 손실 한도 확인
         mine = [x for x in positions if x.get("slot") == slot]
         day_loss = (st["day_start_balance"] - st["balance"]) / st["day_start_balance"] * 100
-        if (s[i] != 0 and sl_d[i] > 0 and len(positions) < risk.max_positions
+        cooling = sl_state.get("cool_until") and t < pd.Timestamp(sl_state["cool_until"])
+        if (s[i] != 0 and sl_d[i] > 0 and not cooling and len(positions) < risk.max_positions
                 and len(mine) < risk.max_per_strategy and all(x["dir"] == s[i] for x in mine)
                 and not (risk.daily_loss_pct and day_loss >= risk.daily_loss_pct)):
             sl_state["pending"] = {"dir": int(s[i]), "sl": float(sl_d[i]), "tp": float(tp_d[i])}

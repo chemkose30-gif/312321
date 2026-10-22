@@ -18,7 +18,11 @@ import pandas as pd
 from gold import news_blackout
 from indicators import atr, ema, session_vwap, stochastic
 
-FEATURES = ["stoch", "dist_slow", "dist_vwap", "atr_ratio", "hour_sin", "hour_cos", "slope"]
+FEATURES = ["stoch", "dist_slow", "dist_vwap", "atr_ratio", "hour_sin", "hour_cos", "slope",
+            "rsi", "range_pos", "regime", "htf_trend", "momentum"]
+# 학습 필터가 매수/매도에 따라 뒤집어 읽는 특징 (부호가 바뀌는 것 / 0~1 위치라 1-x 로 바꾸는 것)
+SIGNED_FEATURES = ("dist_slow", "dist_vwap", "slope", "htf_trend", "momentum")
+UNIT_FEATURES = ("stoch", "rsi", "range_pos")
 
 # 진화가 탐색하는 범위: (최소, 최대, 정수 여부)
 SPACES = {
@@ -27,7 +31,7 @@ SPACES = {
         "stoch_k": (5, 14, True), "stoch_low": (10.0, 35.0, False),
         "atr_sl": (0.8, 3.0, False), "rr": (1.0, 3.0, False), "max_hold": (6, 72, True),
         "start_hour": (0, 12, True), "end_hour": (13, 23, True),
-        "use_vwap": (0, 1, True), "allow_short": (0, 1, True),
+        "use_vwap": (0, 1, True),
     },
     "breakout": {
         "range_start": (0, 3, True), "range_len": (4, 8, True),   # 아시아 범위 (UTC)
@@ -35,25 +39,23 @@ SPACES = {
         "buffer": (0.0, 0.6, False),                               # 범위 밖으로 ATR의 몇 배 더 나가야 돌파로 볼지
         "ema_trend": (50, 300, True), "use_trend": (0, 1, True),   # 큰 추세 방향 돌파만
         "atr_sl": (0.8, 3.0, False), "rr": (1.0, 3.0, False), "max_hold": (6, 72, True),
-        "allow_short": (0, 1, True),
     },
     "meanrev": {
         "band_len": (10, 60, True), "band_k": (1.5, 3.5, False),   # 볼린저 밴드
         "trend_len": (50, 300, True), "guard": (0.2, 2.5, False),  # 추세가 이보다 강하면 쉼
         "atr_sl": (0.8, 3.0, False), "tp_frac": (0.4, 1.2, False), # 익절 = 평균선까지 거리의 몇 배
         "max_hold": (6, 72, True), "start_hour": (0, 12, True), "end_hour": (13, 23, True),
-        "allow_short": (0, 1, True),
     },
 }
 
 DEFAULTS = {
     "trend": {"ema_fast": 9, "ema_slow": 21, "ema_trend": 200, "stoch_k": 5, "stoch_low": 20.0,
               "atr_sl": 1.2, "rr": 1.5, "max_hold": 24, "start_hour": 7, "end_hour": 17,
-              "use_vwap": 1, "allow_short": 1},
+              "use_vwap": 1},
     "breakout": {"range_start": 0, "range_len": 7, "trade_end": 16, "buffer": 0.2, "ema_trend": 200,
-                 "use_trend": 0, "atr_sl": 1.5, "rr": 2.0, "max_hold": 36, "allow_short": 1},
+                 "use_trend": 0, "atr_sl": 1.5, "rr": 2.0, "max_hold": 36},
     "meanrev": {"band_len": 20, "band_k": 2.2, "trend_len": 100, "guard": 1.0, "atr_sl": 1.5,
-                "tp_frac": 0.8, "max_hold": 24, "start_hour": 1, "end_hour": 20, "allow_short": 1},
+                "tp_frac": 0.8, "max_hold": 24, "start_hour": 1, "end_hour": 20},
 }
 for _k, _d in DEFAULTS.items():
     _d["kind"] = _k
@@ -99,6 +101,7 @@ def crossover(a: dict, b: dict, rng: random.Random) -> dict:
 
 
 def repair(p: dict) -> dict:
+    p["allow_short"] = 1   # 모든 전략이 매수·매도를 둘 다 한다 (사용자 설정)
     if kind_of(p) == "trend":
         if p["ema_slow"] <= p["ema_fast"]:
             p["ema_slow"] = p["ema_fast"] + 5
@@ -112,8 +115,22 @@ def _common_mask(df: pd.DataFrame) -> np.ndarray:
     return ~news_blackout(df.index) & ~((df.index.dayofweek == 4) & (hour >= 19))
 
 
+def _rsi(c: pd.Series, n: int = 14) -> pd.Series:
+    d = c.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
+    return 100 - 100 / (1 + up / dn.replace(0, np.nan))
+
+
 def _features(out: pd.DataFrame, df: pd.DataFrame, a, st, fast, slow, vw) -> None:
     c, hour = df["close"], df.index.hour
+    hi20, lo20 = df["high"].rolling(20).max(), df["low"].rolling(20).min()
+    e50, e200 = ema(c, 50), ema(c, 200)
+    out["rsi"] = _rsi(c) / 100                                         # 과매수·과매도
+    out["range_pos"] = (c - lo20) / (hi20 - lo20).replace(0, np.nan)   # 최근 20봉 범위 안 위치 (0 바닥 ~ 1 꼭대기)
+    out["regime"] = (e50.diff(10) / a).abs().clip(upper=5)             # 추세장(큼) / 횡보장(작음)
+    out["htf_trend"] = ((c - e200) / a).clip(-10, 10)                  # 큰 흐름 위·아래
+    out["momentum"] = ((c - c.shift(5)) / a).clip(-10, 10)             # 최근 5봉 움직임
     out["stoch"] = st / 100
     out["dist_slow"] = (c - slow) / a
     out["dist_vwap"] = (c - vw) / a
@@ -193,8 +210,6 @@ def signals(df: pd.DataFrame, p: dict) -> pd.DataFrame:
     mask = _common_mask(df)
     long_ = long_ & mask
     short = short & mask
-    if not p.get("allow_short", 1):
-        short = short & False
     out = pd.DataFrame(index=df.index)
     out["signal"] = np.where(long_, 1, np.where(short, -1, 0))
     out["sl_dist"] = sl

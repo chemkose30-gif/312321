@@ -16,11 +16,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from backtest import COOLDOWN_MIN
 from evolve import STATE, load_champion
 from learner import TradeFilter
 from paper import Risk, side, write
 from strategy import FEATURES, MAGIC_TO_SLOT, SLOTS, signals
 
+PAUSE_MIN_TRADES = 8      # 실전 거래가 이만큼 쌓이면 성적을 본다
+PAUSE_MAX_WIN = 0.25      # 승률이 이보다 낮거나
+PAUSE_MAX_PF = 0.7        # 손익비가 이보다 낮으면 다음 학습 전까지 그 전략을 쉬게 한다
 LIVE_JOURNAL = STATE / "live_journal.csv"
 LIVE_STATE = STATE / "live.json"
 STOP_FILE = Path(__file__).parent / "STOP"
@@ -133,7 +137,33 @@ def tick(dfs: dict[int, pd.DataFrame], symbol: str, risk: Risk, max_lot: float, 
             start_bal = acc.balance - realized
             day_loss = -(realized + floating) / start_bal * 100 if start_bal > 0 else 0.0
 
-        # 4) 운용 중인 전략마다 막 마감된 봉의 신호 확인
+        # 4) 전략별 실전 성적: 마지막 학습 이후의 청산 거래로 부진하면 자동 정지, 최근 손실이면 잠시 쉼
+        from data import _load_offsets
+
+        offset = _load_offsets().get(symbol, 0.0) * 3600
+        recent = mt5.history_deals_get(time.time() - 21 * 86400, time.time() + 86400) or []
+        closes = {s: [] for s in SLOTS}
+        for dl in recent:
+            s_ = MAGIC_TO_SLOT.get(dl.magic)
+            if s_ and dl.entry != mt5.DEAL_ENTRY_IN:
+                closes[s_].append((dl.time - offset, dl.profit + dl.commission + dl.swap))
+        paused = st.setdefault("paused", {})
+        for slot, ch in champs.items():
+            since = time.mktime(time.strptime(ch["checked_at"], "%Y-%m-%d %H:%M:%S")) if ch.get("checked_at") else 0
+            if paused.get(slot) and paused[slot] < since:
+                paused.pop(slot)                       # 새로 학습했으면 정지 해제
+            res = [p for t_, p in sorted(closes[slot]) if t_ >= since]
+            last = res[-10:]
+            if len(last) >= PAUSE_MIN_TRADES and slot not in paused:
+                wins, gain, loss = sum(p > 0 for p in last), sum(p for p in last if p > 0), -sum(p for p in last if p < 0)
+                pf = gain / loss if loss else 99
+                if wins / len(last) < PAUSE_MAX_WIN or pf < PAUSE_MAX_PF:
+                    paused[slot] = time.time()
+                    log(f"[{SLOTS[slot]['name']}] 실전 부진으로 자동 정지 (최근 {len(last)}건 승률 {wins / len(last):.0%}, "
+                        f"손익비 {pf:.2f}) → 다음 학습 때 다시 판단")
+        cool_until = {s: max((t_ for t_, p in closes[s] if p < 0), default=0) + COOLDOWN_MIN * 60 for s in SLOTS}
+
+        # 5) 운용 중인 전략마다 막 마감된 봉의 신호 확인
         for slot, ch in champs.items():
             df = dfs.get(ch.get("timeframe", 5))
             if not ch.get("active") or df is None:
@@ -153,7 +183,11 @@ def tick(dfs: dict[int, pd.DataFrame], symbol: str, risk: Risk, max_lot: float, 
             st["last_signal_bar"][slot] = last_t
             same = [x for x in mine if x.magic == magic]
             reason = None
-            if STOP_FILE.exists():
+            if slot in paused:
+                reason = "실전 부진으로 자동 정지 중 (다음 학습 때 다시 판단)"
+            elif time.time() < cool_until[slot]:
+                reason = f"직전 손실 뒤 {COOLDOWN_MIN}분 쉬는 중"
+            elif STOP_FILE.exists():
                 reason = "STOP 파일 있음"
             elif risk.daily_loss_pct and day_loss >= risk.daily_loss_pct:
                 reason = f"하루 손실 한도 {risk.daily_loss_pct}% 도달"

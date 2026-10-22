@@ -268,7 +268,11 @@ def improve_due(a) -> bool:
     정한 요일·시각이 지났고 그날 아직 발전하지 않았으면 True."""
     from evolve import CHAMPS
 
+    from evolve import VERSION, load_champion as _lc
+
     if not LAST_IMPROVE.exists() or any(not (CHAMPS / f"{s}.json").exists() for s in SLOTS):
+        return True
+    if any(_lc(s).get("version", 1) < VERSION for s in SLOTS):   # 학습 방식이 바뀐 새 버전 → 바로 재학습
         return True
     now = datetime.now()
     days = {int(x) for x in str(a.improve_days).split(",") if x.strip()}

@@ -43,9 +43,6 @@ def levels(p: dict, flt: TradeFilter | None):
     elif "trade_end" in q:
         q["trade_end"] = 24
         out.append(("5. + 돌파 시간 제한 없음", dict(q), None))
-    if not q.get("allow_short", 1):
-        q["allow_short"] = 1
-        out.append(("6. + 숏(매도)도 허용", dict(q), None))
     return out
 
 

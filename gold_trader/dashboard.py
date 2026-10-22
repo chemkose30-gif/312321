@@ -103,10 +103,13 @@ def collect_paper() -> dict:
 
 
 def collect_ai() -> dict:
+    live_f = STATE / "live.json"
+    paused = json.loads(live_f.read_text(encoding="utf-8")).get("paused", {}) if live_f.exists() else {}
     slots = []
     for slot, ch in load_champions().items():
         slots.append({"slot": slot, "name": SLOTS[slot]["name"], "kind": SLOTS[slot]["kind"],
-                      "active": bool(ch.get("active")), "generation": ch.get("generation", 0),
+                      "active": bool(ch.get("active")), "paused": slot in paused,
+                      "generation": ch.get("generation", 0),
                       "timeframe": ch.get("timeframe", 5), "params": ch["params"], "filter": bool(ch.get("filter")),
                       "valid_stats": ch.get("valid_stats"), "by_timeframe": ch.get("by_timeframe"),
                       "promoted_at": ch.get("promoted_at")})

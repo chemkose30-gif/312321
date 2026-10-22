@@ -15,6 +15,9 @@ class Costs:
     slippage: float = 0.10  # 진입/청산 각각에 붙는 미끄러짐 (달러)
 
 
+COOLDOWN_MIN = 30   # 손절(손실) 뒤 같은 전략이 쉬는 시간(분). 손실이 연달아 몰리는 것을 막는다
+
+
 @dataclass
 class Result:
     trades: pd.DataFrame
@@ -37,6 +40,8 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
     rows = []
     n = len(df)
     next_free = 0
+    bar_min = max(1, int(round((df.index[1] - df.index[0]).total_seconds() / 60))) if n > 1 else 5
+    cool_bars = int(np.ceil(COOLDOWN_MIN / bar_min))
     for i in np.flatnonzero((s != 0) & allowed & (sl_d > 0)):
         if i < next_free or i >= n - 1:
             continue
@@ -64,7 +69,7 @@ def run(df: pd.DataFrame, p: dict, costs: Costs = Costs(), trade_filter=None) ->
         exit_px -= d * half
         r = d * (exit_px - entry) / risk
         rows.append((df.index[e], df.index[j], d, entry, exit_px, r, reason, *feats[i]))
-        next_free = j + 1
+        next_free = j + 1 + (cool_bars if r < 0 else 0)
     trades = pd.DataFrame(rows, columns=["entry_time", "exit_time", "dir", "entry", "exit", "r", "reason", *FEATURES])
     return Result(trades, stats(trades))
 
@@ -87,7 +92,12 @@ def stats(t: pd.DataFrame) -> dict:
 
 
 def fitness(st: dict, min_trades: int = 30) -> float:
-    """수익을 낙폭으로 나누고 거래 수가 적으면 강하게 깎는다. 운 좋은 소수 거래를 걸러내기 위함."""
+    """수익을 낙폭으로 나누고 거래 수가 적으면 강하게 깎는다. 운 좋은 소수 거래를 걸러내기 위함.
+
+    수익이 날 때는 승률이 높을수록 더 쳐준다 (승률 50% 기준 1배, 70%면 1.16배, 30%면 0.84배).
+    수익이 없으면 승률로 점수를 올리지 않는다 - 승률만 높고 돈을 잃는 전략을 고르지 않게.
+    """
     if st["trades"] < min_trades:
         return -100.0 + st["trades"]
-    return st["total_r"] / (1.0 + st["max_dd_r"]) * min(1.0, np.sqrt(st["trades"] / 100))
+    base = st["total_r"] / (1.0 + st["max_dd_r"]) * min(1.0, np.sqrt(st["trades"] / 100))
+    return base * (0.6 + 0.8 * st["win_rate"]) if base > 0 else base

@@ -189,7 +189,8 @@ tr:last-child td { border-bottom: 0; }
   <section class="section card">
     <h2>전략별 현황 <span class="sub" id="ai-sched"></span></h2>
     <div class="table-wrap" id="ai-slots"></div>
-    <div class="sub" style="margin-top:8px">검증 = 학습에 쓰지 않은 최근 기간의 성적. 검증에서 수익·손익비 1.1 이상·거래 수 충분해야 운용합니다.
+    <div class="sub" style="margin-top:8px">검증 = 학습에 쓰지 않은 최근 기간의 성적. 검증에서 수익·손익비 1.1 이상·승률 40% 이상·3구간 중 2구간 이상 수익이어야 운용합니다.
+      실전 최근 8~10건이 승률 25% 미만이거나 손익비 0.7 미만이면 다음 학습까지 자동 정지합니다. 손실 뒤 30분은 같은 전략이 쉽니다.
       실제 = 위 탭(AI 자동매매/모의매매)에서 지금까지 한 거래.</div>
   </section>
 
@@ -478,10 +479,10 @@ function render() {
   for (const t of ts) { const k = t.strategy || ""; (real[k] = real[k] || []).push(t); }
   $("ai-slots").innerHTML = table([
     { h: "전략", f: (x) => `<b>${esc(x.name)}</b><br><span class="sub">${KIND[x.kind] || ""}</span>` },
-    { h: "상태", f: (x) => x.active ? '<span class="up">● 운용</span>' : '<span class="sub">○ 대기</span>' },
+    { h: "상태", f: (x) => x.paused ? '<span class="down">❚❚ 정지</span><br><span class="sub">실전 부진</span>' : x.active ? '<span class="up">● 운용</span>' : '<span class="sub">○ 대기</span>' },
     { h: "봉", f: (x) => x.timeframe + "분" },
-    { h: "방식", f: (x) => `<span class="sub">손절 ATR×${x.params.atr_sl} · ${how(x)}<br>최대 ${x.params.max_hold}봉 · ${x.params.allow_short ? "매수·매도" : "매수만"}${x.filter ? " · 학습 필터" : ""}</span>` },
-    { h: "검증", num: 1, f: (x) => { const v = x.valid_stats || {}; return v.trades ? `${v.trades}회 · 승률 ${fmtPct(v.win_rate)}<br>${v.total_r >= 0 ? "+" : ""}${v.total_r}R · 손익비 ${v.profit_factor}` : "-"; } },
+    { h: "방식", f: (x) => `<span class="sub">손절 ATR×${x.params.atr_sl} · ${how(x)}<br>최대 ${x.params.max_hold}봉 · 매수·매도${x.filter ? " · 학습 필터" : ""}</span>` },
+    { h: "검증", num: 1, f: (x) => { const v = x.valid_stats || {}; return v.trades ? `${v.trades}회 · 승률 ${fmtPct(v.win_rate)}<br>${v.total_r >= 0 ? "+" : ""}${v.total_r}R · 손익비 ${v.profit_factor}` + (v.parts_r ? `<br><span class="sub">구간별 ${v.parts_r.map((r) => (r > 0 ? "+" : "") + r).join(" / ")}R</span>` : "") : "-"; } },
     { h: "실제", num: 1, f: (x) => { const r = real[x.name] || []; if (!r.length) return '<span class="sub">아직 없음</span>'; const k = stats(r); return `${k.n}회 · 승률 ${fmtPct(k.winRate)}<br>${pnlHtml(k.total)}`; } },
   ], ai.slots);
   $("ai-history").innerHTML = table([

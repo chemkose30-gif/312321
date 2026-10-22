@@ -21,6 +21,8 @@ from strategy import DEFAULTS, SLOTS, crossover, kind_of, mutate, random_params
 STATE = Path(__file__).parent / "state"
 CHAMPS = STATE / "champions"
 MIN_PF = 1.1
+MIN_WIN = 0.40        # 운용하려면 검증 승률이 이 이상
+VERSION = 2           # 학습 방식이 바뀌면 올린다 → 예전 버전 챔피언은 즉시 다시 학습
 
 
 def _migrate() -> None:
@@ -69,9 +71,24 @@ def evaluate(df, params, costs, flt=None, min_trades=30):
 
 
 def passes(st: dict, min_trades: int) -> bool:
-    """실제로 매매해도 될 만큼 검증 성적이 좋은가."""
+    """실제로 매매해도 될 만큼 검증 성적이 좋은가 (수익, 손익비, 승률, 거래 수, 구간별 안정성)."""
     return bool(st.get("trades", 0) >= min_trades and st.get("total_r", 0) > 0
-                and st.get("profit_factor", 0) >= MIN_PF)
+                and st.get("profit_factor", 0) >= MIN_PF and st.get("win_rate", 0) >= MIN_WIN
+                and st.get("stable", True))
+
+
+def stability(valid: pd.DataFrame, params, costs, flt, parts: int = 3) -> tuple[bool, list]:
+    """검증 기간을 3구간으로 나눠 각 구간 손익(R). 2구간 이상에서 수익이어야 안정적이라고 본다.
+
+    한 구간에서 운 좋게 크게 벌어 전체가 좋아 보이는 전략을 걸러낸다.
+    """
+    trades = run(valid, params, costs, flt).trades
+    if trades.empty:
+        return False, [0.0] * parts
+    edges = pd.date_range(valid.index[0], valid.index[-1], periods=parts + 1)
+    rs = [round(float(trades.loc[(trades.entry_time >= a) & (trades.entry_time <= b), "r"].sum()), 2)
+          for a, b in zip(edges[:-1], edges[1:])]
+    return sum(r > 0 for r in rs) >= parts - 1, rs
 
 
 def search(train, costs, seed_params, pop=24, gens=12, seed=None, min_trades=30, verbose=True):
@@ -138,7 +155,7 @@ def improve_slot(slot: str, dfs: dict[int, pd.DataFrame], cut, costs: Costs, pop
             cands = [(None, *evaluate(valid, p, costs, None, min_valid))]
             tr = run(train, p, costs).trades
             if len(tr) >= 40:
-                for th in (0.45, 0.5, 0.55):
+                for th in (0.45, 0.5, 0.55, 0.6, 0.65):   # 높을수록 확신 높은 신호만 → 승률↑ 거래↓
                     flt = TradeFilter(threshold=th).fit(tr)
                     if run(train, p, costs, flt).stats["trades"] >= min_trades:
                         cands.append((flt, *evaluate(valid, p, costs, flt, min_valid)))
@@ -156,12 +173,16 @@ def improve_slot(slot: str, dfs: dict[int, pd.DataFrame], cut, costs: Costs, pop
         champ = {"timeframe": tf, "params": p, "filter": flt.to_dict() if flt else None,
                  "generation": champ.get("generation", 0) + 1, "valid_stats": st,
                  "by_timeframe": per_tf, "promoted_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        active_st = st
     else:
         champ["valid_stats"] = champ_st or champ.get("valid_stats")
         champ["by_timeframe"] = per_tf
-        active_st = champ_st
-    champ["active"] = passes(active_st, min_valid)
+    vtf = champ["timeframe"]
+    if champ.get("valid_stats") and vtf in dfs:
+        ok, parts = stability(dfs[vtf][dfs[vtf].index >= cut], champ["params"], costs,
+                              TradeFilter.from_dict(champ.get("filter")))
+        champ["valid_stats"] = {**champ["valid_stats"], "stable": ok, "parts_r": parts}
+    champ["active"] = passes(champ.get("valid_stats") or {}, min_valid)
+    champ["version"] = VERSION
     champ["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save_champion(slot, champ)
     log({"time": champ["checked_at"], "slot": slot,
@@ -173,7 +194,7 @@ def improve_slot(slot: str, dfs: dict[int, pd.DataFrame], cut, costs: Costs, pop
         vs = champ.get("valid_stats") or {}
         print(f"  → {cfg['name']}: {'새 전략으로 교체' if promoted else '기존 유지'} "
               f"({champ['timeframe']}분봉, 검증 {vs.get('trades', 0)}회 승률 {vs.get('win_rate', 0):.0%} "
-              f"{vs.get('total_r', 0):+.1f}R 손익비 {vs.get('profit_factor', 0)}) "
+              f"{vs.get('total_r', 0):+.1f}R 손익비 {vs.get('profit_factor', 0)} 구간별 {vs.get('parts_r')}) "
               f"→ {'운용' if champ['active'] else '대기 (검증 기준 미달)'}")
     return champ
 
