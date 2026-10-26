@@ -721,6 +721,7 @@ def home(request: Request, q: str = ""):
     return page("고객 목록", f"""
 <div class="row between"><h1>보험증권 보장분석</h1>
 <form method="post" action="/logout" class="row"><a class="muted" href="/account">{e(me['name'])} · 내 계정</a><button class="btn-ghost btn-sm">로그아웃</button></form></div>
+<p class="no-print"><a class="btn btn-ghost btn-sm" href="/tools/disability" target="_blank">🧮 후유장해 보험금 계산기</a></p>
 {take_flash(request)}
 {todo_html(pid, notes, all_pol, names)}
 <div class="card"><h2>새 고객 증권·약관 분석</h2>{upload_form()}</div>
@@ -1253,6 +1254,132 @@ def matrix(request: Request, cid: int):
 {head}
 <div class="card">{matrix_html(c, policies)}
 <p class="muted">빈 칸('-')은 해당 보장이 없다는 뜻입니다. 금액은 유지 중인 계약의 합계이며, 상담용 참고 자료입니다. 정확한 내용은 증권·약관을 따릅니다.</p></div>""")
+
+
+# 후유장해 보험금 계산기: 가입금액 × 지급률(%). 계산은 브라우저에서(서버 전송 없음).
+# 부위·상태별 참고 지급률 요약 (약관 장해분류표 기준, 실제는 약관·판정 확인 필요)
+DISABILITY_TABLE = {
+    "눈": [("두 눈이 멀었을 때", 100), ("한 눈이 멀었을 때", 50), ("한 눈 교정시력 0.02 이하", 35),
+           ("한 눈 교정시력 0.1 이하", 15), ("한 눈의 뚜렷한 운동장해", 10)],
+    "귀": [("두 귀의 청력을 완전히 잃었을 때", 80), ("한 귀의 청력을 완전히 잃었을 때", 25),
+           ("한 귀의 청력에 심한 장해(70dB 이상)", 15)],
+    "코": [("코의 호흡기능을 완전히 잃었을 때", 15), ("코의 후각기능을 완전히 잃었을 때", 5)],
+    "씹고 말하기": [("씹는기능과 말하는기능을 완전히 잃었을 때", 100), ("씹는기능을 완전히 잃었을 때", 80),
+                 ("말하는기능을 완전히 잃었을 때", 80), ("씹거나 말하는기능에 뚜렷한 장해", 40), ("치아 5개 이상 결손", 5)],
+    "외모(흉터)": [("외모에 뚜렷한 추상(흉터)", 15), ("외모에 약간의 추상(흉터)", 5)],
+    "척추(등뼈)": [("척추에 심한 운동장해", 40), ("뚜렷한 운동장해", 30), ("약간의 운동장해", 10),
+                ("척추에 심한 기형", 50), ("뚜렷한 기형", 30), ("약간의 기형", 15)],
+    "팔": [("두 팔을 손목 이상에서 잃음", 100), ("한 팔을 손목 이상에서 잃음", 60),
+          ("한 팔 3대 관절 중 1관절 완전 강직", 30), ("한 팔에 뚜렷한 장해", 20), ("한 팔에 약간의 장해", 5)],
+    "다리": [("두 다리를 발목 이상에서 잃음", 100), ("한 다리를 발목 이상에서 잃음", 60),
+            ("한 다리 3대 관절 중 1관절 완전 강직", 30), ("한 다리에 뚜렷한 장해", 20), ("한 다리에 약간의 장해", 5),
+            ("한 다리가 5cm 이상 짧아짐", 30)],
+    "손가락": [("한 손 다섯 손가락 모두 잃음", 55), ("한 손 엄지손가락을 잃음", 15), ("한 손 엄지손가락 기능장해", 10),
+             ("엄지 외 손가락 1개를 잃음", 10)],
+    "발가락": [("한 발 다섯 발가락 모두 잃음", 30), ("한 발 엄지발가락을 잃음", 8), ("엄지 외 발가락 1개를 잃음", 5)],
+    "신경계·정신": [("일상생활 기본동작에 완전 제한(항상 간호)", 100), ("뚜렷한 제한", 40), ("약간의 제한", 10)],
+    "흉복부장기": [("흉복부 장기에 심한 장해", 75), ("뚜렷한 장해", 50), ("약간의 장해", 15),
+                ("비장 또는 신장을 잃음", 15)],
+    "체간골": [("어깨뼈·골반뼈 등에 뚜렷한 기형", 15)],
+}
+
+
+@app.get("/tools/disability", response_class=HTMLResponse)
+def disability_calc(request: Request, amount: int = 0):
+    planner_id(request)
+    import json as _json
+    table_js = _json.dumps(DISABILITY_TABLE, ensure_ascii=False)
+    init_man = max(0, amount // 10000) or 3000
+    body = f"""
+<p class="no-print"><a href="/">← 홈</a></p>
+<div class="card"><h1>후유장해 보험금 계산기</h1>
+<p class="muted" style="margin-top:-4px">가입금액 × 지급률(%) = 예상 보험금. 비례 지급형 담보의 단순 계산이며, 실제 지급 여부·금액은 약관과 장해 판정 결과를 확인해야 합니다.</p></div>
+
+<div class="card"><h2>① 계산 조건</h2>
+<label>후유장해 가입금액 (만원)</label>
+<div class="row"><input type="number" id="amt" value="{init_man}" min="0" style="max-width:160px"> <span class="muted">만원</span>
+<button type="button" class="btn-ghost btn-sm" onclick="setAmt(3000)">3천만원</button>
+<button type="button" class="btn-ghost btn-sm" onclick="setAmt(5000)">5천만원</button>
+<button type="button" class="btn-ghost btn-sm" onclick="setAmt(10000)">1억원</button></div>
+
+<label style="margin-top:14px">부위·상태로 지급률 선택 (참고)</label>
+<div class="row"><select id="part" onchange="fillStates()" style="max-width:200px"><option value="">부위 선택</option></select>
+<select id="state" onchange="useState()" style="flex:1;min-width:200px"><option value="">부위를 먼저 선택</option></select></div>
+<p class="muted">약관 장해분류표 요약입니다. 가입한 계약의 약관과 의학적 판정기준을 확인하세요.</p>
+
+<label>장해율(지급률) %</label>
+<div class="row"><input type="number" id="rate" value="15" min="0" max="100" step="0.1" style="max-width:120px"> <span class="muted">%</span>
+<span id="quick"></span></div>
+</div>
+
+<div class="card"><h2>② 예상 보험금</h2>
+<div style="font-size:30px;font-weight:800" id="result">-</div>
+<div class="muted" id="resultWon"></div>
+<div style="margin-top:8px" id="how"></div>
+<p class="row no-print" style="margin-top:10px"><button type="button" class="btn-sm" onclick="copyText()">결과 문구 복사</button></p>
+<p class="muted" id="copied" style="display:none">복사됐습니다.</p>
+</div>
+
+<div class="card"><h2>③ 가입금액 3개 비교 (현재 지급률 기준)</h2>
+<div class="grid" id="cmp"></div></div>
+
+<div class="card"><h2>④ 상담 설명 문구</h2>
+<p id="script" class="note-body" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px"></p></div>
+
+<script>
+var TABLE = {table_js};
+function won(n){{ return (Math.floor(n)).toLocaleString('ko-KR') + '원'; }}
+function man(n){{
+  n = Math.floor(n);
+  if(n>=100000000 && n%100000000===0) return (n/100000000)+'억원';
+  if(n>=10000) return (Math.floor(n/10000)).toLocaleString('ko-KR')+'만원';
+  return n.toLocaleString('ko-KR')+'원';
+}}
+function amtWon(){{ return (parseFloat(document.getElementById('amt').value)||0)*10000; }}
+function rate(){{ return Math.min(100, Math.max(0, parseFloat(document.getElementById('rate').value)||0)); }}
+function setAmt(m){{ document.getElementById('amt').value=m; calc(); }}
+function setRate(r){{ document.getElementById('rate').value=r; calc(); }}
+function fillParts(){{
+  var p=document.getElementById('part');
+  Object.keys(TABLE).forEach(function(k){{ var o=document.createElement('option'); o.value=k; o.textContent=k; p.appendChild(o); }});
+}}
+function fillStates(){{
+  var part=document.getElementById('part').value, s=document.getElementById('state');
+  s.innerHTML='';
+  if(!part){{ s.innerHTML='<option value="">부위를 먼저 선택</option>'; return; }}
+  var o0=document.createElement('option'); o0.value=''; o0.textContent='상태 선택'; s.appendChild(o0);
+  TABLE[part].forEach(function(it){{ var o=document.createElement('option'); o.value=it[1]; o.textContent=it[0]+' ('+it[1]+'%)'; s.appendChild(o); }});
+}}
+function useState(){{ var v=document.getElementById('state').value; if(v){{ document.getElementById('rate').value=v; calc(); }} }}
+function quickBtns(){{
+  var q=document.getElementById('quick');
+  [3,5,10,15,30,50,80,100].forEach(function(r){{ var b=document.createElement('button'); b.type='button'; b.className='btn-ghost btn-sm'; b.textContent=r+'%'; b.onclick=function(){{setRate(r);}}; q.appendChild(b); }});
+}}
+function calc(){{
+  var a=amtWon(), r=rate(), pay=Math.floor(a*r/100);
+  document.getElementById('result').textContent = man(pay);
+  document.getElementById('resultWon').textContent = won(pay);
+  document.getElementById('how').innerHTML = '<span class="muted">계산: '+man(a)+' × '+r+'% = '+won(pay)+'</span>';
+  var cmp=document.getElementById('cmp'); cmp.innerHTML='';
+  [3000,5000,10000].forEach(function(m){{
+    var pv=Math.floor(m*10000*r/100);
+    var d=document.createElement('div'); d.className='stat';
+    d.innerHTML='<span class="muted">가입금액 '+man(m*10000)+'</span><b>'+man(pv)+'</b><span class="muted">'+won(pv)+'</span>';
+    cmp.appendChild(d);
+  }});
+  document.getElementById('script').textContent =
+    '가입금액 '+man(a)+'에 지급률 '+r+'%를 적용하면 예상 보험금은 '+won(pay)+'입니다. '+
+    '같은 지급률이라도 가입금액에 따라 금액이 달라집니다. 실제 지급 여부와 금액은 가입하신 계약의 약관과 장해 판정 결과를 확인해야 합니다.';
+}}
+function copyText(){{
+  var t=document.getElementById('script').textContent;
+  function ok(){{ var c=document.getElementById('copied'); c.style.display='block'; setTimeout(function(){{c.style.display='none';}},1500); }}
+  if(navigator.clipboard&&navigator.clipboard.writeText){{ navigator.clipboard.writeText(t).then(ok,function(){{ok();}}); }} else {{ ok(); }}
+}}
+['amt','rate'].forEach(function(id){{ document.getElementById(id).addEventListener('input', calc); }});
+fillParts(); quickBtns(); calc();
+</script>"""
+    return page("후유장해 계산기", body)
 
 
 @app.post("/customers/{cid}/info")
