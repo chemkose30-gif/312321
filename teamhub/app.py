@@ -2581,8 +2581,17 @@ def sales_analytics(year: int = 0, basis: str = "supply", company: str = "", _: 
             yearly.setdefault(name, {})[y] = v or 0
         year_totals = {y: v or 0 for y, v in c.execute(
             f"SELECT CAST(substr(quote_date, 1, 4) AS INT), SUM({col}) {base} GROUP BY 1")}
+        # 전년 같은 기간: 그 해 자료가 끝난 날(올해면 오늘까지 중 마지막 거래일)과 같은 날짜까지의 전년 금액
+        last = c.execute(f"SELECT MAX(quote_date) {base} AND substr(quote_date, 1, 4) = ?", (str(year),)).fetchone()[0] or ""
+        cut = last[5:10] if last and year == years[-1] and last[5:10] < "12-31" else "12-31"
+        prev_same = {n: v or 0 for n, v in c.execute(
+            f"SELECT canon(customer_name), SUM({col}) {base} AND quote_date BETWEEN ? AND ? GROUP BY 1",
+            (f"{year - 1}-01-01", f"{year - 1}-{cut}"))}
+    for e in cust.values():
+        e["prev_same"] = prev_same.get(e["name"], 0)
     return {"years": years, "year": year, "monthly": monthly, "customers": list(cust.values()),
-            "yearly": yearly, "year_totals": year_totals}
+            "yearly": yearly, "year_totals": year_totals, "cut": cut, "last": last,
+            "prev_same": prev_same, "prev_same_total": sum(prev_same.values())}
 
 
 def co_filter(c, company: str, alias: str = "") -> str:

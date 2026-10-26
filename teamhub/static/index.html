@@ -3317,7 +3317,9 @@ async function renderAnalytics() {
   const upto = Y === now.getFullYear() ? now.getMonth() + 1 : (Y === d.years[d.years.length - 1] && lastDataM ? lastDataM : 12);
   const cust = an.cust && d.customers.find(c => c.name === an.cust);
   const curM = cust ? cust.cur : d.monthly[Y], prevM = cust ? cust.prev : (d.monthly[P] || Array(12).fill(0));
-  const ytd = sum(curM.slice(0, upto)), pytd = sum(prevM.slice(0, upto));
+  // 올해처럼 자료가 연중인 해는 전년 '같은 날짜까지'와 비교 (이번 달이 덜 지났는데 전년 그 달 전체와 비교하지 않게)
+  const partial = d.cut && d.cut !== '12-31', cutTxt = partial ? `${+d.cut.slice(0, 2)}/${+d.cut.slice(3)}` : '';
+  const ytd = sum(curM.slice(0, upto)), pytd = partial ? (cust ? cust.prev_same : d.prev_same_total) : sum(prevM.slice(0, upto));
   const years = d.years.filter(y => y <= Y).slice(-8);
   const custYearly = name => years.map(y => (d.yearly[name] || {})[y] || 0);
   const yearVals = an.cust ? custYearly(an.cust) : years.map(y => d.year_totals[y] || 0);
@@ -3333,8 +3335,8 @@ async function renderAnalytics() {
     <div class="tabs"><button data-mode="month">월별 비교 (${Y} vs ${P})</button><button data-mode="year">연별 비교</button><button data-mode="decline">📉 감소·이탈 거래처</button><button data-mode="prod">📦 제품·거래처 판매기록</button><button data-mode="new">🆕 신규 거래처·품목</button></div>
     ${exNote}
     <div class="stats stats4">
-      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
-      <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간</span><b>${krw(pytd)}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${Y}년 ${partial ? `1/1~${cutTxt}` : upto < 12 ? `1~${upto}월` : '연간'} 납품</span><b>${krw(ytd)}원</b></div>
+      <div class="stat" style="cursor:default"><span class="muted">${P}년 같은 기간${partial ? ` (1/1~${cutTxt})` : ''}</span><b>${krw(pytd)}원</b></div>
       <div class="stat" style="cursor:default"><span class="muted">전년 대비</span><b style="font-size:20px">${deltaHtml(ytd, pytd)}</b></div>
       <div class="stat" style="cursor:default"><span class="muted">${Y}년 거래처 수</span><b>${d.customers.filter(c => sum(c.cur)).length}곳</b></div>
     </div>
@@ -3343,16 +3345,17 @@ async function renderAnalytics() {
     <div id="anChart"></div>
     <div class="row" style="margin:14px 0 6px"><b>${an.mode === 'month' ? `${Y}년 월별` : '연도별'} 거래처 납품금액</b><span class="muted" style="font-size:12px">(단위: 만원 · ${an.mode === 'month' ? `${rows.length}곳` : `${yRows.length}곳`})</span></div>
     <div class="qscroll" style="max-height:520px;overflow:auto">
-    ${an.mode === 'month' ? `<table class="an-table"><thead><tr><th>거래처</th>${months.map(m => `<th class="num">${m}</th>`).join('')}<th class="num">${Y} 합계</th><th class="num">${P} 합계</th><th class="num">전년 대비</th></tr></thead><tbody>
+    ${an.mode === 'month' ? `<table class="an-table"><thead><tr><th>거래처</th>${months.map(m => `<th class="num">${m}</th>`).join('')}<th class="num">${Y} 합계</th><th class="num">${P} 합계</th><th class="num">전년 ${partial ? '같은 기간 ' : ''}대비</th></tr></thead><tbody>
         ${rows.map(c => `<tr data-c="${esc(c.name)}" class="${c.name === an.cust ? 'sel' : ''}"><td title="${esc(c.name)}">${esc(c.name)}</td>${c.cur.map(v => `<td class="num">${man(v)}</td>`).join('')}
-          <td class="num"><b>${man(sum(c.cur))}</b></td><td class="num">${man(sum(c.prev))}</td><td class="num">${deltaHtml(sum(c.cur.slice(0, upto)), sum(c.prev.slice(0, upto)))}</td></tr>`).join('')}
+          <td class="num"><b>${man(sum(c.cur))}</b></td><td class="num">${man(sum(c.prev))}</td><td class="num">${partial ? deltaHtml(sum(c.cur), c.prev_same || 0) : deltaHtml(sum(c.cur.slice(0, upto)), sum(c.prev.slice(0, upto)))}</td></tr>`).join('')}
       </tbody></table>`
-    : `<table class="an-table"><thead><tr><th>거래처</th>${years.map(y => `<th class="num">${y}</th>`).join('')}<th class="num">전년 대비</th></tr></thead><tbody>
+    : `<table class="an-table"><thead><tr><th>거래처</th>${years.map(y => `<th class="num">${y}</th>`).join('')}<th class="num">전년 ${partial && years[years.length - 1] === Y ? '같은 기간 ' : ''}대비</th></tr></thead><tbody>
         ${yRows.map(r => `<tr data-c="${esc(r.name)}" class="${r.name === an.cust ? 'sel' : ''}"><td title="${esc(r.name)}">${esc(r.name)}</td>${r.vals.map(v => `<td class="num">${man(v)}</td>`).join('')}
-          <td class="num">${r.vals.length > 1 ? deltaHtml(r.vals[r.vals.length - 1], r.vals[r.vals.length - 2]) : '-'}</td></tr>`).join('')}
+          <td class="num">${r.vals.length > 1 ? (partial && years[years.length - 1] === Y ? deltaHtml(r.vals[r.vals.length - 1], (d.prev_same || {})[r.name] || 0) : deltaHtml(r.vals[r.vals.length - 1], r.vals[r.vals.length - 2])) : '-'}</td></tr>`).join('')}
       </tbody></table>`}
     </div>
-    ${upto < 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${upto}월까지라서 전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
+    ${partial ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${cutTxt}까지라서 전년 대비는 ${P}년 1/1~${cutTxt} (같은 날짜까지)와 비교합니다. ${P} 합계 칸은 ${P}년 전체입니다.</div>`
+      : upto < 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${upto}월까지라서 전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
   </div>`;
   if (an.mode === 'month') {
     const cum = (arr, n) => { let t = 0; return arr.map((v, i) => i < n ? (t += v) : null); };
