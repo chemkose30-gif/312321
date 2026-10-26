@@ -80,12 +80,17 @@ e = html.escape
 
 # ── 공통 ──────────────────────────────────────────────────────────────────────
 STYLE = """
-:root { --bg:#ffffff; --card:#ffffff; --text:#1b2420; --muted:#6b776f; --line:#7ec9a3; --line-soft:#d6ece0; --accent:#15a04a;
+:root { color-scheme:light; --bg:#ffffff; --card:#ffffff; --text:#1b2420; --muted:#6b776f; --line:#7ec9a3; --line-soft:#d6ece0; --accent:#15a04a;
         --accent-strong:#12833d; --accent-weak:#eaf8ef; --danger:#dc2626; --warn-bg:#fef2f2; --warn:#b91c1c;
         --info-bg:#eafaf1; --info:#15803d; --ok:#16a34a; --shadow:0 1px 2px rgba(16,34,26,.04); }
-@media (prefers-color-scheme: dark) { :root { --bg:#0e1816; --card:#152220; --text:#e6efec; --muted:#8fa8a2; --line:#2f7a52; --line-soft:#22413a;
+/* 어둡게 보기는 사용자가 직접 선택했을 때만 (기본은 흰색) */
+:root[data-theme="dark"] { color-scheme:dark; --bg:#0e1816; --card:#152220; --text:#e6efec; --muted:#8fa8a2; --line:#2f7a52; --line-soft:#22413a;
         --accent:#38c472; --accent-strong:#5ad78a; --accent-weak:#16302c; --danger:#f06a66; --warn-bg:#3a1f1c; --warn:#f6a79b;
-        --info-bg:#123330; --info:#5fd6c7; --ok:#4ade80; --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25); color-scheme:dark; } }
+        --info-bg:#123330; --info:#5fd6c7; --ok:#4ade80; --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25); }
+.theme-toggle { position:fixed; right:16px; bottom:16px; z-index:50; width:44px; height:44px; border-radius:50%;
+  border:1.5px solid var(--line); background:var(--card); color:var(--text); font-size:19px; cursor:pointer; box-shadow:var(--shadow);
+  padding:0; line-height:1; }
+@media print { .theme-toggle { display:none; } }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 -apple-system, "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
 main { max-width:980px; margin:0 auto; padding:24px 18px 64px; }
@@ -161,7 +166,12 @@ details summary { cursor:pointer; }
 def page(title: str, body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
-<title>{e(title)}</title><style>{STYLE}</style></head><body><main>{body}</main></body></html>""", status_code=status)
+<meta name="color-scheme" content="light dark">
+<title>{e(title)}</title><style>{STYLE}</style>
+<script>try{{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');}}catch(e){{}}</script>
+</head><body><main>{body}</main>
+<button type="button" class="theme-toggle no-print" title="밝게/어둡게" onclick="(function(){{var r=document.documentElement,d=r.getAttribute('data-theme')==='dark';if(d){{r.removeAttribute('data-theme');}}else{{r.setAttribute('data-theme','dark');}}try{{localStorage.setItem('theme',d?'light':'dark');}}catch(e){{}}this.textContent=d?'\\u263D':'\\u2600';}}).call(this)">&#9789;</button>
+</body></html>""", status_code=status)
 
 
 won = analysis.won
