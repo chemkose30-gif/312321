@@ -3345,16 +3345,16 @@ async function renderAnalytics() {
     <div id="anChart"></div>
     <div class="row" style="margin:14px 0 6px"><b>${an.mode === 'month' ? `${Y}년 월별` : '연도별'} 거래처 납품금액</b><span class="muted" style="font-size:12px">(단위: 만원 · ${an.mode === 'month' ? `${rows.length}곳` : `${yRows.length}곳`})</span></div>
     <div class="qscroll" style="max-height:520px;overflow:auto">
-    ${an.mode === 'month' ? `<table class="an-table"><thead><tr><th>거래처</th>${months.map(m => `<th class="num">${m}</th>`).join('')}<th class="num">${Y} 합계</th><th class="num">${P} 합계</th><th class="num">전년 ${partial ? '같은 기간 ' : ''}대비</th></tr></thead><tbody>
+    ${an.mode === 'month' ? `<table class="an-table"><thead><tr><th>거래처</th>${months.map(m => `<th class="num">${m}</th>`).join('')}<th class="num">${Y} 합계${partial ? `<br><small class="muted">1/1~${cutTxt}</small>` : ''}</th>${partial ? `<th class="num">${P} 같은 기간<br><small class="muted">1/1~${cutTxt}</small></th>` : ''}<th class="num">${P} ${partial ? '전체' : '합계'}</th><th class="num">전년 ${partial ? '같은 기간 ' : ''}대비</th></tr></thead><tbody>
         ${rows.map(c => `<tr data-c="${esc(c.name)}" class="${c.name === an.cust ? 'sel' : ''}"><td title="${esc(c.name)}">${esc(c.name)}</td>${c.cur.map(v => `<td class="num">${man(v)}</td>`).join('')}
-          <td class="num"><b>${man(sum(c.cur))}</b></td><td class="num">${man(sum(c.prev))}</td><td class="num">${partial ? deltaHtml(sum(c.cur), c.prev_same || 0) : deltaHtml(sum(c.cur.slice(0, upto)), sum(c.prev.slice(0, upto)))}</td></tr>`).join('')}
+          <td class="num"><b>${man(sum(c.cur))}</b></td>${partial ? `<td class="num"><b>${man(c.prev_same || 0)}</b></td>` : ''}<td class="num"><small class="muted">${man(sum(c.prev))}</small></td><td class="num">${partial ? deltaHtml(sum(c.cur), c.prev_same || 0) : deltaHtml(sum(c.cur.slice(0, upto)), sum(c.prev.slice(0, upto)))}</td></tr>`).join('')}
       </tbody></table>`
     : `<table class="an-table"><thead><tr><th>거래처</th>${years.map(y => `<th class="num">${y}</th>`).join('')}<th class="num">전년 ${partial && years[years.length - 1] === Y ? '같은 기간 ' : ''}대비</th></tr></thead><tbody>
         ${yRows.map(r => `<tr data-c="${esc(r.name)}" class="${r.name === an.cust ? 'sel' : ''}"><td title="${esc(r.name)}">${esc(r.name)}</td>${r.vals.map(v => `<td class="num">${man(v)}</td>`).join('')}
           <td class="num">${r.vals.length > 1 ? (partial && years[years.length - 1] === Y ? deltaHtml(r.vals[r.vals.length - 1], (d.prev_same || {})[r.name] || 0) : deltaHtml(r.vals[r.vals.length - 1], r.vals[r.vals.length - 2])) : '-'}</td></tr>`).join('')}
       </tbody></table>`}
     </div>
-    ${partial ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${cutTxt}까지라서 전년 대비는 ${P}년 1/1~${cutTxt} (같은 날짜까지)와 비교합니다. ${P} 합계 칸은 ${P}년 전체입니다.</div>`
+    ${partial ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${cutTxt}까지라서 전년 대비는 ${P}년 1/1~${cutTxt} (같은 날짜까지, "${P} 같은 기간" 칸)와 비교합니다. "${P} 전체" 칸은 참고용 ${P}년 1년 합계입니다.</div>`
       : upto < 12 ? `<div class="muted" style="font-size:12px;margin-top:6px">${Y}년 자료가 ${upto}월까지라서 전년 대비는 ${P}년 1~${upto}월과 비교합니다.</div>` : ''}
   </div>`;
   if (an.mode === 'month') {
