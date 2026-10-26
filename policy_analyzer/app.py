@@ -108,6 +108,10 @@ select, input[type=date] { padding:9px 10px; border:1px solid var(--line); borde
 .report-photos { display:flex; flex-wrap:wrap; gap:10px; }
 .report-img { max-width:260px; width:100%; border:1px solid var(--line); border-radius:8px; }
 @media print { .report-img { max-width:46%; } }
+table.matrix td, table.matrix th { border:1px solid var(--line); }
+td.mx-g { color:#fff; font-weight:700; text-align:center; white-space:nowrap; width:70px; font-size:13px; }
+td.mx-l { font-size:13.5px; } td.mx-v { font-weight:600; }
+@media print { table.matrix td, table.matrix th { border:1px solid #999; } td.mx-g { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
 .tag { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
 .overdue { color:var(--warn); font-weight:600; }
 .tag.warn-tag { background:var(--warn-bg); color:var(--warn); font-weight:600; }
@@ -1156,7 +1160,8 @@ def customer_page(request: Request, cid: int):
     return page(c.get("name") or "고객", f"""
 <p class="no-print"><a href="/">← 고객 목록</a></p>
 <div class="row between"><h1>{customer_title(c)}</h1>
-<div class="row no-print"><a class="btn" href="/customers/{cid}/report" target="_blank">고객용 리포트</a>
+<div class="row no-print"><a class="btn" href="/customers/{cid}/matrix" target="_blank">보장분석표</a>
+<a class="btn" href="/customers/{cid}/report" target="_blank">고객용 리포트</a>
 <form method="post" action="/customers/{cid}/delete" onsubmit="return confirm('이 고객과 모든 계약 정보를 삭제할까요? 되돌릴 수 없습니다.')">
 <button class="btn-danger btn-sm">고객 삭제</button></form></div></div>
 {take_flash(request)}
@@ -1193,6 +1198,61 @@ def report_photos(pid: int, cid: int) -> str:
         return ""
     imgs = "".join(f'<img src="/note-images/{i}" alt="첨부 사진" class="report-img">' for i in ids)
     return f'<div class="card"><h2>첨부 사진</h2><div class="report-photos">{imgs}</div></div>'
+
+
+# 보장분석표: 대분류별 표준 담보 항목. (그룹명, 색, [(표시이름, 분류, 핵심여부)])
+MATRIX_GROUPS = [
+    ("사망", "#c0392b", [("일반사망(생명보험)", "일반사망", True), ("질병사망(손해보험)", "질병사망", False), ("상해사망", "상해사망", False)]),
+    ("후유장해", "#7f8c8d", [("질병후유장해", "질병후유장해", True), ("상해후유장해", "상해후유장해", False)]),
+    ("암", "#2e4a8b", [("일반암(최초1회한)", "일반암", True), ("유사암·소액암", "유사암·소액암", False), ("특정암", "특정암", False)]),
+    ("암치료비", "#2e6da4", [("항암방사선·약물·표적 등", "암치료비", True), ("암직접치료 통원", "암통원", False)]),
+    ("뇌", "#16a085", [("뇌혈관질환 100%", "뇌혈관질환", True), ("뇌졸중·뇌출혈", "뇌졸중·뇌출혈", False)]),
+    ("심장", "#2980b9", [("허혈성심장질환 100%", "허혈성심장질환", True), ("급성심근경색", "급성심근경색", False)]),
+    ("수술", "#8e44ad", [("질병수술비", "질병수술비", True), ("상해수술비", "상해수술비", False)]),
+    ("입원", "#d98880", [("입원일당(1일)", "입원일당", False)]),
+    ("간병", "#e67e22", [("치매·간병(장기요양)", "치매·간병", False)]),
+    ("실손의료비", "#27ae60", [("실손의료비", "실손의료비", True)]),
+    ("배상책임", "#2c3e50", [("일상생활 배상책임", "배상책임", False)]),
+    ("운전자", "#c0392b", [("운전자", "운전자", False)]),
+    ("치아", "#16a085", [("치아", "치아", False)]),
+    ("기타", "#7f8c8d", [("기타", "기타", False)]),
+]
+
+
+def matrix_html(c: dict, policies: list[dict]) -> str:
+    a = analysis.analyze(c, policies)
+    totals = {s["category"]: s["amount"] for s in a["summary"]}
+    rows = []
+    for gname, color, items in MATRIX_GROUPS:
+        span = len(items)
+        for idx, (label, cat, star) in enumerate(items):
+            amt = totals.get(cat, 0)
+            cell = f'<span class="enough">{won(amt)}</span>' if amt else '<span class="under">-</span>'
+            gcell = (f'<td class="mx-g" rowspan="{span}" style="background:{color}">{e(gname)}</td>'
+                     if idx == 0 else "")
+            rows.append(f'<tr>{gcell}<td class="mx-l">{"★ " if star else ""}{e(label)}</td>'
+                        f'<td class="num mx-v">{cell}</td></tr>')
+    tbl = f'''<div class="tbl-wrap"><table class="matrix"><tr><th colspan="2">보장 항목</th><th class="num">가입금액(합계)</th></tr>{"".join(rows)}</table></div>'''
+    return tbl
+
+
+@app.get("/customers/{cid}/matrix", response_class=HTMLResponse)
+def matrix(request: Request, cid: int):
+    pid = planner_id(request)
+    c = get_customer_or_404(pid, cid)
+    log(request, pid, "view_report", f"고객#{cid}")
+    me = store.get_planner(pid)
+    policies = store.list_policies(pid, cid)
+    a = analysis.analyze(c, policies)
+    head = f"""<div class="card"><div class="row between"><h1>보장분석 보고서</h1></div>
+<p><b>{e(c.get('name') or '')}</b> 님 · {ymd(c.get('birth_date'))} · {e(c.get('gender') or '')} · 보험나이 {a['age'] if a['age'] is not None else '-'}세<br>
+<span class="muted">작성일 {datetime.now():%Y.%m.%d} · 담당 {e(me['name'])} · 유지계약 {a['active_count']}건 · 월 보험료 합계 {won(a['monthly_premium'])}</span></p></div>"""
+    return page(f"{c.get('name') or '고객'} 보장분석표", f"""
+<div class="row between no-print" style="margin-bottom:12px"><span class="muted">★ 는 핵심 보장. 인쇄 → 'PDF로 저장'으로 받을 수 있습니다.</span>
+<button onclick="print()">인쇄 / PDF 저장</button></div>
+{head}
+<div class="card">{matrix_html(c, policies)}
+<p class="muted">빈 칸('-')은 해당 보장이 없다는 뜻입니다. 금액은 유지 중인 계약의 합계이며, 상담용 참고 자료입니다. 정확한 내용은 증권·약관을 따릅니다.</p></div>""")
 
 
 @app.post("/customers/{cid}/info")
