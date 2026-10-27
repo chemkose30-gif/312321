@@ -4983,6 +4983,22 @@ def ledger_build(c, upto: str, company: str) -> dict:
     return {"rows": out, "other": other, "year": year, "no_wh": no_wh}
 
 
+# 일계장 '매출액' 시트 일자별 칸: 주말·공휴일(근로자의날 포함)은 연한 노란색 — 회사 일계장 양식과 같은 표시
+KR_HOLIDAYS = {
+    2025: "01-01 01-27 01-28 01-29 01-30 03-01 03-03 05-01 05-05 05-06 06-03 06-06 08-15 10-03 10-05 10-06 10-07 10-08 10-09 12-25",
+    2026: "01-01 02-16 02-17 02-18 03-01 03-02 05-01 05-05 05-24 05-25 06-03 06-06 08-15 08-17 09-24 09-25 09-26 10-03 10-05 10-09 12-25",
+    2027: "01-01 02-06 02-07 02-08 02-09 03-01 05-01 05-05 05-13 06-06 08-15 08-16 09-14 09-15 09-16 10-03 10-04 10-09 10-11 12-25",
+}
+
+
+def is_day_off(y: int, m: int, d: int) -> bool:
+    try:
+        wd = datetime(y, m, d).weekday()
+    except ValueError:
+        return False
+    return wd >= 5 or f"{m:02d}-{d:02d}" in KR_HOLIDAYS.get(y, "").split()
+
+
 def _rewrite_rows(ws, first: int, values: list, mark=None):
     """first 행부터 values 를 쓰되, 원래 첫 데이터 행의 서식을 모든 새 행에 입히고, 데이터 뒤에 있던 행(합계·색칠된 빈 행)은 그 아래로 옮김.
     mark(i) 가 참인 행은 노란색."""
@@ -5061,6 +5077,8 @@ def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
                         d[0] += x["sales"]
                         d[1] += x["sales"] if seoul(x["customer"]) else 0
                 nd = calendar.monthrange(y, mon)[1]
+                from openpyxl.styles import PatternFill
+                off_fill = PatternFill("solid", fgColor="FFFFFFCC")   # 양식의 연한 노란색
                 for i, r in enumerate(range(hdr + 1, end)):
                     day = i + 1
                     if day <= nd:
@@ -5068,6 +5086,9 @@ def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
                         ws.cell(row=r, column=dcol, value=f"{mon}/{day:02d}")
                         ws.cell(row=r, column=dcol + 1, value=round(v[0]))
                         ws.cell(row=r, column=dcol + 2, value=round(v[1]))
+                        # 양식에 남아 있던 다른 달의 주말 색을 지우고, 이 달 주말·공휴일만 다시 칠함
+                        for k in range(3):
+                            ws.cell(row=r, column=dcol + k).fill = off_fill if is_day_off(y, mon, day) else PatternFill(fill_type=None)
                     else:
                         for k in range(3):
                             ws.cell(row=r, column=dcol + k).value = None
