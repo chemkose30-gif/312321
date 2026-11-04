@@ -170,10 +170,35 @@ def prefilter_files(files: list[tuple[str, str, bytes]]) -> list[tuple[str, str,
     return [(name, mime, prefilter_pdf(data) if mime == PDF_TYPE else data) for name, mime, data in files]
 
 
+def check_not_encrypted(files: list[tuple[str, str, bytes]]) -> None:
+    """비밀번호(암호)가 걸린 PDF면 명확한 안내로 중단."""
+    try:
+        import pymupdf as _fitz
+    except ImportError:
+        try:
+            import fitz as _fitz
+        except ImportError:
+            return
+    for name, mime, data in files:
+        if mime != PDF_TYPE:
+            continue
+        try:
+            doc = _fitz.open(stream=data, filetype="pdf")
+        except Exception:
+            continue
+        try:
+            if getattr(doc, "needs_pass", False) or getattr(doc, "is_encrypted", False):
+                raise ExtractError(f"'{name}' 파일에 비밀번호(암호)가 걸려 있어 읽을 수 없습니다. "
+                                   "PDF 비밀번호를 해제한 뒤 다시 올려 주세요.")
+        finally:
+            doc.close()
+
+
 def extract(files: list[tuple[str, str, bytes]]) -> dict:
     backend = "mock" if os.environ.get("ANALYZER_MOCK") == "1" else os.environ.get("EXTRACT_BACKEND", BACKEND)
     if backend == "mock":
         return copy.deepcopy(MOCK_RESULT)
+    check_not_encrypted(files)            # 비번 걸린 PDF 먼저 걸러 명확히 안내
     files = prefilter_files(files)        # 긴 PDF는 계약·담보 페이지만 추려서 처리
     if backend == "local":
         return _extract_local(files)

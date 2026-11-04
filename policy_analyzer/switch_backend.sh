@@ -4,9 +4,10 @@
 # 현재 켜져 있는 보안 설정(2FA/쿠키/프록시)은 그대로 유지.
 set -e
 cd "$(dirname "$0")"
-BACKEND="${BACKEND:-local}"
-
 getenv() { docker inspect ins-analyzer --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep "^$1=" | head -1 | cut -d= -f2-; }
+# BACKEND 를 지정하지 않으면 지금 돌아가는 방식(claude/local)을 그대로 유지한다.
+BACKEND="${BACKEND:-$(getenv EXTRACT_BACKEND)}"
+BACKEND="${BACKEND:-local}"
 R2FA="$(getenv REQUIRE_2FA)";  [ -z "$R2FA" ]  && R2FA=1
 SECURE="$(getenv SECURE_COOKIE)"; [ -z "$SECURE" ] && SECURE=1
 TRUSTP="$(getenv TRUST_PROXY)"; [ -z "$TRUSTP" ] && TRUSTP=1
