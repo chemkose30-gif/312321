@@ -388,6 +388,7 @@ def upload_form(customer_id: int | None = None) -> str:
 onsubmit="const b=this.querySelector('button');b.disabled=true;b.textContent='증권 분석 중... (1~2분)'">{hidden}
 <div class="row"><input type="file" name="files" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple required>
 <button>분석하기</button></div>
+<div class="row" style="margin-top:6px"><input type="password" name="pdf_password" placeholder="PDF에 비밀번호가 걸려 있으면 입력 (없으면 비워두세요)" autocomplete="off" style="max-width:420px"></div>
 <p class="muted">PDF·JPG·PNG, 한 번에 {MAX_FILES}개 / 합계 30MB까지. 한 고객의 증권만 함께 올려 주세요.
 <b>약관 PDF</b>를 올리면(여러 개 가능) 자동으로 약관 분석(이율·사업비·해지공제·예상 수익률)으로 처리하고, 결과 아래에 낸 돈을 직접 적을 수 있습니다.
 {"" if customer_id else "같은 이름·생년월일 고객이 있으면 그 고객에 자동으로 추가됩니다. "}{BACKEND_NOTE}</p></form>"""
@@ -644,7 +645,8 @@ async def terms_save(request: Request, t: str = Form(...), pages: str = Form("")
     return RedirectResponse(f"/customers/{cid}", status_code=303)
 
 @app.post("/upload")
-async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None)):
+async def upload(request: Request, files: list[UploadFile] = File(...), customer_id: int | None = Form(None),
+                 pdf_password: str = Form("")):
     pid = planner_id(request)
     back = f"/customers/{customer_id}" if customer_id else "/"
     if customer_id and not store.get_customer(pid, customer_id):
@@ -664,6 +666,13 @@ async def upload(request: Request, files: list[UploadFile] = File(...), customer
         payload.append((f.filename or "file", mime, data))
     if total > MAX_TOTAL_BYTES:
         flash(request, "파일 합계가 30MB를 넘습니다. 나눠서 올려 주세요.")
+        return RedirectResponse(back, status_code=303)
+
+    # 비번 걸린 PDF는 입력받은 비밀번호로 해제 (틀리거나 없으면 안내 후 재시도)
+    try:
+        payload = await run_in_threadpool(extractor.unlock_pdfs, payload, pdf_password)
+    except extractor.PdfPasswordError as ex:
+        flash(request, str(ex) + " 파일을 다시 선택하고, 비밀번호 칸에 입력한 뒤 '분석하기'를 눌러 주세요.")
         return RedirectResponse(back, status_code=303)
 
     import terms as tm
