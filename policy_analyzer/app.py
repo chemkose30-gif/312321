@@ -118,8 +118,9 @@ select, input[type=date] { padding:9px 10px; border:1px solid var(--line); borde
 .report-img { max-width:260px; width:100%; border:1px solid var(--line); border-radius:8px; }
 @media print { .report-img { max-width:46%; } }
 table.matrix td, table.matrix th { border:1px solid var(--line); }
-td.mx-g { color:#fff; font-weight:700; text-align:center; white-space:nowrap; width:70px; font-size:13px; }
-td.mx-l { font-size:13.5px; } td.mx-v { font-weight:600; }
+td.mx-g { color:#fff; font-weight:700; text-align:center; white-space:nowrap; width:56px; font-size:12.5px; }
+td.mx-l { font-size:13px; white-space:nowrap; } td.mx-v { font-weight:700; }
+table.matrix th.mx-p { font-size:12px; min-width:92px; } table.matrix td, table.matrix th { padding:6px 8px; }
 @media print { table.matrix td, table.matrix th { border:1px solid #999; } td.mx-g { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
 .tag { display:inline-block; white-space:nowrap; padding:1px 8px; border-radius:99px; font-size:12px; background:var(--line); }
 .overdue { color:var(--warn); font-weight:600; }
@@ -1265,6 +1266,81 @@ def matrix_html(c: dict, policies: list[dict]) -> str:
     return tbl
 
 
+# 상세 보장분석표 (사진 양식). 각 행: (표시이름, 핵심★, {cat:분류} 또는 {kw:[담보명 키워드]}, max=실손식)
+def _R(label, star=False, cat=None, kw=None, mx=False):
+    return {"label": label, "star": star, "cat": cat, "kw": kw or [], "mx": mx}
+
+MATRIX2 = [
+ ("사망", "#c0392b", [_R("일반사망(생명보험)", True, cat="일반사망"), _R("재해사망", kw=["재해사망"]),
+                   _R("질병사망(손해보험)", cat="질병사망"), _R("상해사망", kw=["상해사망"])]),
+ ("후유장해", "#7f8c8d", [_R("질병후유장해 3%이상", cat="질병후유장해"), _R("상해후유장해 3%이상", cat="상해후유장해")]),
+ ("암", "#2e4a8b", [_R("일반암(최초1회한)", True, cat="일반암"), _R("갑상선암", kw=["갑상선"]),
+                 _R("경계성종양", kw=["경계성"]), _R("제자리암(상피내암)", kw=["제자리", "상피내"]), _R("기타피부암", kw=["기타피부", "피부암"])]),
+ ("암치료비", "#2e6da4", [_R("항암방사선치료비", True, kw=["방사선"]), _R("항암약물치료비", True, kw=["약물치료", "항암약물"]),
+                     _R("표적항암약물치료비", kw=["표적"]), _R("중입자방사선치료비", kw=["중입자"]),
+                     _R("암주요치료비(연간1회한)", True, kw=["주요치료"]), _R("비급여암주요치료비(연간1회한)", kw=["비급여"])]),
+ ("뇌", "#16a085", [_R("뇌혈관질환 100%(I60-I69)", True, cat="뇌혈관질환"), _R("뇌졸중 66.5%(I60-I66)", kw=["뇌졸중"]), _R("뇌출혈 8.7%(I60-I62)", kw=["뇌출혈"])]),
+ ("심장", "#2980b9", [_R("부정맥(I49)", kw=["부정맥"]), _R("허혈성심장질환 100%(I20-I25)", True, cat="허혈성심장질환"), _R("급성심근경색 12%(I21)", kw=["심근경색"])]),
+ ("수술", "#8e44ad", [_R("질병수술비", True, cat="질병수술비"), _R("질병종수술비", kw=["질병종수술", "종수술"]),
+                  _R("상해수술비", True, cat="상해수술비"), _R("상해종수술비", kw=["상해종수술"])]),
+ ("입원", "#d98880", [_R("질병 입원비(1일이상)", kw=["질병입원", "질병 입원"]), _R("상해 입원비(1일이상)", kw=["상해입원", "상해 입원"])]),
+ ("간병", "#e67e22", [_R("질병 간병인 사용일당", True, kw=["질병간병", "질병 간병"]), _R("질병 간호간병통합서비스", kw=["간호간병"]),
+                  _R("상해 간병인 사용일당", True, kw=["상해간병", "상해 간병"]), _R("장기요양·치매", cat="치매·간병")]),
+ ("실손의료비", "#27ae60", [_R("질병 입원의료비", kw=["질병입원의료", "질병 입원의료"]), _R("질병 통원의료비", kw=["질병통원"]),
+                      _R("상해 입원의료비", kw=["상해입원의료"]), _R("상해 통원의료비", kw=["상해통원"])]),
+ ("배상책임", "#2c3e50", [_R("일상생활 배상책임", True, cat="배상책임")]),
+ ("골절/화상", "#d98880", [_R("골절진단", kw=["골절"]), _R("5대골절진단", kw=["5대골절"]), _R("화상(심재성2도)", kw=["화상"]), _R("중대한화상", kw=["중대한화상"])]),
+ ("운전자", "#c0392b", [_R("자동차부상치료비(14급)", kw=["자동차부상", "부상치료"]), _R("교통사고처리지원금", kw=["교통사고처리"]),
+                   _R("대인벌금/대물벌금", kw=["벌금"]), _R("변호사선임비용", kw=["변호사"])]),
+ ("납입면제", "#95a5a6", [_R("보험료 납입면제", kw=["납입면제"])]),
+ ("기타", "#7f8c8d", [_R("기타", cat="기타")]),
+]
+
+
+def _row_amount(policy: dict, row: dict) -> int | None:
+    found, tot = False, 0
+    for cov in policy.get("coverages") or []:
+        name = cov.get("name") or ""
+        hit = (row["cat"] and (cov.get("category") == row["cat"])) or any(k in name for k in row["kw"])
+        if hit:
+            found = True
+            amt = cov.get("amount") or 0
+            tot = max(tot, amt) if row["mx"] else tot + amt
+    return tot if found else None
+
+
+def matrix2_html(c: dict, policies: list[dict]) -> str:
+    today = datetime.now().date()
+    active = [p for p in policies if analysis.is_active(p, today)]
+    # 계약별 컬럼 헤더
+    pol_hdr = "".join(
+        f'<th class="num mx-p">{e((p.get("company") or "")[:8])}<br><span class="muted small">만기 {ymd(p.get("maturity_date"))}</span></th>'
+        for p in active)
+    rows = []
+    for gname, color, items in MATRIX2:
+        for idx, row in enumerate(items):
+            gcell = f'<td class="mx-g" rowspan="{len(items)}" style="background:{color}">{e(gname)}</td>' if idx == 0 else ""
+            # 각 계약 칸 + 최종내용(합계 / 실손은 최대)
+            vals, final = [], 0
+            any_found = False
+            for p in active:
+                v = _row_amount(p, row)
+                if v is None:
+                    vals.append('<td class="num muted">·</td>')
+                else:
+                    any_found = True
+                    vals.append(f'<td class="num">{won(v)}</td>')
+                    final = max(final, v) if row["mx"] else final + v
+            fcell = f'<span class="enough">{won(final)}</span>' if any_found and final else ('<span class="enough">보장</span>' if any_found else '<span class="under">-</span>')
+            rows.append(f'<tr>{gcell}<td class="mx-l">{"★ " if row["star"] else ""}{e(row["label"])}</td>'
+                        f'<td class="num mx-v">{fcell}</td>{"".join(vals)}</tr>')
+    pcols = len(active)
+    return (f'<div class="tbl-wrap"><table class="matrix"><tr>'
+            f'<th colspan="2">구분 · 보장 항목</th><th class="num">최종내용(합계)</th>{pol_hdr}</tr>'
+            f'{"".join(rows)}</table></div>'
+            + (f'<p class="muted">계약별 칸의 "·"는 그 계약에 해당 보장이 없다는 뜻입니다. (활성 계약 {pcols}건)</p>' if pcols else ''))
+
+
 @app.get("/customers/{cid}/matrix", response_class=HTMLResponse)
 def matrix(request: Request, cid: int):
     pid = planner_id(request)
@@ -1280,8 +1356,8 @@ def matrix(request: Request, cid: int):
 <div class="row between no-print" style="margin-bottom:12px"><span class="muted">★ 는 핵심 보장. 인쇄 → 'PDF로 저장'으로 받을 수 있습니다.</span>
 <button onclick="print()">인쇄 / PDF 저장</button></div>
 {head}
-<div class="card">{matrix_html(c, policies)}
-<p class="muted">빈 칸('-')은 해당 보장이 없다는 뜻입니다. 금액은 유지 중인 계약의 합계이며, 상담용 참고 자료입니다. 정확한 내용은 증권·약관을 따릅니다.</p></div>""")
+<div class="card">{matrix2_html(c, policies)}
+<p class="muted">★ 는 핵심 보장. '-'는 미가입, '·'는 그 계약에 없음. 세부 담보는 증권의 담보명으로 자동 분류하므로 일부 다를 수 있습니다. 정확한 내용은 증권·약관을 따릅니다.</p></div>""")
 
 
 # 후유장해 보험금 계산기: 가입금액 × 지급률(%). 계산은 브라우저에서(서버 전송 없음).
