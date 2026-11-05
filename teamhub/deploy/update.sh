@@ -23,6 +23,14 @@ if ! command -v readpst >/dev/null 2>&1; then   # Outlook 메일함(.pst) 가져
     echo "    ⚠ pst-utils 설치 실패 (Outlook .pst 가져오기만 안 됩니다)"
 fi
 timeout 300 /opt/teamhub/venv/bin/pip install -q --disable-pip-version-check -r /opt/teamhub/requirements.txt
+# 이카운트 판매현황 자동 받기용 브라우저 (처음 한 번 5분 정도). 실패해도 다른 기능은 그대로.
+if [ ! -f /opt/teamhub/pw-browsers/.deps-ok ]; then
+  timeout 900 /opt/teamhub/venv/bin/python -m playwright install-deps chromium >/dev/null 2>&1 && \
+    mkdir -p /opt/teamhub/pw-browsers && touch /opt/teamhub/pw-browsers/.deps-ok || \
+    echo "    ⚠ 브라우저용 패키지 설치 실패 (이카운트 자동 받기만 안 됩니다)"
+fi
+PLAYWRIGHT_BROWSERS_PATH=/opt/teamhub/pw-browsers timeout 900 /opt/teamhub/venv/bin/python -m playwright install chromium >/dev/null 2>&1 || \
+  echo "    ⚠ 브라우저 설치 실패 (이카운트 자동 받기만 안 됩니다)"
 chown -R teamhub:teamhub /opt/teamhub
 
 echo "==> [4/4] 서버 재시작"

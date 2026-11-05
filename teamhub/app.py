@@ -41,6 +41,7 @@ DB_PATH = os.getenv("TEAMHUB_DB", str(BASE_DIR / "teamhub.db"))
 async def lifespan(_app):
     mailer.start_scheduler(run_daily_reminders)
     threading.Thread(target=unipass_loop, daemon=True).start()
+    threading.Thread(target=ecweb_loop, daemon=True).start()
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
@@ -2377,11 +2378,15 @@ def delete_imported(doc_type: str, _: dict = Depends(admin_user)):
 async def import_docs(file: UploadFile, doc_type: str, dry_run: bool, user: dict, overwrite: bool = False,
                       year: Optional[int] = None):
     """이카운트 판매조회(거래명세서) / 견적서조회(견적서) 엑셀 가져오기."""
+    return import_docs_data(file.filename or "", await file.read(), doc_type, dry_run, user, overwrite, year)
+
+
+def import_docs_data(filename: str, data: bytes, doc_type: str, dry_run: bool, user: dict, overwrite: bool = False,
+                     year: Optional[int] = None):
     slip_col = "ecount_sale_slip" if doc_type == "statement" else "ecount_quote_slip"
-    data = await file.read()
     if len(data) > 20 * 1024 * 1024:
         raise HTTPException(400, "파일이 너무 큽니다 (20MB 이하).")
-    slips, cols = parse_sales_sheet(parse_sheet(file.filename or "", data), year)
+    slips, cols = parse_sales_sheet(parse_sheet(filename, data), year)
     created = skipped = updated = wh_filled = 0
     with db() as c:
         cust_codes = {r["name"]: r["code"] for r in c.execute("SELECT code, name FROM ecount_customers")}
@@ -7738,3 +7743,138 @@ init_db()
 if __name__ == "__main__":
     uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8100")),
                 proxy_headers=True, forwarded_allow_ips="127.0.0.1")
+
+
+# ---------------------------------------------------------------- 🤖 이카운트 판매현황 자동 받기 (브라우저 자동 조작)
+ECWEB_DIR = Path(os.getenv("TEAMHUB_ECWEB_DIR", str(Path(DB_PATH).parent / "ecount_web")))
+ECWEB_LOCK = threading.Lock()
+ECWEB_DEFAULT = {"on": False, "time": "07:30", "login_url": "https://loginab.ecount.com/", "com_code": "", "user_id": "",
+                 "menu_hash": ""}
+
+
+def ecweb_cfg(c) -> dict:
+    try:
+        cfg = {**ECWEB_DEFAULT, **(json.loads(get_setting(c, "ecweb", "{}")) or {})}
+    except ValueError:
+        cfg = dict(ECWEB_DEFAULT)
+    cfg["password"] = os.getenv("TEAMHUB_ECOUNT_WEB_PW") or get_setting(c, "ecweb_pw", "")
+    return cfg
+
+
+def ecweb_runs(c) -> list:
+    try:
+        return json.loads(get_setting(c, "ecweb_runs", "[]")) or []
+    except ValueError:
+        return []
+
+
+def ecweb_run(by: str = "자동"):
+    """판매현황 엑셀을 받아 거래명세서로 가져옴 (이미 있는 전표는 건너뛰고 빈 창고·통관만 채움)."""
+    import ecount_web
+    if not ECWEB_LOCK.acquire(blocking=False):
+        return
+    rid = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run = {"id": rid, "at": now(), "by": by, "ok": False, "steps": [], "message": "실행 중…"}
+    out = ECWEB_DIR / rid
+
+    def save():
+        with db() as c:
+            runs = [r for r in ecweb_runs(c) if r["id"] != rid]
+            set_setting(c, "ecweb_runs", json.dumps(([run] + runs)[:15], ensure_ascii=False))
+    try:
+        save()
+        with db() as c:
+            cfg = ecweb_cfg(c)
+            admin = c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1 ORDER BY id LIMIT 1").fetchone()
+        log = lambda step, msg, shot: (run["steps"].append({"step": step, "msg": msg, "shot": shot or ""}), save())
+        path = ecount_web.run(cfg, out, log)
+        r = import_docs_data(path.name, path.read_bytes(), "statement", False,
+                             {"id": admin["id"] if admin else 1, "name": "이카운트 자동", "role": "admin"})
+        run.update(ok=True, file=path.name, period=r.get("period") or [], created=r["created"], skipped=r["skipped"],
+                   wh_filled=r.get("wh_filled", 0),
+                   message=f"새 거래명세서 {r['created']}건 · 이미 있음 {r['skipped']}건"
+                           + (f" · 창고(회사) 채움 {r['wh_filled']}건" if r.get("wh_filled") else ""))
+    except Exception as e:
+        msg = e.detail if isinstance(e, HTTPException) else str(e)
+        run.update(ok=False, message=str(msg)[:300])
+        with db() as c:
+            for u in c.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1"):
+                notify(c, u["id"], f"⚠ 이카운트 판매현황 자동 받기 실패: {str(msg)[:120]} (관리자 → 🤖 이카운트 자동 받기에서 화면 확인)")
+    finally:
+        save()
+        ECWEB_LOCK.release()
+        try:   # 오래된 실행 기록 화면 지우기 (15회분만 남김)
+            import shutil
+            dirs = sorted(d for d in ECWEB_DIR.iterdir() if d.is_dir())
+            for d in dirs[:-15]:
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def ecweb_loop():
+    """매일 정한 시각(서버 기준 한국 시간)에 한 번."""
+    while True:
+        time.sleep(60)
+        try:
+            with db() as c:
+                cfg = ecweb_cfg(c)
+                last = get_setting(c, "ecweb_last_day", "")
+            today = datetime.now().strftime("%Y-%m-%d")
+            if cfg.get("on") and last != today and datetime.now().strftime("%H:%M") >= (cfg.get("time") or "07:30"):
+                with db() as c:
+                    set_setting(c, "ecweb_last_day", today)
+                ecweb_run("자동")
+        except Exception:
+            pass
+
+
+@app.get("/api/ecount-web")
+def ecweb_get(_: dict = Depends(admin_user)):
+    with db() as c:
+        cfg = ecweb_cfg(c)
+        runs = ecweb_runs(c)
+    pw_env = bool(os.getenv("TEAMHUB_ECOUNT_WEB_PW"))
+    cfg.pop("password")
+    try:
+        import playwright  # noqa: F401
+        ready = True
+    except ImportError:
+        ready = False
+    with db() as c:
+        has_pw = pw_env or bool(get_setting(c, "ecweb_pw", ""))
+    return {"cfg": cfg, "has_pw": has_pw, "pw_env": pw_env, "runs": runs, "running": ECWEB_LOCK.locked(), "ready": ready}
+
+
+@app.put("/api/ecount-web")
+def ecweb_put(body: dict, _: dict = Depends(admin_user)):
+    with db() as c:
+        cfg = ecweb_cfg(c)
+        cfg.pop("password")
+        for k in ECWEB_DEFAULT:
+            if k in body:
+                cfg[k] = bool(body[k]) if k == "on" else str(body[k] or "").strip()
+        if not re.match(r"^\d{2}:\d{2}$", cfg["time"]):
+            raise HTTPException(400, "시각은 07:30 처럼 넣어 주세요.")
+        set_setting(c, "ecweb", json.dumps(cfg, ensure_ascii=False))
+        if body.get("password"):
+            set_setting(c, "ecweb_pw", str(body["password"]))
+    return {"ok": True}
+
+
+@app.post("/api/ecount-web/run")
+def ecweb_run_now(user: dict = Depends(admin_user)):
+    if ECWEB_LOCK.locked():
+        return {"ok": True, "running": True}
+    threading.Thread(target=ecweb_run, args=(user["name"],), daemon=True).start()
+    return {"ok": True}
+
+
+@app.get("/api/ecount-web/shot/{rid}/{name}")
+def ecweb_shot(rid: str, name: str, _: dict = Depends(admin_user)):
+    if not re.match(r"^[\d\-]+$", rid) or not re.match(r"^[\w.\-]+\.(png|html)$", name):
+        raise HTTPException(404, "없습니다.")
+    f = ECWEB_DIR / rid / name
+    if not f.exists():
+        raise HTTPException(404, "없습니다.")
+    return Response(content=f.read_bytes(), media_type="image/png" if name.endswith(".png") else "text/plain; charset=utf-8")

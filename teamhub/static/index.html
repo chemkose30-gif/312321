@@ -1511,6 +1511,7 @@ async function renderQuotes() {
   $('#main').innerHTML = `<div class="card">
     <div class="row" style="margin-bottom:12px"><h3 style="margin:0">${D.icon} ${D.label}</h3><span class="spacer"></span>
       ${isAdmin ? '<button class="btn" id="qImport">📥 이카운트에서 가져오기</button>' : ''}
+      ${isAdmin && dt === 'statement' ? '<button class="btn" id="qEcWeb" title="매일 이카운트 판매현황 엑셀을 자동으로 받아 가져오기">🤖 자동 받기</button>' : ''}
       ${isAdmin ? '<button class="btn" id="qEcount">🔗 이카운트</button><button class="btn" id="qCompany">🏢 회사 정보</button>' : ''}
       <button class="btn primary" id="qNew">+ 새 ${D.label}</button></div>
     ${qTabs(dt, 'list')}
@@ -1546,6 +1547,7 @@ async function renderQuotes() {
   $('#qNew').onclick = () => openQuoteForm(null, null, null, dt);
   if (isAdmin) { $('#qCompany').onclick = openCompany; $('#qEcount').onclick = openEcountSettings; }
   if ($('#qImport')) $('#qImport').onclick = () => openStatementImport(dt);
+  if ($('#qEcWeb')) $('#qEcWeb').onclick = openEcWeb;
   $('#qStatus').onchange = e => { state.qStatus = e.target.value; state.qPage = 1; renderQuotes(); };
   let timer;
   $('#qSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.qSearch = e.target.value; state.qPage = 1; renderQuotes().then(() => { const i = $('#qSearch'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
@@ -1955,6 +1957,77 @@ async function printQuote(id) {
   setTimeout(() => w.print(), 400);
 }
 
+
+// ---- 🤖 이카운트 판매현황 자동 받기: 서버가 브라우저로 이카운트에 로그인 → 판매현황 → Excel → 거래명세서로 가져오기
+async function openEcWeb() {
+  let d = await api('/api/ecount-web');
+  const shotUrl = async (rid, name) => {
+    const res = await fetch(`/api/ecount-web/shot/${rid}/${name}`, {headers: {Authorization: 'Bearer ' + state.token}});
+    return res.ok ? URL.createObjectURL(await res.blob()) : '';
+  };
+  const runsHtml = () => d.runs.length ? d.runs.map((r, k) => `<div class="ec-box" style="margin:6px 0">
+      <div class="row"><b>${esc(r.at.slice(0, 16))}</b> <small class="muted">${esc(r.by)}</small><span class="spacer"></span>
+        ${r.message === '실행 중…' ? '<span class="tag s-hold">실행 중…</span>' : r.ok ? '<span class="tag s-done">성공</span>' : '<span class="tag p-urgent">실패</span>'}</div>
+      <div style="font-size:13px;margin:4px 0">${esc(r.message)}${r.period && r.period.length ? ` <small class="muted">(엑셀 기간 ${esc(r.period[0])} ~ ${esc(r.period[1])})</small>` : ''}</div>
+      ${r.steps.length ? `<a href="#" data-rk="${k}" style="font-size:12px">단계별 화면 ${r.steps.length}개 보기 ▾</a><div data-rs="${k}"></div>` : ''}</div>`).join('')
+    : '<div class="muted" style="font-size:13px">아직 실행한 적이 없습니다.</div>';
+  const c = d.cfg;
+  openModal(`<h2>🤖 이카운트 판매현황 자동 받기</h2>
+    <div class="muted" style="font-size:13px;line-height:1.6">매일 정한 시각에 서버가 이카운트에 로그인해서 <b>판매현황 Excel</b>을 받아, 📥 이카운트에서 가져오기와 똑같이 넣습니다 (이미 있는 전표는 건너뛰고 빈 창고·통관만 채움).
+      <br>· 이카운트에서 판매현황 <b>검색 조건(기간: 올해 등)과 양식(창고명·통관일자 포함)</b>을 기본값으로 저장해 두세요. 자동으로 열면 그 기본값으로 검색합니다.
+      <br>· 이카운트 화면이 바뀌거나 보안인증이 뜨면 멈출 수 있습니다. 실패하면 관리자에게 알림이 가고, 아래에서 단계별 화면을 볼 수 있습니다.</div>
+    ${d.ready ? '' : '<div class="down" style="margin-top:6px">서버에 브라우저 자동 조작 프로그램(Playwright)이 아직 없습니다. 서버에서 업데이트 명령을 한 번 더 실행해 주세요.</div>'}
+    <div class="row" style="gap:12px;flex-wrap:wrap;margin-top:8px">
+      <div><label>로그인 주소</label><input id="ewUrl" value="${esc(c.login_url)}" style="width:240px"></div>
+      <div><label>회사코드</label><input id="ewCom" value="${esc(c.com_code)}" style="width:120px"></div>
+      <div><label>아이디</label><input id="ewId" value="${esc(c.user_id)}" style="width:140px" autocomplete="off"></div>
+      <div><label>비밀번호 ${d.has_pw ? '<small class="muted">(저장됨 — 바꿀 때만 입력)</small>' : ''}</label><input id="ewPw" type="password" autocomplete="new-password" style="width:160px" ${d.pw_env ? 'disabled placeholder="서버 설정 파일에 있음"' : ''}></div></div>
+    <label>판매현황 화면 주소 <small class="muted">— 이카운트에서 판매현황 화면을 연 상태로 주소창 주소를 통째로 복사해 붙여 넣으세요 (# 뒤 부분만 씁니다)</small></label>
+    <input id="ewHash" value="${esc(c.menu_hash)}" placeholder="https://loginab.ecount.com/ec5/view/erp?...#menuType=...&prgId=...">
+    <div class="row" style="gap:12px;margin-top:8px;align-items:center">
+      <label style="margin:0;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="ewOn" ${c.on ? 'checked' : ''} style="width:auto"> 매일 자동으로</label>
+      <input type="time" id="ewTime" value="${esc(c.time)}" style="width:auto"><span class="muted" style="font-size:12px">에 실행</span></div>
+    <div class="err"></div>
+    <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="ewSave">저장</button><button class="btn" id="ewRun">▶ 지금 한 번 실행</button></div>
+    <h3 style="font-size:15px;margin:14px 0 4px">실행 기록</h3><div id="ewRuns">${runsHtml()}</div>
+    <div class="actions"><button class="btn" data-close>닫기</button></div>`, (bg) => {
+    bg.firstElementChild.classList.add('wide');
+    let timer;
+    const bindRuns = () => $$('[data-rk]', bg).forEach(a => a.onclick = async e => {
+      e.preventDefault();
+      const r = d.runs[+a.dataset.rk], box = $(`[data-rs="${a.dataset.rk}"]`, bg);
+      if (box.innerHTML) { box.innerHTML = ''; return; }
+      box.innerHTML = (await Promise.all(r.steps.map(async (st, i) => `<div style="margin:8px 0"><div style="font-size:12px"><b>${i + 1}. ${esc(st.step)}</b> — ${esc(st.msg)}</div>
+        ${st.shot ? `<img src="${await shotUrl(r.id, st.shot)}" style="max-width:100%;border:1px solid var(--line);border-radius:6px;margin-top:4px">` : ''}</div>`))).join('')
+        + (!r.ok ? `<a href="#" data-html="${esc(r.id)}" style="font-size:12px">멈춘 화면의 HTML 받기 (개발자에게 보낼 때)</a>` : '');
+      $$('[data-html]', box).forEach(h => h.onclick = async ev => {
+        ev.preventDefault();
+        const u = await shotUrl(h.dataset.html, 'page.html');
+        if (!u) return toast('HTML 이 없습니다.');
+        const x = document.createElement('a'); x.href = u; x.download = `ecount_${h.dataset.html}.html`; x.click();
+      });
+    });
+    const refresh = async () => {
+      clearTimeout(timer);
+      if (!document.body.contains(bg)) return;
+      d = await api('/api/ecount-web');
+      $('#ewRuns', bg).innerHTML = runsHtml(); bindRuns();
+      if (d.running) timer = setTimeout(refresh, 4000);
+    };
+    bindRuns();
+    if (d.running) timer = setTimeout(refresh, 4000);
+    const save = async () => {
+      await api('/api/ecount-web', {method: 'PUT', body: {login_url: $('#ewUrl', bg).value, com_code: $('#ewCom', bg).value, user_id: $('#ewId', bg).value,
+        password: $('#ewPw', bg).value, menu_hash: $('#ewHash', bg).value, on: $('#ewOn', bg).checked, time: $('#ewTime', bg).value}});
+      $('#ewPw', bg).value = '';
+    };
+    $('#ewSave', bg).onclick = async () => { try { await save(); toast('저장했습니다.'); refresh(); } catch (err) { $('.err', bg).textContent = err.message; } };
+    $('#ewRun', bg).onclick = async () => {
+      try { await save(); await api('/api/ecount-web/run', {method: 'POST'}); toast('실행했습니다. 1~2분 걸립니다.'); setTimeout(refresh, 1500); }
+      catch (err) { $('.err', bg).textContent = err.message; }
+    };
+  });
+}
 
 // 거래명세서 인쇄: 이카운트 거래명세서 양식과 같은 배치 (A4 상단 1부 + 절취선)
 async function printStatement(w, q) {

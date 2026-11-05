@@ -11,6 +11,7 @@ Environment=TZ=Asia/Seoul
 Environment=HOST=127.0.0.1
 Environment=PORT=8100
 Environment=TEAMHUB_DB=/var/lib/teamhub/teamhub.db
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/teamhub/pw-browsers
 EnvironmentFile=/etc/teamhub.env
 ExecStart=/opt/teamhub/venv/bin/python app.py
 Restart=always
