@@ -59,6 +59,15 @@ td.r,th.r{text-align:right}
 .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700}
 .badge.ok{background:rgba(16,185,129,.15);color:var(--green)}
 .badge.no{background:rgba(240,68,82,.12);color:var(--up)}
+.pos-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.pos-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;min-width:0}
+.pos-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.pos-head b{font-size:14px}
+.pos-meta{font-size:11px;color:var(--text3);margin-bottom:6px}
+.alloc{display:flex;height:22px;border-radius:5px;overflow:hidden;margin:4px 0 6px;background:var(--bg3)}
+.alloc>div{height:100%;border-right:2px solid var(--bg2);min-width:2px}
+.alloc-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11px;color:var(--text2);margin-bottom:14px}
+.alloc-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
 .card,.grid2>*{min-width:0}
 .chart{position:relative;width:100%}
@@ -81,7 +90,7 @@ td.r,th.r{text-align:right}
 .help code{background:var(--bg3);padding:1px 6px;border-radius:4px;font-size:12px}
 @media (max-width:860px){
   .metrics{grid-template-columns:1fr 1fr}
-  .grid2{grid-template-columns:minmax(0,1fr)}
+  .grid2,.pos-grid{grid-template-columns:minmax(0,1fr)}
   .wrap{padding:12px 16px}
   .topbar{padding:10px 16px}
   .field input.wide{width:100%}
@@ -152,6 +161,11 @@ td.r,th.r{text-align:right}
     <div class="grid2">
       <div class="card"><h3>보유 종목</h3><div class="tbl" id="positions"></div></div>
       <div class="card"><h3>최근 체결</h3><div class="tbl" id="trades" style="max-height:420px;overflow:auto"></div></div>
+    </div>
+    <div class="card" id="posChartsCard" style="display:none">
+      <h3>보유 종목 차트 <span class="muted" id="posChartsSrc"></span></h3>
+      <div id="alloc"></div>
+      <div class="pos-grid" id="posCharts"></div>
     </div>
     <div style="text-align:right"><button class="btn danger" onclick="resetAccount(true)">계좌 초기화</button></div>
   </section>
@@ -282,14 +296,15 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
 });
 
 // ---------- 차트 ----------
-function lineChart(el, series, {height=260, fmt=won} = {}) {
+function lineChart(el, series, {height=260, fmt=won, hlines=[], vlines=[], L=64} = {}) {
   el.innerHTML = '';
   const pts = series.flatMap(s => s.points);
   const dates = [...new Set(pts.map(p => p[0]))].sort();
   if (dates.length < 2) { el.innerHTML = '<div class="empty">기록이 2거래일 이상 쌓이면 그래프가 나타납니다.</div>'; return; }
-  const W = Math.max(320, el.clientWidth || 800), H = height, L = 64, R = 12, T = 10, B = 26;
+  const W = Math.max(300, el.clientWidth || 800), H = height, R = hlines.length ? 46 : 12, T = 10, B = 26;
   const xi = new Map(dates.map((d, i) => [d, i]));
-  let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+  const vals = pts.map(p => p[1]).concat(hlines.map(h => h.v));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
   const pad = (hi - lo) * 0.08 || hi * 0.02 || 1; lo -= pad; hi += pad;
   const x = i => L + (W - L - R) * (dates.length === 1 ? 0.5 : i / (dates.length - 1));
   const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
@@ -301,6 +316,18 @@ function lineChart(el, series, {height=260, fmt=won} = {}) {
   }
   [0, Math.floor((dates.length-1)/2), dates.length-1].forEach((i, n) => {
     svg += `<text x="${x(i)}" y="${H-6}" fill="#5a6578" font-size="10" text-anchor="${['start','middle','end'][n]}">${dates[i]}</text>`;
+  });
+  hlines.forEach(h => {
+    svg += `<line x1="${L}" x2="${W-R}" y1="${y(h.v)}" y2="${y(h.v)}" stroke="${h.color}" stroke-width="1" ${h.dash === false ? '' : 'stroke-dasharray="4 3"'} opacity=".9"/>`;
+    svg += `<text x="${W-R+4}" y="${y(h.v)+3}" fill="${h.color}" font-size="10">${esc(h.label)}</text>`;
+  });
+  vlines.forEach(v => {
+    // 매수일이 차트 기간 안에 있으면 그 날, 아니면 가장 가까운 다음 거래일에 표시
+    const i = dates.findIndex(d => d >= v.date);
+    if (i < 0) return;
+    svg += `<line x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${H-B}" stroke="${v.color}" stroke-dasharray="2 3"/>`;
+    const nearRight = x(i) > W - R - 40;  // 오른쪽 끝이면 글자를 선 왼쪽에 둬서 익절/평단 글자와 겹치지 않게
+    svg += `<text x="${nearRight ? x(i)-4 : x(i)+4}" y="${H-B-6}" fill="${v.color}" font-size="10" text-anchor="${nearRight ? 'end' : 'start'}">${esc(v.label)}</text>`;
   });
   series.forEach(s => {
     const d = s.points.map((p, i) => `${i ? 'L' : 'M'}${x(xi.get(p[0])).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
@@ -376,6 +403,48 @@ function renderAccount(s) {
     s.positions.map(p => `<tr><td><b>${esc(p.name || p.symbol)}</b><div class="muted">${p.name ? esc(p.symbol) + ' · ' : ''}${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
     : '<div class="empty">보유 종목 없음</div>';
   $('trades').innerHTML = s.trades.length ? tradeTable(s.trades, true) : '<div class="empty">체결 기록 없음</div>';
+  renderAllocation(s);
+  loadPositionCharts(s.positions.length);
+}
+
+const ALLOC_COLORS = ['#8b5cf6','#f59e0b','#10b981','#ec4899','#06b6d4','#a3e635','#f97316','#6366f1','#14b8a6','#eab308'];
+function renderAllocation(s) {
+  if (!s.positions.length) { $('alloc').innerHTML = ''; return; }
+  const parts = s.positions.map((p, i) => ({name:p.name || p.symbol, v:p.value, c:ALLOC_COLORS[i % ALLOC_COLORS.length]}));
+  parts.push({name:'현금', v:s.cash, c:'#3a4252'});
+  const total = parts.reduce((a, b) => a + b.v, 0) || 1;
+  $('alloc').innerHTML = `<div class="help">자산 구성 (총 ${won(total)}원)</div>
+    <div class="alloc">${parts.map(p => `<div title="${esc(p.name)} ${won(p.v)}원 (${(p.v/total*100).toFixed(1)}%)" style="width:${(p.v/total*100).toFixed(2)}%;background:${p.c}"></div>`).join('')}</div>
+    <div class="alloc-legend">${parts.map(p => `<span><i style="background:${p.c}"></i>${esc(p.name)} ${(p.v/total*100).toFixed(1)}%</span>`).join('')}</div>`;
+}
+
+let posChartSeq = 0;
+async function loadPositionCharts(n) {
+  $('posChartsCard').style.display = n ? '' : 'none';
+  if (!n) return;
+  const seq = ++posChartSeq;
+  $('posCharts').innerHTML = '<div class="empty">차트 불러오는 중…</div>';
+  let r;
+  try { r = await api('/positions/history?days=60'); } catch (e) { $('posCharts').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  if (seq !== posChartSeq) return;  // 더 최근 요청이 있으면 버린다
+  $('posChartsSrc').textContent = `· 최근 60거래일 · ${SOURCE_LABEL[r.source] || r.source}`;
+  $('posCharts').innerHTML = r.positions.map((p, i) => {
+    const now = p.history.length ? p.history[p.history.length - 1][1] : null;
+    const ret = now ? now / p.cost - 1 : 0;
+    const toStop = now ? p.stop / now - 1 : 0, toTarget = now ? p.target / now - 1 : 0;
+    return `<div class="pos-card"><div class="pos-head"><b>${esc(p.name || p.symbol)} <span class="muted" style="font-weight:400;font-size:11px">${esc(p.symbol)}</span></b>
+        <span class="${cls(ret)}" style="font-weight:700">${now ? pct(ret, 2) : '—'}</span></div>
+      <div class="pos-meta">${p.qty}주 · ${esc(p.entry_date)} 매수 · ${p.days_held}/${p.horizon}일${now ? ` · 손절까지 ${pct(toStop,1)} · 익절까지 ${pct(toTarget,1)}` : ''}</div>
+      <div class="chart" id="posChart${i}">${p.error ? `<div class="err">${esc(p.error)}</div>` : ''}</div></div>`;
+  }).join('');
+  r.positions.forEach((p, i) => {
+    if (p.error || !p.history.length) return;
+    lineChart($('posChart' + i), [{name:p.name || p.symbol, color:'#e8eaf0', points:p.history, width:1.6}], {
+      height: 200, L: 54,
+      hlines: [{v:p.target, color:'var(--up)', label:'익절'}, {v:p.cost, color:'#8892a4', label:'평단'}, {v:p.stop, color:'var(--down)', label:'손절'}],
+      vlines: [{date:p.entry_date, color:'var(--amber)', label:'매수'}],
+    });
+  });
 }
 
 function tradeTable(trades, withBuys) {

@@ -106,6 +106,28 @@ def status():
     return _status(Portfolio.load(STATE))
 
 
+@router.get("/positions/history")
+def positions_history(days: int = 120, source: Optional[str] = None):
+    """보유 종목 차트용: 종목별 최근 종가. 소스를 안 주면 마지막 매매에 쓴 소스."""
+    if not STATE.exists():
+        return {"positions": []}
+    pf = Portfolio.load(STATE)
+    if not pf.positions:
+        return {"positions": []}
+    src = source or pf.settings.get("source", "krx")
+    _check_source(src)
+    series, errors = fetch_series(src, list(pf.positions), max(days, 30), seed=42)
+    names = cached_names()
+    out = []
+    for sym, p in pf.positions.items():
+        rows = series.get(sym, [])[-days:]
+        out.append({"symbol": sym, "name": names.get(sym, ""), "entry_date": p.entry_date,
+                    "cost": p.cost_per_share, "stop": p.stop_price, "target": p.target_price,
+                    "qty": p.qty, "days_held": p.days_held, "horizon": p.horizon_days,
+                    "history": rows, "error": errors.get(sym)})
+    return {"source": src, "positions": out}
+
+
 @router.get("/toss-check")
 def toss_check(symbol: str = "005930"):
     from .toss_client import TossClient, TossError
@@ -140,7 +162,7 @@ def _do_run(req: RunReq) -> dict:
     with _lock:
         pf = Portfolio.load(STATE) if STATE.exists() else Portfolio.new(req.capital)
         pf.settings = {"mode": req.mode, "max_positions": req.max_positions, "max_new": req.max_new,
-                       "position_pct": req.position_pct,
+                       "position_pct": req.position_pct, "source": req.source if req.mode == "watchlist" else "krx",
                        "min_turnover": req.min_turnover}
         if req.mode == "universe":
             day, history, names, info = universe_history(ScanConfig(min_turnover=req.min_turnover), KrxPrices(),
