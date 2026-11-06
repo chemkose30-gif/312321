@@ -130,27 +130,33 @@ def _bar(phase: str, done: int, total: int) -> None:
 
 def cmd_scan(args) -> None:
     from .scanner import ScanConfig, scan
-    r = scan(ScanConfig(min_turnover=args.min_turnover, top=args.top, workers=args.workers), progress=_bar)
-    print(f"\n기준일 {r['as_of']} | 상장 {r['listed']} → 국내 보통주 {r['universe']} → 조건 통과 {r['eligible']} "
+    r = scan(ScanConfig(min_turnover=args.min_turnover, top=args.top, workers=args.workers), progress=_bar,
+             screen=args.screen)
+    print(f"\n[{r['screen_name']}] 기준일 {r['as_of']} | 상장 {r['listed']} → 국내 보통주 {r['universe']} → 조건 통과 {r['eligible']} "
           f"→ 매수 신호 {r['signals']} → 시뮬레이션 승인 {r['approved']} ({r['seconds']}초)")
     if r["error_count"]:
         print(f"  시세 조회 실패 {r['error_count']}종목 (예: {list(r['errors'].items())[:2]})")
-    print(f"{'코드':<8}{'종목명':<16}{'현재가':>10}{'기대수익':>9}{'CVaR5':>9}{'승률':>6}{'점수':>7}{'비중':>7}")
+    print(f"{'코드':<8}{'종목명':<16}{'현재가':>10}{'기대수익':>9}{'CVaR5':>9}{'승률':>6}{'점수':>7}  매도")
     for x in [x for x in r["results"] if x["approved"]][: args.top]:
+        sell = "다음 날 시가" if x.get("exit") == "next_open" else f"익절 +{x['target_pct']:.0%}"
         print(f"{x['code']:<8}{x['name'][:14]:<16}{x['price']:>10,.0f}{x['mean']:>+9.2%}{x['cvar5']:>+9.2%}"
-              f"{x['win_rate']:>6.0%}{x['score']:>7.2f}{x['size']:>7.1%}")
+              f"{x['win_rate']:>6.0%}{x['score']:>7.2f}  {sell}")
+    if r["screen"] != "trend":
+        print("\n검색식에 걸린 종목 (판정 포함):")
+        for x in r["results"]:
+            print(f"  {x['code']} {x['name'][:14]:<14} {x['signal']} → {'승인' if x['approved'] else x['reason']}")
     print("\n* 점수 = 기대수익 / 최악 5% 평균손실. 상위 종목일수록 운이 섞였을 가능성도 큽니다. scan-check 로 검증하세요.")
 
 
 def cmd_scan_check(args) -> None:
     from .scanner import ScanConfig, validate
-    v = validate(ScanConfig(min_turnover=args.min_turnover), n_dates=args.dates, top_k=args.top_k, progress=_bar)
-    print(f"\n종목 {v['stocks']}개, 시점 {len(v['dates'])}개 ({v['dates'][0]} ~ {v['dates'][-1]}), "
-          f"각 시점에 사서 최대 {v['horizon']}일 보유(익절/손절 규칙 동일, 비용 차감)")
-    print(f"{'':28}{'건수':>7}{'평균':>9}{'중앙값':>9}{'승률':>7}")
-    for k, g in v["groups"].items():
-        if g["n"]:
-            print(f"{k:<26}{g['n']:>7}{g['mean']:>+9.2%}{g['median']:>+9.2%}{g['win_rate']:>7.0%}")
+    v = validate(ScanConfig(min_turnover=args.min_turnover), n_days=args.days, progress=_bar)
+    print(f"\n종목 {v['stocks']}개 · 비용 차감 · 손절 -4%")
+    f = lambda g: f"{g['n']:>6} {g['mean']:>+7.2%} {g['win_rate']:>5.0%}" if g["n"] else f"{0:>6} {'-':>7} {'-':>5}"  # noqa: E731
+    print(f"{'검색식':<22}{'기간':<24}{'하루':>6} | {'아무거나 (건수 평균 승률)':<22} | {'검색식 그대로':<20} | 시뮬레이션 승인")
+    for s in v["screens"]:
+        rule = "다음 날 시가 매도" if s["exit"] == "next_open" else f"최대 {s['horizon']}일"
+        print(f"{s['name']:<20}{s['from']}~{s['to']}{s['hits_per_day']:>6.1f} | {f(s['base'])} | {f(s['hit'])} | {f(s['approved'])}  ({rule})")
     print("\n* 지금 상장된 종목만 써서 상장폐지 종목이 빠졌습니다(생존 편향). 실제보다 좋게 나올 수 있습니다.")
 
 
@@ -208,12 +214,13 @@ def main(argv=None) -> None:
     p.add_argument("--min-turnover", type=float, default=1e9, help="20일 평균 거래대금 하한(원)")
     p.add_argument("--top", type=int, default=30)
     p.add_argument("--workers", type=int, default=6)
+    p.add_argument("--screen", default="trend", choices=["trend", "breakout", "squeeze", "closing_bet"],
+                   help="trend: 추세 추종, breakout: ①거래량 돌파, squeeze: ③변동성 수축 후 돌파, closing_bet: ④종가 베팅")
     p.set_defaults(fn=cmd_scan)
 
     p = sub.add_parser("scan-check", help="스캔 방식 과거 검증")
     p.add_argument("--min-turnover", type=float, default=1e9)
-    p.add_argument("--dates", type=int, default=12)
-    p.add_argument("--top-k", type=int, default=10)
+    p.add_argument("--days", type=int, default=120, help="단기 검색식을 시험할 최근 거래일 수")
     p.set_defaults(fn=cmd_scan_check)
 
     p = sub.add_parser("toss-check", help="토스 API 연결 확인")

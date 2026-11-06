@@ -150,3 +150,28 @@ def simulate_trade(closes: Sequence[float], target_pct: Union[float, Sequence[fl
                            "cvar5": r.cvar5, "target_rate": r.target_rate, "stop_rate": r.stop_rate,
                            "approved": r.approved, "score": score_of(r.mean, r.cvar5)} for r in results]
     return best
+
+
+def simulate_overnight(opens: Sequence[float], closes: Sequence[float], round_trip_cost: float,
+                       cfg: Optional[MCConfig] = None, rng: Optional[np.random.Generator] = None,
+                       keep_returns: bool = False) -> MCResult:
+    """종가에 사서 다음 날 시가에 파는 거래(종가 베팅)를 미리 해 본다.
+    과거 '종가 → 다음 날 시가' 수익률을 재추출하고, 일부는 변동성을 키운다."""
+    cfg = cfg or MCConfig()
+    rng = rng or np.random.default_rng()
+    o = np.asarray(opens, dtype=float)[-(cfg.lookback + 1):]
+    c = np.asarray(closes, dtype=float)[-(cfg.lookback + 1):]
+    gaps = np.log(o[1:] / c[:-1])
+    gaps = gaps[np.isfinite(gaps)]
+    if len(gaps) < 30:
+        return _rejected("시뮬레이션용 과거 데이터 부족")
+    if cfg.drift_shrink:
+        gaps = gaps - gaps.mean() * cfg.drift_shrink
+    g = gaps[rng.integers(0, len(gaps), size=cfg.n_paths)]
+    k = int(cfg.n_paths * cfg.stress_share)
+    if k:
+        mu = gaps.mean()
+        g[:k] = mu + (g[:k] - mu) * cfg.stress_vol
+    net = np.exp(g) - 1 - round_trip_cost
+    zeros = np.zeros(len(net), dtype=bool)
+    return _judge(net, zeros, zeros, 0.0, cfg, keep_returns)

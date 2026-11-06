@@ -80,6 +80,13 @@ def cached_names(cache_dir: Path = CACHE) -> Dict[str, str]:
     return {}
 
 
+def cached_listing_meta(cache_dir: Path = CACHE) -> Dict[str, dict]:
+    """네트워크 없이, 이미 받아 둔 종목 목록에서 코드→정보(이름·시장·시가총액)."""
+    for f in sorted(cache_dir.glob("listing-*.csv"), reverse=True):
+        return {r["code"]: r for r in _parse_listing(f.read_text(encoding="utf-8"))}
+    return {}
+
+
 def domestic_universe(listing: List[dict], min_amount: float = 0) -> Tuple[List[dict], Dict[str, int]]:
     """국내 보통주만 남긴다: 코넥스·우선주·스팩·관리종목·투자주의환기종목 제외."""
     out, skipped = [], {"코넥스/기타시장": 0, "우선주": 0, "스팩": 0, "관리·환기종목": 0, "당일 거래대금 미달": 0}
@@ -100,7 +107,11 @@ def domestic_universe(listing: List[dict], min_amount: float = 0) -> Tuple[List[
 
 
 # ---------------- 일봉 캐시 ----------------
-def _fdr_fetch(code: str, start: str) -> List[Row]:
+# 파일 열 순서: date, close, volume, open, high, low  (앞 세 열은 예전 형식과 같다)
+Full = Tuple[str, float, float, float, float, float]
+
+
+def _fdr_fetch(code: str, start: str) -> List[Full]:
     import FinanceDataReader as fdr  # 무거워서 필요할 때만 불러온다
 
     df = fdr.DataReader(code, start)
@@ -108,8 +119,19 @@ def _fdr_fetch(code: str, start: str) -> List[Row]:
     for idx, r in df.iterrows():
         c = float(r.get("Close", 0) or 0)
         if c > 0:
-            out.append((idx.strftime("%Y-%m-%d"), c, float(r.get("Volume", 0) or 0)))
+            o = float(r.get("Open", 0) or 0) or c
+            h = float(r.get("High", 0) or 0) or max(o, c)
+            lo = float(r.get("Low", 0) or 0) or min(o, c)
+            out.append((idx.strftime("%Y-%m-%d"), c, float(r.get("Volume", 0) or 0), o, h, lo))
     return out
+
+
+def _norm(r) -> Full:
+    """(날짜, 종가, 거래량[, 시가, 고가, 저가]) → 6칸. 시가·고가·저가가 없으면 종가로 채운다."""
+    if len(r) >= 6:
+        return (r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]))
+    c = float(r[1])
+    return (r[0], c, float(r[2]), c, c, c)
 
 
 def last_close_time(now: Optional[datetime] = None) -> datetime:
@@ -124,7 +146,7 @@ def last_close_time(now: Optional[datetime] = None) -> datetime:
 
 
 class KrxPrices:
-    def __init__(self, cache_dir: Path = CACHE / "krx", fetch: Optional[Callable[[str, str], List[Row]]] = None):
+    def __init__(self, cache_dir: Path = CACHE / "krx", fetch: Optional[Callable[[str, str], list]] = None):
         self.dir = Path(cache_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.fetch = fetch or _fdr_fetch
@@ -132,47 +154,58 @@ class KrxPrices:
     def _path(self, code: str) -> Path:
         return self.dir / f"{code}.csv"
 
-    def read(self, code: str) -> List[Row]:
+    def _read_raw(self, code: str) -> Tuple[List[Full], bool]:
         p = self._path(code)
         if not p.exists():
-            return []
+            return [], False
         with open(p, newline="", encoding="utf-8") as f:
-            return [(r[0], float(r[1]), float(r[2])) for r in csv.reader(f) if r and r[0] != "date"]
+            rows = [r for r in csv.reader(f) if r]
+        has_ohlc = bool(rows) and rows[0][0] == "date" and len(rows[0]) >= 6
+        return [_norm(r) for r in rows if r[0] != "date"], has_ohlc
 
-    def _write(self, code: str, rows: List[Row]) -> None:
+    def read_full(self, code: str) -> List[Full]:
+        return self._read_raw(code)[0]
+
+    def read(self, code: str) -> List[Row]:
+        return [r[:3] for r in self.read_full(code)]
+
+    def _write(self, code: str, rows: List[Full]) -> None:
         with open(self._path(code), "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["date", "close", "volume"])
+            w.writerow(["date", "close", "volume", "open", "high", "low"])
             w.writerows(rows)
 
     def is_fresh(self, code: str) -> bool:
         p = self._path(code)
         return p.exists() and datetime.fromtimestamp(p.stat().st_mtime) >= last_close_time()
 
-    def history(self, code: str, days: int = 320) -> List[Row]:
-        if self.is_fresh(code):
-            return self.read(code)[-days:]
-        rows = self.read(code)
-        if rows:
+    def history_full(self, code: str, days: int = 320) -> List[Full]:
+        rows, has_ohlc = self._read_raw(code)
+        if rows and has_ohlc and self.is_fresh(code):
+            return rows[-days:]
+        if rows and has_ohlc:
             start = (date.fromisoformat(rows[-1][0]) - timedelta(days=10)).isoformat()
-            new = self._fetch_retry(code, start)
-            overlap = {d: c for d, c, _ in new}
+            new = [_norm(r) for r in self._fetch_retry(code, start)]
+            overlap = {r[0]: r[1] for r in new}
             # 겹치는 날 가격이 다르면 액면분할 등으로 수정주가가 바뀐 것 → 전체 다시 받기
-            if any(abs(overlap[d] / c - 1) > 0.005 for d, c, _ in rows[-10:] if d in overlap):
-                rows, new = [], self._fetch_retry(code, self._full_start(days))
-        else:
-            new = self._fetch_retry(code, self._full_start(days))
-        merged = {d: (d, c, v) for d, c, v in rows}
-        merged.update({d: (d, c, v) for d, c, v in new})
+            if any(abs(overlap[r[0]] / r[1] - 1) > 0.005 for r in rows[-10:] if r[0] in overlap):
+                rows, new = [], [_norm(r) for r in self._fetch_retry(code, self._full_start(days))]
+        else:  # 처음이거나 예전 형식(시가·고가·저가 없음) → 전체 다시 받기
+            rows, new = [], [_norm(r) for r in self._fetch_retry(code, self._full_start(days))]
+        merged = {r[0]: r for r in rows}
+        merged.update({r[0]: r for r in new})
         out = sorted(merged.values())[-max(days, 400):]
         self._write(code, out)
         return out[-days:]
+
+    def history(self, code: str, days: int = 320) -> List[Row]:
+        return [r[:3] for r in self.history_full(code, days)]
 
     @staticmethod
     def _full_start(days: int) -> str:
         return (date.today() - timedelta(days=int(days * 1.5) + 20)).isoformat()
 
-    def _fetch_retry(self, code: str, start: str) -> List[Row]:
+    def _fetch_retry(self, code: str, start: str) -> list:
         for attempt in range(3):
             try:
                 return self.fetch(code, start)
@@ -183,11 +216,12 @@ class KrxPrices:
         return []
 
     def bulk(self, codes: List[str], days: int = 320, workers: int = 6,
-             progress: Optional[Callable[[int, int], None]] = None) -> Tuple[Dict[str, List[Row]], Dict[str, str]]:
+             progress: Optional[Callable[[int, int], None]] = None, full: bool = False):
         out, errors = {}, {}
         total, done = len(codes), 0
+        fn = self.history_full if full else self.history
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(self.history, c, days): c for c in codes}
+            futs = {ex.submit(fn, c, days): c for c in codes}
             for fut in as_completed(futs):
                 c = futs[fut]
                 try:

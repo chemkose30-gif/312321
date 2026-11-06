@@ -189,10 +189,13 @@ td.r,th.r{text-align:right}
       <div class="form">
         <label class="field">20일 평균 거래대금 하한
           <select id="scTurnover"><option value="500000000">5억 원</option><option value="1000000000" selected>10억 원</option><option value="3000000000">30억 원</option><option value="10000000000">100억 원</option></select></label>
+        <label class="field">검색식
+          <select id="scScreen"><option value="trend">추세 추종 (가상계좌 기본)</option><option value="breakout">① 거래량 돌파</option><option value="squeeze">③ 변동성 수축 후 돌파</option><option value="closing_bet">④ 종가 베팅</option></select></label>
         <label class="field">보여줄 종목 수<input id="scTop" class="num" type="number" value="50" min="5" max="300"></label>
         <button class="btn" id="scBtn" onclick="startScan()">스캔 시작</button>
-        <button class="btn ghost" id="vaBtn" onclick="startValidate()">과거 검증</button>
+        <button class="btn ghost" id="vaBtn" onclick="startValidate()">과거 검증 (검색식 비교)</button>
       </div>
+      <div class="help" id="scScreenDesc" style="margin-top:8px"></div>
       <p class="help" style="margin-top:8px">해외 주식은 제외합니다. 코넥스·우선주·스팩·관리종목·투자주의환기종목·상장 1년 미만 종목도 뺍니다.
         첫 스캔은 종목마다 1년치 시세를 받느라 몇 분 걸리고, 다음부터는 하루치만 이어 받아 빨라집니다.</p>
       <div id="scProg" style="display:none"><div class="help" id="scPhase"></div><div class="progress"><div id="scBar" style="width:0"></div></div></div>
@@ -636,7 +639,7 @@ async function runMC() {
 let scanTimer = null;
 async function startScan() {
   $('scErr').textContent = '';
-  try { await api('/scan', {min_turnover:+$('scTurnover').value, top:+$('scTop').value}); pollJobs(); }
+  try { await api('/scan', {min_turnover:+$('scTurnover').value, top:+$('scTop').value, screen:$('scScreen').value}); pollJobs(); }
   catch (e) { $('scErr').textContent = e.message; }
 }
 async function startValidate() {
@@ -662,7 +665,10 @@ async function pollJobs(first) {
     return;
   }
   if (st.error) $(st.kind === 'run' ? 'runErr' : 'scErr').textContent = st.error;
-  if (st.latest) renderScan(st.latest);
+  if (st.latest) {
+    if (first && st.latest.screen) { $('scScreen').value = st.latest.screen; syncScreenDesc(); }
+    renderScan(st.latest);
+  }
   else if (first) $('scOut').innerHTML = '<div class="card"><div class="empty">아직 스캔 기록이 없습니다. "스캔 시작"을 눌러 주세요.</div></div>';
   if (st.validation) renderValidation(st.validation);
   if (st.run && (first || lastJobKind === 'run')) renderRunLog(st.run);
@@ -677,30 +683,49 @@ function renderScan(r) {
   const row = x => `<tr><td><b>${esc(x.name)}</b><div class="muted">${esc(x.code)} · ${esc(x.market)}</div></td>
     <td class="r">${won(x.price)}</td><td class="r">${(x.turnover/1e8).toFixed(0)}억</td>
     <td class="r ${cls(x.mean)}">${pct(x.mean,2)}</td><td class="r ${cls(x.cvar5)}">${pct(x.cvar5,1)}</td>
-    <td class="r">${pct(x.win_rate,0,false)}</td><td class="r"><b>${x.score.toFixed(2)}</b></td><td class="r">${x.approved ? '+' + pct(x.target_pct,0,false) : '<span class="muted">—</span>'}</td>
+    <td class="r">${pct(x.win_rate,0,false)}</td><td class="r"><b>${x.score.toFixed(2)}</b></td><td class="r">${x.exit === 'next_open' ? '다음 날 시가' : x.approved ? `+${pct(x.target_pct,0,false)}${x.horizon_days && x.horizon_days !== 20 ? ` · ${x.horizon_days}일` : ''}` : '<span class="muted">—</span>'}</td>
     <td class="muted" style="max-width:220px">${esc(x.approved ? x.signal : x.reason)}</td>
-    <td class="r"><button class="mini" onclick="openMC('${esc(x.code)}')">상세</button>
-      ${x.approved ? `<button class="mini${watch.has(x.code) ? ' done' : ''}" onclick="addWatch('${esc(x.code)}', this)">${watch.has(x.code) ? '감시 중' : '감시 추가'}</button>` : ''}</td></tr>`;
-  const head = `<tr><th>종목</th><th class="r">현재가</th><th class="r">거래대금</th><th class="r">기대수익</th><th class="r">최악5%</th><th class="r">승률</th><th class="r">점수</th><th class="r">익절선</th><th>신호 / 거절 사유</th><th></th></tr>`;
+    <td class="r">${x.exit ? '' : `<button class="mini" onclick="openMC('${esc(x.code)}')">상세</button>`}
+      ${x.approved && !x.exit ? `<button class="mini${watch.has(x.code) ? ' done' : ''}" onclick="addWatch('${esc(x.code)}', this)">${watch.has(x.code) ? '감시 중' : '감시 추가'}</button>` : ''}</td></tr>`;
+  const head = `<tr><th>종목</th><th class="r">현재가</th><th class="r">거래대금</th><th class="r">기대수익</th><th class="r">최악5%</th><th class="r">승률</th><th class="r">점수</th><th class="r">매도 규칙</th><th>신호 / 거절 사유</th><th></th></tr>`;
   $('scOut').innerHTML = `
-    <div class="card"><h3>스캔 결과 · 기준일 ${esc(r.as_of)} · ${esc(r.started.replace('T',' '))} 실행 (${r.seconds}초)</h3>
+    <div class="card"><h3>${esc(r.screen_name || '추세 추종 (기존)')} 스캔 결과 · 기준일 ${esc(r.as_of)} · ${esc(r.started.replace('T',' '))} 실행 (${r.seconds}초)</h3>
       <div class="funnel">상장 <b>${r.listed.toLocaleString()}</b> → 국내 보통주 <b>${r.universe.toLocaleString()}</b> → 조건 통과 <b>${r.eligible.toLocaleString()}</b>
         → 매수 신호 <b>${r.signals.toLocaleString()}</b> → 시뮬레이션 승인 <b style="color:var(--green)">${r.approved.toLocaleString()}</b></div>
       <div class="help muted">제외: ${skip || '없음'}${r.error_count ? ` · <span class="up">시세 조회 실패 ${r.error_count}종목</span>` : ''}</div></div>
     <div class="card"><h3>승인 종목 (점수 순)</h3><div class="tbl">${ok.length ? `<table>${head}${ok.map(row).join('')}</table>` : '<div class="empty">오늘은 승인된 종목이 없습니다. 억지로 사지 않는 것도 전략입니다.</div>'}</div></div>
+    ${r.screen && r.screen !== 'trend' ? '<p class="help" style="margin:-4px 0 14px">단기 검색식 종목은 아직 가상계좌에서 자동으로 사지 않습니다. "과거 검증"으로 통하는 검색식을 확인한 뒤 연결하는 것을 권합니다.</p>' : ''}
     ${no.length ? `<div class="card"><h3>신호는 났지만 시뮬레이션에서 거절된 종목 (일부)</h3><div class="tbl" style="max-height:360px;overflow:auto"><table>${head}${no.map(row).join('')}</table></div></div>` : ''}`;
 }
 
 function renderValidation(v) {
-  const rows = Object.entries(v.groups).filter(([, g]) => g.n);
-  const base = v.groups['전체 종목 (아무거나 샀다면)'];
-  $('vaOut').innerHTML = `<div class="card"><h3>과거 검증 · 종목 ${v.stocks.toLocaleString()}개 · ${v.dates.length}개 시점 (${esc(v.dates[0])} ~ ${esc(v.dates[v.dates.length-1])})</h3>
-    <p class="help">각 시점에 그때까지의 데이터만으로 스캔하고, 같은 규칙(손절 -4% / 최대 ${v.horizon}일, 승인 종목은 시뮬레이션이 고른 익절선, 나머지는 +8%)으로 실제 결과를 계산했습니다. 비용 차감.</p>
-    <div class="tbl"><table><tr><th>그룹</th><th class="r">건수</th><th class="r">평균 수익</th><th class="r">중앙값</th><th class="r">승률</th><th class="r">아무거나 대비</th></tr>
-    ${rows.map(([k, g]) => `<tr><td>${esc(k)}</td><td class="r">${g.n.toLocaleString()}</td><td class="r ${cls(g.mean)}">${pct(g.mean,2)}</td><td class="r ${cls(g.median)}">${pct(g.median,2)}</td><td class="r">${pct(g.win_rate,0,false)}</td><td class="r ${cls(g.mean-base.mean)}">${pct(g.mean-base.mean,2)}p</td></tr>`).join('')}
+  if (!v.screens) { $('vaOut').innerHTML = ''; return; }  // 예전 형식 결과는 다시 검증해야 표시
+  const g = (x, base) => x.n ? `<td class="r">${x.n.toLocaleString()}</td><td class="r ${cls(x.mean)}"><b>${pct(x.mean,2)}</b></td><td class="r">${pct(x.win_rate,0,false)}</td>
+      <td class="r ${cls(x.mean - base.mean)}">${pct(x.mean - base.mean,2)}p</td>` : '<td class="r">0</td><td class="r muted">—</td><td class="r muted">—</td><td class="r muted">—</td>';
+  $('vaOut').innerHTML = `<div class="card"><h3>검색식 과거 검증 · 종목 ${v.stocks.toLocaleString()}개</h3>
+    <p class="help">과거 각 거래일에 그때까지의 데이터만으로 검색식을 돌리고, 걸린 종목을 그 매도 규칙대로 샀다면 어땠는지 계산했습니다(비용 0.33% 차감, 손절 -4%).
+      "아무거나"는 같은 날 같은 매도 규칙으로 조건 통과 종목을 전부 샀을 때입니다. <b>검색식이 "아무거나"보다 꾸준히 나아야 의미가 있습니다.</b></p>
+    <div class="tbl"><table>
+      <tr><th rowspan="2">검색식</th><th rowspan="2">매도 규칙 · 기간</th><th rowspan="2" class="r">하루 평균<br>걸린 수</th>
+        <th colspan="3" class="r" style="text-align:center">아무거나</th><th colspan="4" class="r" style="text-align:center">검색식 그대로</th><th colspan="4" class="r" style="text-align:center">+ 시뮬레이션 승인</th></tr>
+      <tr><th class="r">건수</th><th class="r">평균</th><th class="r">승률</th><th class="r">건수</th><th class="r">평균</th><th class="r">승률</th><th class="r">차이</th><th class="r">건수</th><th class="r">평균</th><th class="r">승률</th><th class="r">차이</th></tr>
+      ${v.screens.map(s => `<tr><td><b>${esc(s.name)}</b></td>
+        <td class="muted">${s.exit === 'next_open' ? '다음 날 시가 매도' : `최대 ${s.horizon}일`}<br>${esc(s.from)} ~ ${esc(s.to)} (${s.days}일)</td>
+        <td class="r">${s.hits_per_day.toFixed(1)}</td>
+        ${s.base.n ? `<td class="r">${s.base.n.toLocaleString()}</td><td class="r ${cls(s.base.mean)}">${pct(s.base.mean,2)}</td><td class="r">${pct(s.base.win_rate,0,false)}</td>` : '<td colspan="3"></td>'}
+        ${g(s.hit, s.base)}${g(s.approved, s.base)}</tr>`).join('')}
     </table></div>
-    <p class="help" style="margin-top:8px">"승인"이나 "상위" 그룹이 "아무거나 샀다면"보다 꾸준히 나아야 의미가 있습니다. 지금 상장된 종목만으로 계산해 상장폐지 종목이 빠졌으므로(생존 편향) 실제보다 좋게 나올 수 있습니다.</p></div>`;
+    <p class="help" style="margin-top:8px">건수가 수십 건 이하면 우연일 가능성이 큽니다. 지금 상장된 종목만으로 계산해 상장폐지 종목이 빠졌으므로(생존 편향) 실제보다 좋게 나올 수 있습니다.
+      시뮬레이션은 속도를 위해 경로 ${(v.paths||3000).toLocaleString()}개로 계산했습니다.</p></div>`;
 }
+
+const SCREEN_DESC = {
+  trend: '20일선 > 60일선 상승 추세 + 모멘텀 + RSI 70 미만. 익절 3~10% 자동, 손절 -4%, 최대 20일 보유. 가상계좌가 이 방식으로 매매합니다.',
+  breakout: '오늘 거래량이 20일 평균의 3배 이상 + 20일 최고가 돌파 + 등락률 +3~15% + 거래대금 100억 이상 + 윗꼬리 짧음 + 시총 1,000억 이상. 익절 3~10% 자동, 손절 -4%, 최대 5일.',
+  squeeze: '어제가 최근 7일 중 하루 변동폭이 가장 작았고, 오늘 종가가 어제 고가를 돌파 + 거래량 1.5배 이상 + 20일선 위 + 거래대금 30억 이상. 익절 3~10% 자동, 손절 -4%, 최대 5일.',
+  closing_bet: '오늘 +5% 이상(상한가 제외) + 종가가 고가의 97% 이상 + 거래대금 상위 50위 + 오른 종목이 50% 이상인 날. 종가에 사서 다음 날 시가에 매도.',
+};
+function syncScreenDesc() { $('scScreenDesc').textContent = SCREEN_DESC[$('scScreen').value]; }
 
 function openMC(code) {
   document.querySelector('.tab[data-page="mc"]').click();
@@ -751,6 +776,7 @@ async function tossCheck() {
     비용: 수수료 ${pct(c.fee_rate,3,false)} (양방향), 매도 거래세 ${pct(c.sell_tax,2,false)}, 슬리피지 ${pct(c.slippage,2,false)}`;
   try { const t = localStorage.getItem('trader-tab'); if (t) document.querySelector(`.tab[data-page="${t}"]`)?.click(); } catch (_) {}
   loadAccount();
+  $('scScreen').onchange = syncScreenDesc; syncScreenDesc();
   pollJobs(true);
 })();
 </script>

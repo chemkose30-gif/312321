@@ -29,7 +29,7 @@ def _toss_last2(client, symbol: str) -> List[Tuple[str, float]]:
 def _naver_last2(symbol: str) -> List[Tuple[str, float]]:
     from .krx import _fdr_fetch
     rows = _fdr_fetch(symbol, (date.today() - timedelta(days=10)).isoformat())
-    return [(d, c) for d, c, _ in rows][-2:]
+    return [(r[0], r[1]) for r in rows][-2:]
 
 
 def live_quotes(symbols: List[str], prefer: str = "auto") -> Tuple[Dict[str, dict], str, Dict[str, str]]:

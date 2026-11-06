@@ -369,27 +369,30 @@ class ScanReq(BaseModel):
     min_turnover: float = Field(1e9, ge=0)
     top: int = Field(50, ge=5, le=300)
     workers: int = Field(6, ge=1, le=16)
+    screen: str = "trend"  # trend | breakout | squeeze | closing_bet
 
 
 @router.post("/scan")
 def start_scan(req: ScanReq, request: Request):
     _local_only(request)
+    from .screens import SCREENS
+    if req.screen != "trend" and req.screen not in SCREENS:
+        raise HTTPException(400, f"알 수 없는 검색식: {req.screen}")
     cfg = ScanConfig(min_turnover=req.min_turnover, top=req.top, workers=req.workers)
-    _start_job("scan", lambda: scan(cfg, progress=_progress))
+    _start_job("scan", lambda: scan(cfg, progress=_progress, screen=req.screen))
     return scan_status()
 
 
 class ValidateReq(BaseModel):
     min_turnover: float = Field(1e9, ge=0)
-    n_dates: int = Field(12, ge=2, le=40)
-    top_k: int = Field(10, ge=1, le=50)
+    n_days: int = Field(120, ge=20, le=250)  # 단기 검색식을 시험할 최근 거래일 수
 
 
 @router.post("/scan/validate")
 def start_validate(req: ValidateReq, request: Request):
     _local_only(request)
     cfg = ScanConfig(min_turnover=req.min_turnover)
-    _start_job("validate", lambda: validate(cfg, n_dates=req.n_dates, top_k=req.top_k, progress=_progress))
+    _start_job("validate", lambda: validate(cfg, n_days=req.n_days, progress=_progress))
     return scan_status()
 
 
