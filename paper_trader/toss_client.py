@@ -90,18 +90,34 @@ class TossClient:
 
     # ---- 시세 ----
     def daily_closes(self, symbol: str, count: int = 300) -> List[Tuple[str, float]]:
-        raw = self.get(self.candles_path, {"symbol": symbol, "interval": "1d", "count": count})
-        rows = _find_list(raw)
-        out = []
-        for row in rows:
-            close = _pick(row, "close", "closePrice", "tradePrice", "c")
-            ts = _pick(row, "date", "baseDate", "datetime", "timestamp", "time", "t")
-            if close is None or ts is None:
-                continue
-            out.append((_to_date(ts), float(close)))
-        if not out:
+        """응답의 nextBefore 로 이전 페이지를 이어 받아 최대 count 일치를 모은다."""
+        page = int(os.getenv("TOSS_CANDLE_PAGE", "100"))
+        before_param = os.getenv("TOSS_BEFORE_PARAM", "before")
+        found: dict = {}
+        before = None
+        for _ in range(20):  # 무한 루프 방지
+            params = {"symbol": symbol, "interval": "1d", "count": min(page, count)}
+            if before:
+                params[before_param] = before
+            raw = self.get(self.candles_path, params)
+            added = 0
+            for row in _find_list(raw):
+                close = _pick(row, "close", "closePrice", "tradePrice", "c")
+                ts = _pick(row, "date", "baseDate", "datetime", "timestamp", "time", "t")
+                if close is None or ts is None:
+                    continue
+                d = _to_date(ts)
+                if d not in found:
+                    found[d] = float(close)
+                    added += 1
+            nxt = _find_key(raw, "nextBefore")
+            # 새 데이터가 없거나(파라미터가 무시됨) 다음 페이지가 없으면 중단
+            if len(found) >= count or not added or not nxt or nxt == before:
+                break
+            before = nxt
+        if not found:
             raise TossError("캔들 응답을 해석하지 못했습니다. `toss-check` 로 원본 응답을 확인하세요.")
-        return sorted(set(out))
+        return sorted(found.items())[-count:]
 
 
 def _find_list(obj: Any) -> list:
@@ -114,6 +130,17 @@ def _find_list(obj: Any) -> list:
                 if found:
                     return found
     return []
+
+
+def _find_key(obj: Any, key: str) -> Any:
+    if isinstance(obj, dict):
+        if obj.get(key) is not None:
+            return obj[key]
+        for v in obj.values():
+            r = _find_key(v, key)
+            if r is not None:
+                return r
+    return None
 
 
 def _pick(row: dict, *keys: str) -> Any:

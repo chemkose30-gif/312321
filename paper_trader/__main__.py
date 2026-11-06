@@ -118,6 +118,10 @@ def cmd_toss_check(args) -> None:
     print("캔들 원본 응답(앞부분):", json.dumps(raw, ensure_ascii=False)[:1500])
     try:
         print("해석 결과:", c.daily_closes(args.symbol, 3))
+        rows = c.daily_closes(args.symbol, 300)
+        print(f"300일 요청 → {len(rows)}일 수신 ({rows[0][0]} ~ {rows[-1][0]})")
+        if len(rows) < 61:
+            print("  ! 전략에 최소 61일이 필요합니다. 페이지 넘김이 안 되는 것 같으니 이 결과를 알려 주세요.")
     except Exception as e:  # noqa: BLE001
         print("해석 실패:", e)
 
