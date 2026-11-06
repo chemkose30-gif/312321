@@ -38,13 +38,16 @@ class Portfolio:
     positions: Dict[str, Position] = field(default_factory=dict)
     trades: List[dict] = field(default_factory=list)
     equity_history: List[list] = field(default_factory=list)
+    last_prices: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def new(cls, capital: float, costs: Optional[Costs] = None) -> "Portfolio":
         return cls(cash=capital, initial_capital=capital, costs=costs or Costs())
 
     def equity(self, prices: Dict[str, float]) -> float:
-        value = sum(p.qty * prices.get(s, p.cost_per_share) for s, p in self.positions.items())
+        def px(s: str, p: Position) -> float:
+            return prices.get(s) or self.last_prices.get(s) or p.cost_per_share
+        value = sum(p.qty * px(s, p) for s, p in self.positions.items())
         return self.cash + value
 
     def buy(self, symbol: str, price: float, budget: float, date: str, target_pct: float,

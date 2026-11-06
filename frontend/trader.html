@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 모의투자</title>
+<style>
+:root{
+  --bg:#0a0c10;--bg2:#111318;--bg3:#181c24;
+  --border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.12);
+  --text:#e8eaf0;--text2:#8892a4;--text3:#5a6578;
+  --blue:#3b82f6;--green:#10b981;--amber:#f59e0b;--purple:#8b5cf6;
+  --up:#f04452;--down:#3182f6; /* 국내 관례: 상승 빨강, 하락 파랑 */
+  --radius:10px;--radius-sm:6px;
+  --font:'Pretendard','Apple SD Gothic Neo',-apple-system,'Malgun Gothic',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+a{color:inherit}
+.topbar{position:sticky;top:0;z-index:5;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;padding:10px 20px;flex-wrap:wrap}
+.logo{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px}
+.logo-dot{width:8px;height:8px;border-radius:50%;background:var(--purple)}
+.tabs{display:flex;gap:2px;background:var(--bg3);padding:3px;border-radius:var(--radius-sm);overflow-x:auto}
+.tab{background:none;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text2);font-family:var(--font);white-space:nowrap}
+.tab.active{background:var(--bg2);color:var(--text);font-weight:600}
+.spacer{flex:1}
+.back{font-size:12px;color:var(--text2);text-decoration:none;border:1px solid var(--border2);padding:5px 10px;border-radius:var(--radius-sm)}
+.back:hover{color:var(--text)}
+.wrap{max-width:1180px;margin:0 auto;padding:20px}
+.page{display:none}.page.active{display:block}
+.banner{background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.25);color:#c4b5fd;border-radius:var(--radius-sm);padding:10px 14px;font-size:12px;margin-bottom:16px;line-height:1.6}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+.card h3{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px}
+.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+.metric{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px}
+.metric .l{font-size:11px;color:var(--text2);margin-bottom:6px}
+.metric .v{font-size:22px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.metric .s{font-size:11px;color:var(--text3);margin-top:4px}
+.form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text2)}
+.field input,.field select{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:var(--radius-sm);padding:7px 9px;font-family:var(--font);font-size:13px;min-width:0}
+.field input.wide{width:320px;max-width:100%}
+.field input.num{width:90px}
+.check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);padding-bottom:8px;cursor:pointer}
+.btn{background:var(--purple);border:none;color:#fff;padding:8px 16px;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font);font-size:13px;font-weight:600}
+.btn:hover{filter:brightness(1.1)}
+.btn:disabled{opacity:.5;cursor:wait}
+.btn.ghost{background:none;border:1px solid var(--border2);color:var(--text2);font-weight:500}
+.btn.ghost:hover{color:var(--text)}
+.btn.danger{background:none;border:1px solid rgba(240,68,82,.4);color:var(--up);font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th{text-align:left;color:var(--text3);font-weight:500;padding:7px 8px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+td.r,th.r{text-align:right}
+.tbl{overflow-x:auto}
+.up{color:var(--up)}.down{color:var(--down)}.muted{color:var(--text3)}
+.log{font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.7;background:var(--bg3);border-radius:var(--radius-sm);padding:10px 12px;white-space:pre-wrap;max-height:260px;overflow:auto}
+.log .buy{color:var(--up)}.log .sell{color:var(--down)}.log .rej{color:var(--text3)}
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700}
+.badge.ok{background:rgba(16,185,129,.15);color:var(--green)}
+.badge.no{background:rgba(240,68,82,.12);color:var(--up)}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+.card,.grid2>*{min-width:0}
+.chart{position:relative;width:100%}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text2);margin-bottom:8px}
+.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.tip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--border2);border-radius:6px;padding:6px 8px;font-size:11px;line-height:1.6;white-space:nowrap;display:none;z-index:3}
+.empty{color:var(--text3);font-size:13px;padding:24px;text-align:center}
+.err{color:var(--up);font-size:12px;margin-top:8px;white-space:pre-wrap}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid #fff6;border-top-color:#fff;border-radius:50%;animation:sp 0.7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.help{font-size:12px;color:var(--text2);line-height:1.8}
+.help code{background:var(--bg3);padding:1px 6px;border-radius:4px;font-size:12px}
+@media (max-width:860px){
+  .metrics{grid-template-columns:1fr 1fr}
+  .grid2{grid-template-columns:minmax(0,1fr)}
+  .wrap{padding:12px 16px}
+  .topbar{padding:10px 16px}
+  .field input.wide{width:100%}
+  .field.grow{flex:1 1 100%}
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="logo"><div class="logo-dot"></div>AI 모의투자</div>
+  <div class="tabs">
+    <button class="tab active" data-page="account">내 가상계좌</button>
+    <button class="tab" data-page="backtest">백테스트</button>
+    <button class="tab" data-page="mc">1000회 시뮬레이션</button>
+    <button class="tab" data-page="settings">연결 설정</button>
+  </div>
+  <div class="spacer"></div>
+  <a class="back" href="/">← 스포츠 대시보드</a>
+</div>
+
+<div class="wrap">
+  <div class="banner">가상머니 전용입니다. 실제 주문 기능은 없으며 증권사 API는 시세 조회에만 씁니다.
+    전략이 매수 신호를 내면 1000개의 가상 미래에서 미리 거래해 보고, 기대수익과 꼬리위험이 기준을 넘을 때만 삽니다.
+    과거·가상 성과는 미래 수익을 보장하지 않습니다.</div>
+
+  <!-- 내 가상계좌 -->
+  <section class="page active" id="page-account">
+    <div id="acctEmpty" class="card" style="display:none">
+      <h3>가상 계좌 만들기</h3>
+      <div class="form">
+        <label class="field">시작 금액(원)<input id="newCapital" class="num" style="width:140px" type="number" value="10000000" step="1000000"></label>
+        <button class="btn" onclick="resetAccount(false)">계좌 만들기</button>
+      </div>
+      <p class="help" style="margin-top:10px">또는 아래 "오늘 매매 실행"을 누르면 1,000만 원 계좌가 자동으로 만들어집니다.</p>
+    </div>
+
+    <div class="metrics" id="acctMetrics"></div>
+
+    <div class="card">
+      <h3>오늘 매매 실행 <span class="muted" id="lastRun"></span></h3>
+      <div class="form">
+        <label class="field">시세 소스<select id="runSource"></select></label>
+        <label class="field grow">종목 (쉼표로 구분)<input id="runSymbols" class="wide"></label>
+        <label class="check"><input type="checkbox" id="runFilter" checked>1000회 시뮬레이션 필터</label>
+        <label class="check"><input type="checkbox" id="runForce">강제 재실행</label>
+        <button class="btn" id="runBtn" onclick="runToday()">오늘 매매 실행</button>
+      </div>
+      <p class="help" style="margin-top:8px">장 마감 후(15:30 이후) 하루 한 번 누르세요. 손절·익절·보유기간을 점검하고 새 매수 신호를 검증합니다.</p>
+      <div id="runErr" class="err"></div>
+      <div id="runLog" class="log" style="display:none;margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3>총자산 추이</h3>
+      <div id="acctChart" class="chart"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h3>보유 종목</h3><div class="tbl" id="positions"></div></div>
+      <div class="card"><h3>최근 체결</h3><div class="tbl" id="trades" style="max-height:420px;overflow:auto"></div></div>
+    </div>
+    <div style="text-align:right"><button class="btn danger" onclick="resetAccount(true)">계좌 초기화</button></div>
+  </section>
+
+  <!-- 백테스트 -->
+  <section class="page" id="page-backtest">
+    <div class="card">
+      <h3>필터 사용 vs 전략 단독 비교</h3>
+      <div class="form">
+        <label class="field">시세 소스<select id="btSource"></select></label>
+        <label class="field grow">종목<input id="btSymbols" class="wide"></label>
+        <label class="field">기간(거래일)<input id="btDays" class="num" type="number" value="750" min="150" max="2500"></label>
+        <label class="field">가상시장 번호<input id="btSeed" class="num" type="number" value="42"></label>
+        <button class="btn" id="btBtn" onclick="runBacktest()">백테스트</button>
+      </div>
+      <p class="help" style="margin-top:8px">"가상 주가"는 시드 번호마다 다른 가상 시장을 만듭니다. 토스는 최근 약 300거래일만 받아오므로 기간을 300으로 두세요.</p>
+      <div id="btErr" class="err"></div>
+    </div>
+    <div id="btOut"></div>
+  </section>
+
+  <!-- 1000회 시뮬레이션 -->
+  <section class="page" id="page-mc">
+    <div class="card">
+      <h3>지금 이 종목을 사면? 1000개의 미래에서 미리 거래</h3>
+      <div class="form">
+        <label class="field">시세 소스<select id="mcSource"></select></label>
+        <label class="field">종목<input id="mcSymbol" class="num" style="width:110px" value="005930"></label>
+        <label class="field">익절 %<input id="mcTarget" class="num" type="number" value="8" step="0.5"></label>
+        <label class="field">손절 %<input id="mcStop" class="num" type="number" value="4" step="0.5"></label>
+        <label class="field">보유일<input id="mcHorizon" class="num" type="number" value="20"></label>
+        <label class="field">경로 수<input id="mcPaths" class="num" type="number" value="1000" step="500"></label>
+        <button class="btn" id="mcBtn" onclick="runMC()">시뮬레이션</button>
+      </div>
+      <div id="mcErr" class="err"></div>
+    </div>
+    <div id="mcOut"></div>
+  </section>
+
+  <!-- 연결 설정 -->
+  <section class="page" id="page-settings">
+    <div class="card">
+      <h3>토스증권 연결</h3>
+      <div id="tossState" class="help"></div>
+      <div class="form" style="margin-top:12px">
+        <label class="field">확인할 종목<input id="tcSymbol" class="num" style="width:110px" value="005930"></label>
+        <button class="btn" id="tcBtn" onclick="tossCheck()">연결 확인</button>
+      </div>
+      <div id="tcOut" class="help" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h3>설정 방법</h3>
+      <div class="help">
+        1. 저장소 폴더의 <code>.env.example</code> 을 <code>.env</code> 로 복사하고 <code>TOSS_CLIENT_ID</code>, <code>TOSS_CLIENT_SECRET</code> 을 채웁니다.<br>
+        2. 토스증권 Open API 설정에서 이 PC의 IP를 허용 목록에 등록합니다.<br>
+        3. 서버를 다시 켭니다: <code>python main.py</code> → <code>http://localhost:8765/trader</code><br>
+        키와 토큰은 이 PC의 파일에만 저장되고 화면에는 표시되지 않습니다.
+      </div>
+    </div>
+    <div class="card">
+      <h3>현재 규칙</h3>
+      <div class="help" id="rules"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const API = '/api/trader';
+const SOURCE_LABEL = {synthetic:'가상 주가 (테스트)', yahoo:'Yahoo 무료 시세', toss:'토스증권', csv:'CSV 파일'};
+let CFG = null;
+
+// ---------- 공통 ----------
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const won = v => Math.round(v).toLocaleString('ko-KR');
+const pct = (v, d=1, sign=true) => (sign && v > 0 ? '+' : '') + (v*100).toFixed(d) + '%';
+const cls = v => v > 0 ? 'up' : v < 0 ? 'down' : '';
+const symbols = id => $(id).value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+
+async function api(path, body) {
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const r = await fetch(API + path, opt);
+  let data = null;
+  try { data = await r.json(); } catch (_) {}
+  if (!r.ok) {
+    let d = data?.detail ?? r.statusText;
+    if (typeof d === 'object') d = (d.message || '') + (d.errors ? '\n' + Object.entries(d.errors).map(([k,v]) => `${k}: ${v}`).join('\n') : '') || JSON.stringify(d);
+    throw new Error(d);
+  }
+  return data;
+}
+
+async function busy(btnId, fn) {
+  const b = $(btnId), label = b.textContent;
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>' + esc(label);
+  try { await fn(); } finally { b.disabled = false; b.textContent = label; }
+}
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + t.dataset.page));
+  try { localStorage.setItem('trader-tab', t.dataset.page); } catch (_) {}
+});
+
+// ---------- 차트 ----------
+function lineChart(el, series, {height=260, fmt=won} = {}) {
+  el.innerHTML = '';
+  const pts = series.flatMap(s => s.points);
+  if (pts.length < 2) { el.innerHTML = '<div class="empty">기록이 2일 이상 쌓이면 그래프가 나타납니다.</div>'; return; }
+  const W = Math.max(320, el.clientWidth || 800), H = height, L = 64, R = 12, T = 10, B = 26;
+  const dates = [...new Set(pts.map(p => p[0]))].sort();
+  const xi = new Map(dates.map((d, i) => [d, i]));
+  let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+  const pad = (hi - lo) * 0.08 || hi * 0.02 || 1; lo -= pad; hi += pad;
+  const x = i => L + (W - L - R) * (dates.length === 1 ? 0.5 : i / (dates.length - 1));
+  const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + (hi - lo) * k / 4, yy = y(v);
+    svg += `<line x1="${L}" x2="${W-R}" y1="${yy}" y2="${yy}" stroke="rgba(255,255,255,.06)"/>`;
+    svg += `<text x="${L-8}" y="${yy+4}" fill="#5a6578" font-size="10" text-anchor="end">${fmt(v)}</text>`;
+  }
+  [0, Math.floor((dates.length-1)/2), dates.length-1].forEach((i, n) => {
+    svg += `<text x="${x(i)}" y="${H-6}" fill="#5a6578" font-size="10" text-anchor="${['start','middle','end'][n]}">${dates[i]}</text>`;
+  });
+  series.forEach(s => {
+    const d = s.points.map((p, i) => `${i ? 'L' : 'M'}${x(xi.get(p[0])).toFixed(1)},${y(p[1]).toFixed(1)}`).join('');
+    svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width||2}" ${s.dash ? 'stroke-dasharray="4 4"' : ''} stroke-linejoin="round"/>`;
+  });
+  svg += `<line id="hl" y1="${T}" y2="${H-B}" stroke="rgba(255,255,255,.25)" style="display:none"/></svg>`;
+  const legend = series.length > 1 ? `<div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
+  el.innerHTML = legend + svg + '<div class="tip"></div>';
+  const svgEl = el.querySelector('svg'), tip = el.querySelector('.tip'), hl = el.querySelector('#hl');
+  const maps = series.map(s => new Map(s.points));
+  svgEl.addEventListener('mousemove', e => {
+    const r = svgEl.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
+    const i = Math.max(0, Math.min(dates.length - 1, Math.round((px - L) / (W - L - R) * (dates.length - 1))));
+    const d = dates[i];
+    hl.setAttribute('x1', x(i)); hl.setAttribute('x2', x(i)); hl.style.display = '';
+    tip.innerHTML = `<b>${d}</b><br>` + series.map((s, k) => maps[k].has(d) ? `<span style="color:${s.color}">●</span> ${esc(s.name)} ${fmt(maps[k].get(d))}` : '').filter(Boolean).join('<br>');
+    tip.style.display = 'block';
+    const left = (x(i) / W) * r.width;
+    tip.style.left = Math.min(left + 12, r.width - tip.offsetWidth - 4) + 'px';
+    tip.style.top = (el.querySelector('.legend') ? 24 : 0) + 'px';
+  });
+  svgEl.addEventListener('mouseleave', () => { tip.style.display = 'none'; hl.style.display = 'none'; });
+}
+
+function histogram(el, counts, edges, markers) {
+  const W = Math.max(320, el.clientWidth || 800), H = 240, L = 40, R = 12, T = 14, B = 26;
+  const lo = edges[0], hi = edges[edges.length-1], max = Math.max(...counts, 1);
+  const x = v => L + (W - L - R) * (v - lo) / (hi - lo || 1);
+  const y = c => T + (H - T - B) * (1 - c / max);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  for (let k = 0; k <= 3; k++) {
+    const c = max * k / 3;
+    svg += `<line x1="${L}" x2="${W-R}" y1="${y(c)}" y2="${y(c)}" stroke="rgba(255,255,255,.06)"/><text x="${L-6}" y="${y(c)+4}" fill="#5a6578" font-size="10" text-anchor="end">${Math.round(c)}</text>`;
+  }
+  counts.forEach((c, i) => {
+    const mid = (edges[i] + edges[i+1]) / 2, x0 = x(edges[i]) + 0.5, w = Math.max(1, x(edges[i+1]) - x(edges[i]) - 1);
+    svg += `<rect x="${x0}" y="${y(c)}" width="${w}" height="${H - B - y(c)}" fill="${mid >= 0 ? 'var(--up)' : 'var(--down)'}" opacity=".8"><title>${pct(edges[i])} ~ ${pct(edges[i+1])}: ${c}회</title></rect>`;
+  });
+  [lo, (lo+hi)/2, hi].forEach((v, n) => svg += `<text x="${x(v)}" y="${H-6}" fill="#5a6578" font-size="10" text-anchor="${['start','middle','end'][n]}">${pct(v)}</text>`);
+  markers.forEach((m, k) => {
+    if (m.v < lo || m.v > hi) return;
+    svg += `<line x1="${x(m.v)}" x2="${x(m.v)}" y1="${T}" y2="${H-B}" stroke="${m.color}" stroke-dasharray="3 3"/><text x="${x(m.v)+4}" y="${T+8+k*13}" fill="${m.color}" font-size="10">${esc(m.label)}</text>`;
+  });
+  el.innerHTML = svg + '</svg>';
+}
+
+// ---------- 내 가상계좌 ----------
+function renderAccount(s) {
+  $('acctEmpty').style.display = s.exists ? 'none' : '';
+  if (!s.exists) {
+    $('acctMetrics').innerHTML = ''; $('positions').innerHTML = $('trades').innerHTML = '<div class="empty">계좌가 없습니다</div>';
+    $('acctChart').innerHTML = '<div class="empty">계좌를 만들고 매매를 실행하면 그래프가 나타납니다.</div>'; $('lastRun').textContent = '';
+    return;
+  }
+  const m = [
+    ['총자산', won(s.equity) + '원', `시작 ${won(s.initial_capital)}원`],
+    ['수익률', `<span class="${cls(s.return)}">${pct(s.return, 2)}</span>`, '수수료·세금 반영'],
+    ['현금', won(s.cash) + '원', `보유 ${s.positions.length}종목`],
+    ['최대낙폭', `<span class="${cls(s.max_drawdown)}">${pct(s.max_drawdown)}</span>`, '고점 대비 최대 하락'],
+    ['청산 거래', s.closed_trades + '건', s.closed_trades ? `승률 ${pct(s.win_rate,0,false)} · 평균 ${pct(s.avg_pnl_pct,2)}` : '아직 없음'],
+  ];
+  $('acctMetrics').innerHTML = m.map(([l, v, sub]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join('');
+  $('lastRun').textContent = s.last_run ? `· 마지막 실행 ${s.last_run}` : '· 아직 실행 전';
+  lineChart($('acctChart'), [{name:'총자산', color:'var(--purple)', points:s.equity_history}]);
+  $('positions').innerHTML = s.positions.length ? `<table><tr><th>종목</th><th class="r">수량</th><th class="r">평단</th><th class="r">현재</th><th class="r">손익</th><th class="r">손절/익절</th><th class="r">보유</th></tr>` +
+    s.positions.map(p => `<tr><td><b>${esc(p.symbol)}</b><div class="muted">${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
+    : '<div class="empty">보유 종목 없음</div>';
+  $('trades').innerHTML = s.trades.length ? tradeTable(s.trades, true) : '<div class="empty">체결 기록 없음</div>';
+}
+
+function tradeTable(trades, withBuys) {
+  return `<table><tr><th>날짜</th><th>구분</th><th>종목</th><th class="r">수량</th><th class="r">가격</th><th class="r">손익</th><th>사유</th></tr>` +
+    trades.map(t => `<tr><td class="muted">${esc(t.date)}</td><td class="${t.side==='BUY'?'up':'down'}">${t.side==='BUY'?'매수':'매도'}</td><td>${esc(t.symbol)}</td><td class="r">${t.qty}</td><td class="r">${won(t.price)}</td>` +
+      `<td class="r ${cls(t.pnl||0)}">${t.side==='SELL' ? `${t.pnl>0?'+':''}${won(t.pnl)}<div>${pct(t.pnl_pct,2)}</div>` : '<span class="muted">—</span>'}</td>` +
+      `<td class="muted" style="max-width:260px">${esc((t.note||'').split(' | MC ')[0])}${t.days_held!=null?` · ${t.days_held}일`:''}</td></tr>`).join('') + '</table>';
+}
+
+async function loadAccount() {
+  try { renderAccount(await api('/status')); } catch (e) { $('runErr').textContent = e.message; }
+}
+
+async function runToday() {
+  $('runErr').textContent = '';
+  await busy('runBtn', async () => {
+    try {
+      const r = await api('/run', {source:$('runSource').value, symbols:symbols('runSymbols'), use_filter:$('runFilter').checked, force:$('runForce').checked});
+      const lines = r.log.length ? r.log : ['오늘은 매매 없음 (신호 없음 또는 보유 유지)'];
+      Object.entries(r.errors||{}).forEach(([k, v]) => lines.push(`[경고] ${k} 시세 조회 실패: ${v}`));
+      $('runLog').style.display = '';
+      $('runLog').innerHTML = lines.map(l => `<div class="${l.startsWith('[매수]')?'buy':l.startsWith('[매도]')?'sell':l.startsWith('[거절]')?'rej':''}">${esc(l)}</div>`).join('');
+      renderAccount(r.status);
+      $('runForce').checked = false;
+    } catch (e) { $('runErr').textContent = e.message; }
+  });
+}
+
+async function resetAccount(ask) {
+  if (ask && !confirm('가상 계좌를 초기화할까요? 기존 기록은 백업 파일(paper_state.bak-날짜.json)로 남습니다.')) return;
+  const cap = ask ? Number(prompt('시작 금액(원)', '10000000') || 0) : Number($('newCapital').value);
+  if (!cap) return;
+  try { renderAccount(await api('/reset', {capital:cap})); $('runLog').style.display = 'none'; }
+  catch (e) { alert(e.message); }
+}
+
+// ---------- 백테스트 ----------
+async function runBacktest() {
+  $('btErr').textContent = '';
+  await busy('btBtn', async () => {
+    try {
+      const r = await api('/backtest', {source:$('btSource').value, symbols:symbols('btSymbols'), days:+$('btDays').value, seed:+$('btSeed').value});
+      const [f, n] = r.results;
+      const rows = [...r.results.map(x => [x.name, x]), ['균등 매수 후 보유 (벤치마크)', {total_return:r.benchmark.total_return}]];
+      const warn = Object.keys(r.errors||{}).length ? `<div class="err">조회 실패: ${Object.entries(r.errors).map(([k,v]) => esc(k+': '+v)).join(', ')}</div>` : '';
+      $('btOut').innerHTML = `
+        <div class="card"><h3>${esc(r.start)} ~ ${esc(r.end)} · ${r.symbols.map(esc).join(', ')}</h3>
+          <div class="tbl"><table><tr><th></th><th class="r">최종자산</th><th class="r">수익률</th><th class="r">최대낙폭</th><th class="r">거래</th><th class="r">승률</th><th class="r">평균손익</th></tr>
+          ${rows.map(([name, x]) => `<tr><td>${esc(name)}</td><td class="r">${x.final_equity!=null?won(x.final_equity)+'원':''}</td><td class="r ${cls(x.total_return)}">${pct(x.total_return)}</td>
+            <td class="r">${x.max_drawdown!=null?pct(x.max_drawdown):''}</td><td class="r">${x.trades??''}</td><td class="r">${x.win_rate!=null?pct(x.win_rate,0,false):''}</td><td class="r ${cls(x.avg_pnl_pct||0)}">${x.avg_pnl_pct!=null?pct(x.avg_pnl_pct,2):''}</td></tr>`).join('')}
+          </table></div>
+          <p class="help" style="margin-top:10px">${verdict(f, n)}</p>${warn}</div>
+        <div class="card"><h3>자산 추이</h3><div class="chart" id="btChart"></div></div>
+        <div class="card"><h3>필터 사용 쪽 최근 청산 거래</h3><div class="tbl">${f.recent_trades.length ? tradeTable(f.recent_trades) : '<div class="empty">없음</div>'}</div></div>`;
+      lineChart($('btChart'), [
+        {name:'필터 사용', color:'var(--purple)', points:f.curve},
+        {name:'전략 단독', color:'var(--amber)', points:n.curve},
+        {name:'균등 매수 후 보유', color:'#8892a4', points:r.benchmark.curve, dash:true, width:1.5},
+      ]);
+    } catch (e) { $('btErr').textContent = e.message; }
+  });
+}
+
+function verdict(f, n) {
+  const dd = f.max_drawdown - n.max_drawdown, rr = f.total_return - n.total_return;
+  const a = dd > 0.001 ? `필터가 최대낙폭을 ${pct(dd,1,false)}p 줄였고` : dd < -0.001 ? `필터를 쓴 쪽 최대낙폭이 ${pct(-dd,1,false)}p 더 컸고` : '최대낙폭은 비슷했고';
+  const b = rr > 0.001 ? `수익률은 ${pct(rr,1,false)}p 높았습니다.` : rr < -0.001 ? `수익률은 ${pct(-rr,1,false)}p 낮았습니다.` : '수익률은 비슷했습니다.';
+  return `${a} ${b} 거래는 ${n.trades}건 → ${f.trades}건. 한 번의 결과로 판단하지 말고 가상시장 번호를 바꿔 여러 번 비교해 보세요.`;
+}
+
+// ---------- 1000회 시뮬레이션 ----------
+async function runMC() {
+  $('mcErr').textContent = '';
+  await busy('mcBtn', async () => {
+    try {
+      const r = await api('/mc', {source:$('mcSource').value, symbol:$('mcSymbol').value.trim(), target_pct:$('mcTarget').value/100, stop_pct:$('mcStop').value/100, horizon_days:+$('mcHorizon').value, paths:+$('mcPaths').value});
+      const m = r.result, sig = r.signal;
+      const cards = [
+        ['판정', m.approved ? '<span class="badge ok">매수 승인</span>' : '<span class="badge no">거절</span>', esc(m.reason)],
+        ['승률', pct(m.win_rate,0,false), `${m.n_paths.toLocaleString()}개 경로 중`],
+        ['기대수익', `<span class="${cls(m.mean)}">${pct(m.mean,2)}</span>`, `중앙값 ${pct(m.median,2)}`],
+        ['최악 5% 평균', `<span class="${cls(m.cvar5)}">${pct(m.cvar5,2)}</span>`, `하위 5% 경계 ${pct(m.p5,2)}`],
+        ['추천 비중', pct(m.size_fraction,1,false), `손절 ${pct(m.stop_rate,0,false)} · 익절 ${pct(m.target_rate,0,false)}`],
+      ];
+      $('mcOut').innerHTML = `
+        <div class="metrics">${cards.map(([l,v,s]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('')}</div>
+        <div class="card"><h3>${esc(r.symbol)} 현재 ${won(r.price)}원 · 전략 신호: ${sig.action==='BUY'?'<span class="up">매수</span>':'<span class="muted">대기</span>'} ${esc(sig.reason||'')}</h3>
+          <p class="help">시뮬레이션은 전략 신호와 상관없이 "지금 사면"을 가정합니다. 실제 계좌는 전략이 매수 신호를 낼 때만 이 검증을 거칩니다.</p></div>
+        <div class="grid2">
+          <div class="card"><h3>1000개 미래의 거래 수익률 분포 (비용 차감)</h3><div class="chart" id="mcHist"></div></div>
+          <div class="card"><h3>최근 120거래일 주가</h3><div class="chart" id="mcPrice"></div></div>
+        </div>`;
+      histogram($('mcHist'), r.histogram.counts, r.histogram.edges, [{v:0,label:'0',color:'#8892a4'},{v:m.mean,label:'평균',color:'var(--amber)'},{v:m.p5,label:'하위5%',color:'var(--down)'}]);
+      lineChart($('mcPrice'), [{name:r.symbol, color:'var(--purple)', points:r.price_history}], {height:240});
+    } catch (e) { $('mcErr').textContent = e.message; }
+  });
+}
+
+// ---------- 연결 설정 ----------
+async function tossCheck() {
+  await busy('tcBtn', async () => {
+    try {
+      const r = await api('/toss-check?symbol=' + encodeURIComponent($('tcSymbol').value.trim()));
+      $('tcOut').innerHTML = r.ok
+        ? `<span class="badge ok">연결 성공</span> ${r.days}거래일 수신 (${esc(r.first)} ~ ${esc(r.last)}), 최근 종가 ${won(r.last_close)}원` + (r.days < 61 ? '<div class="err">전략에 최소 61일이 필요합니다. 이전 페이지 받기가 안 되는 것 같습니다.</div>' : '')
+        : `<span class="badge no">실패</span><div class="err">${esc(r.error)}</div>`;
+    } catch (e) { $('tcOut').innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  });
+}
+
+// ---------- 시작 ----------
+(async function init() {
+  try { CFG = await api('/config'); } catch (e) { $('runErr').textContent = '서버 연결 실패: ' + e.message; return; }
+  const def = CFG.toss_configured ? 'toss' : 'synthetic';
+  ['runSource', 'btSource', 'mcSource'].forEach(id => {
+    $(id).innerHTML = CFG.sources.map(s => `<option value="${s}">${SOURCE_LABEL[s] || s}</option>`).join('');
+    $(id).value = id === 'btSource' ? 'synthetic' : def;
+  });
+  $('runSymbols').value = $('btSymbols').value = CFG.default_symbols.join(', ');
+  $('tossState').innerHTML = CFG.toss_configured
+    ? '<span class="badge ok">키 설정됨</span> .env 에서 토스 키를 찾았습니다.'
+    : '<span class="badge no">키 없음</span> .env 에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 을 넣고 서버를 다시 켜세요. 그전까지는 "가상 주가"나 "Yahoo"로 써 볼 수 있습니다.';
+  const c = CFG.costs, mc = CFG.mc;
+  $('rules').innerHTML = `전략: 20일 평균 > 60일 평균, 20일 모멘텀 양수, RSI 70 미만이면 매수 신호 · 익절 +8% / 손절 -4% / 최대 20거래일 보유<br>
+    시뮬레이션: 과거 ${mc.lookback}일 수익률을 ${mc.block}일 블록으로 섞어 ${mc.n_paths}개 경로, 그중 ${pct(mc.stress_share,0,false)}는 변동성 ${mc.stress_vol}배<br>
+    승인: 기대수익 ≥ ${pct(mc.min_edge,1,false)}, 최악 5% 평균손실 ≤ ${pct(mc.max_tail_loss,0,false)} · 비중 = 켈리 × ${mc.kelly_fraction} (최대 ${pct(mc.max_position,0,false)})<br>
+    비용: 수수료 ${pct(c.fee_rate,3,false)} (양방향), 매도 거래세 ${pct(c.sell_tax,2,false)}, 슬리피지 ${pct(c.slippage,2,false)}`;
+  try { const t = localStorage.getItem('trader-tab'); if (t) document.querySelector(`.tab[data-page="${t}"]`)?.click(); } catch (_) {}
+  loadAccount();
+})();
+</script>
+</body>
+</html>

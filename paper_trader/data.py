@@ -78,3 +78,15 @@ def get_source(name: str, seed: int = 0, csv_dir: str = "data"):
         from .toss_client import TossClient
         return TossClient()
     raise ValueError(f"알 수 없는 데이터 소스: {name}")
+
+
+def fetch_series(source: str, symbols, count: int, seed: int = 0, csv_dir: str = "data"):
+    """여러 종목 시세를 가져온다. 실패한 종목은 errors 에 모은다."""
+    src = get_source(source, seed, csv_dir)
+    series, errors = {}, {}
+    for s in symbols:
+        try:
+            series[s] = src.daily_closes(s, count)
+        except Exception as e:  # noqa: BLE001 - 종목 하나 실패해도 나머지는 진행
+            errors[s] = str(e)
+    return series, errors

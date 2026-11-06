@@ -40,6 +40,7 @@ class MCResult:
     approved: bool
     size_fraction: float
     reason: str
+    returns: Optional[list] = None  # keep_returns=True 일 때 경로별 순수익률
 
     def summary(self) -> str:
         return (f"승률 {self.win_rate:.0%} | 기대수익 {self.mean:+.2%} | 중앙값 {self.median:+.2%} | "
@@ -53,7 +54,7 @@ def _rejected(reason: str) -> MCResult:
 
 def simulate_trade(closes: Sequence[float], target_pct: float, stop_pct: float, horizon_days: int,
                    round_trip_cost: float, cfg: Optional[MCConfig] = None,
-                   rng: Optional[np.random.Generator] = None) -> MCResult:
+                   rng: Optional[np.random.Generator] = None, keep_returns: bool = False) -> MCResult:
     cfg = cfg or MCConfig()
     rng = rng or np.random.default_rng()
     prices = np.asarray(closes, dtype=float)[-(cfg.lookback + 1):]
@@ -96,6 +97,7 @@ def simulate_trade(closes: Sequence[float], target_pct: float, stop_pct: float, 
         p5=float(np.percentile(net, 5)), cvar5=float(worst.mean()),
         stop_rate=float(stop_first.mean()), target_rate=float(target_first.mean()),
         approved=False, size_fraction=size, reason="",
+        returns=net.round(5).tolist() if keep_returns else None,
     )
     if mean < cfg.min_edge:
         res.reason = f"기대수익 {mean:+.2%} < 기준 {cfg.min_edge:.2%}"

@@ -25,6 +25,7 @@ class Engine:
         """history: 종목 → 오늘까지의 종가 목록. 오늘 종가(또는 현재가)에 체결한다고 가정."""
         log: List[str] = []
         prices = {s: float(h[-1]) for s, h in history.items() if len(h)}
+        self.pf.last_prices.update(prices)
 
         # 1) 보유 종목 청산 점검
         for sym, pos in list(self.pf.positions.items()):
@@ -129,6 +130,8 @@ def backtest(series: Dict[str, List[Tuple[str, float]]], strategy: Strategy, cap
                     print(f"{dates[i]} <{name[:5]}> {line}")
 
     # 벤치마크: 시작일에 균등 매수 후 보유
-    bh = np.mean([c[-1] / c[warmup] for c in closes.values()]) - 1
+    bench = np.mean([np.asarray(c[warmup:]) / c[warmup] for c in closes.values()], axis=0) * capital
+    bh = float(bench[-1] / capital - 1)
     results = {name: (eng.pf, metrics(eng.pf)) for name, eng in engines.items()}
-    return dates[warmup], dates[-1], results, float(bh)
+    bench_curve = [[d, round(float(v))] for d, v in zip(dates[warmup:], bench)]
+    return dates[warmup], dates[-1], results, bh, bench_curve

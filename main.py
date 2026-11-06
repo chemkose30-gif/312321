@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 API_KEY = os.getenv("ODDS_API_KEY", "")
 
+from paper_trader.web import router as trader_router
+
 try:
     from kbl_scraper import get_kbl_schedule, get_kbl_standings, get_kbl_leaders
     KBL_AVAILABLE = True
@@ -725,6 +727,12 @@ frontend_dir = Path(__file__).parent / "frontend"
 @app.get("/")
 async def root():
     return FileResponse(frontend_dir / "index.html")
+
+app.include_router(trader_router)
+
+@app.get("/trader")
+async def trader_page():
+    return FileResponse(frontend_dir / "trader.html")
 
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 

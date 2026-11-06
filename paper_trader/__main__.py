@@ -16,7 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .data import get_source
+from .data import fetch_series
 from .engine import Engine, backtest, metrics
 from .montecarlo import MCConfig, simulate_trade
 from .portfolio import Costs, Portfolio
@@ -32,13 +32,9 @@ def _common(p: argparse.ArgumentParser) -> None:
 
 
 def _fetch(args, count: int):
-    src = get_source(args.source, args.seed, args.csv_dir)
-    series = {}
-    for s in args.symbols:
-        try:
-            series[s] = src.daily_closes(s, count)
-        except Exception as e:  # noqa: BLE001 - 종목 하나 실패해도 나머지는 진행
-            print(f"[경고] {s} 시세 조회 실패: {e}", file=sys.stderr)
+    series, errors = fetch_series(args.source, args.symbols, count, args.seed, args.csv_dir)
+    for s, e in errors.items():
+        print(f"[경고] {s} 시세 조회 실패: {e}", file=sys.stderr)
     if not series:
         sys.exit("시세를 하나도 가져오지 못했습니다.")
     return series
@@ -47,7 +43,7 @@ def _fetch(args, count: int):
 def cmd_backtest(args) -> None:
     series = _fetch(args, args.days)
     cfg = MCConfig(n_paths=args.paths)
-    start, end, results, bh = backtest(series, TrendMomentumStrategy(), args.capital, Costs(), cfg,
+    start, end, results, bh, _ = backtest(series, TrendMomentumStrategy(), args.capital, Costs(), cfg,
                                        seed=args.seed, verbose=args.verbose)
     print(f"\n백테스트 {start} ~ {end} | 종목 {', '.join(series)} | 소스 {args.source} | 초기자금 {args.capital:,.0f}원")
     print(f"{'':32}{'최종자산':>14}{'수익률':>9}{'최대낙폭':>9}{'거래':>6}{'승률':>7}{'평균손익':>9}")
