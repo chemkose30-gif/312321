@@ -59,6 +59,13 @@ td.r,th.r{text-align:right}
 .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700}
 .badge.ok{background:rgba(16,185,129,.15);color:var(--green)}
 .badge.no{background:rgba(240,68,82,.12);color:var(--up)}
+.live-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--text2);margin-bottom:10px}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--text3);flex-shrink:0}
+.live-dot.on{background:var(--green);animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.alert-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:1px}
+.alert-badge.stop{background:rgba(49,130,246,.18);color:var(--down)}
+.alert-badge.target{background:rgba(240,68,82,.15);color:var(--up)}
 .pos-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .pos-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;min-width:0}
 .pos-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px;flex-wrap:wrap}
@@ -128,6 +135,11 @@ td.r,th.r{text-align:right}
       <p class="help" style="margin-top:10px">또는 아래 "오늘 매매 실행"을 누르면 1,000만 원 계좌가 자동으로 만들어집니다.</p>
     </div>
 
+    <div class="live-bar" id="liveBar" style="display:none">
+      <span class="live-dot" id="liveDot"></span><span id="liveText"></span>
+      <span class="spacer"></span>
+      <label class="check" style="padding:0"><input type="checkbox" id="liveOn" checked onchange="toggleLive()">장중 실시간 갱신 (20초)</label>
+    </div>
     <div class="metrics" id="acctMetrics"></div>
 
     <div class="card">
@@ -376,7 +388,9 @@ function histogram(el, counts, edges, markers) {
 
 // ---------- 내 가상계좌 ----------
 let settingsApplied = false;
+let lastStatus = null, liveQ = null, posData = null;
 function renderAccount(s) {
+  lastStatus = s; liveQ = null;
   if (s.settings && !settingsApplied) {
     settingsApplied = true;
     $('runMode').value = s.settings.mode; $('runMaxPos').value = s.settings.max_positions; $('runMaxNew').value = s.settings.max_new;
@@ -387,8 +401,21 @@ function renderAccount(s) {
   if (!s.exists) {
     $('acctMetrics').innerHTML = ''; $('positions').innerHTML = $('trades').innerHTML = '<div class="empty">계좌가 없습니다</div>';
     $('acctChart').innerHTML = '<div class="empty">계좌를 만들고 매매를 실행하면 그래프가 나타납니다.</div>'; $('lastRun').textContent = '';
+    $('liveBar').style.display = 'none';
     return;
   }
+  $('lastRun').textContent = s.last_run ? `· 마지막 실행 ${s.last_run}` : '· 아직 실행 전';
+  lineChart($('acctChart'), [{name:'총자산', color:'var(--purple)', points:s.equity_history}]);
+  $('trades').innerHTML = s.trades.length ? tradeTable(s.trades, true) : '<div class="empty">체결 기록 없음</div>';
+  renderAccountView(s);
+  loadPositionCharts(s.positions.length);
+  refreshLive(true);
+}
+
+const alertBadge = a => a ? `<span class="alert-badge ${a.startsWith('손절') ? 'stop' : 'target'}">${esc(a)}</span>` : '';
+
+// 지표·보유 표·자산 구성: 실시간 시세가 들어오면 이 부분만 다시 그린다
+function renderAccountView(s) {
   const m = [
     ['총자산', won(s.equity) + '원', `시작 ${won(s.initial_capital)}원`],
     ['수익률', `<span class="${cls(s.return)}">${pct(s.return, 2)}</span>`, '수수료·세금 반영'],
@@ -397,14 +424,42 @@ function renderAccount(s) {
     ['청산 거래', s.closed_trades + '건', s.closed_trades ? `승률 ${pct(s.win_rate,0,false)} · 평균 ${pct(s.avg_pnl_pct,2)}` : '아직 없음'],
   ];
   $('acctMetrics').innerHTML = m.map(([l, v, sub]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join('');
-  $('lastRun').textContent = s.last_run ? `· 마지막 실행 ${s.last_run}` : '· 아직 실행 전';
-  lineChart($('acctChart'), [{name:'총자산', color:'var(--purple)', points:s.equity_history}]);
-  $('positions').innerHTML = s.positions.length ? `<table><tr><th>종목</th><th class="r">수량</th><th class="r">평단</th><th class="r">현재</th><th class="r">손익</th><th class="r">손절/익절</th><th class="r">보유</th></tr>` +
-    s.positions.map(p => `<tr><td><b>${esc(p.name || p.symbol)}</b><div class="muted">${p.name ? esc(p.symbol) + ' · ' : ''}${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
+  $('positions').innerHTML = s.positions.length ? `<table><tr><th>종목</th><th class="r">수량</th><th class="r">평단</th><th class="r">현재</th><th class="r">오늘</th><th class="r">손익</th><th class="r">손절/익절</th><th class="r">보유</th></tr>` +
+    s.positions.map(p => `<tr><td><b>${esc(p.name || p.symbol)}</b>${alertBadge(p.alert)}<div class="muted">${p.name ? esc(p.symbol) + ' · ' : ''}${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td>
+      <td class="r ${cls(p.change||0)}">${p.change != null ? pct(p.change,2) : '<span class="muted">—</span>'}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
     : '<div class="empty">보유 종목 없음</div>';
-  $('trades').innerHTML = s.trades.length ? tradeTable(s.trades, true) : '<div class="empty">체결 기록 없음</div>';
   renderAllocation(s);
-  loadPositionCharts(s.positions.length);
+}
+
+// ---------- 장중 실시간 시세 ----------
+let liveTimer = null;
+try { $('liveOn').checked = localStorage.getItem('trader-live') !== '0'; } catch (_) {}
+function toggleLive() {
+  try { localStorage.setItem('trader-live', $('liveOn').checked ? '1' : '0'); } catch (_) {}
+  refreshLive(true);
+}
+async function refreshLive(immediate) {
+  clearTimeout(liveTimer);
+  if (!lastStatus || !lastStatus.exists || !lastStatus.positions.length) { $('liveBar').style.display = 'none'; return; }
+  $('liveBar').style.display = '';
+  if (!immediate && !$('liveOn').checked) return;
+  let q;
+  try { q = await api('/quotes'); }
+  catch (e) { $('liveText').textContent = '현재가 조회 실패: ' + e.message; liveTimer = setTimeout(refreshLive, 60000); return; }
+  liveQ = q;
+  const live = q.market_open && $('liveOn').checked;
+  $('liveDot').classList.toggle('on', live);
+  const nErr = Object.keys(q.errors || {}).length;
+  $('liveText').textContent = `${live ? '실시간' : '장 마감'} · ${q.fetched_at} 조회 · ${SOURCE_LABEL[q.source] || q.source}` +
+    (live ? '' : ' · 마지막 가격 기준') + (nErr ? ` · ${nErr}종목 조회 실패` : '');
+  // 계좌 상태에 현재가를 덮어써서 다시 그린다 (계좌 파일은 바뀌지 않음)
+  const byS = Object.fromEntries(q.positions.map(p => [p.symbol, p]));
+  const patched = {...lastStatus, equity:q.equity, return:q.return, cash:q.cash,
+    positions: lastStatus.positions.map(p => byS[p.symbol] ? {...p, price:byS[p.symbol].price, value:byS[p.symbol].value,
+      pnl_pct:byS[p.symbol].pnl_pct, change:byS[p.symbol].change, alert:byS[p.symbol].alert} : p)};
+  renderAccountView(patched);
+  renderPosCharts();
+  if ($('liveOn').checked) liveTimer = setTimeout(refreshLive, live ? 20000 : 300000);  // 장 마감 중엔 5분마다 개장 확인
 }
 
 const ALLOC_COLORS = ['#8b5cf6','#f59e0b','#10b981','#ec4899','#06b6d4','#a3e635','#f97316','#6366f1','#14b8a6','#eab308'];
@@ -421,25 +476,40 @@ function renderAllocation(s) {
 let posChartSeq = 0;
 async function loadPositionCharts(n) {
   $('posChartsCard').style.display = n ? '' : 'none';
-  if (!n) return;
+  if (!n) { posData = null; return; }
   const seq = ++posChartSeq;
-  $('posCharts').innerHTML = '<div class="empty">차트 불러오는 중…</div>';
+  if (!posData) $('posCharts').innerHTML = '<div class="empty">차트 불러오는 중…</div>';
   let r;
   try { r = await api('/positions/history?days=60'); } catch (e) { $('posCharts').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
   if (seq !== posChartSeq) return;  // 더 최근 요청이 있으면 버린다
-  $('posChartsSrc').textContent = `· 최근 60거래일 · ${SOURCE_LABEL[r.source] || r.source}`;
+  posData = r;
+  renderPosCharts();
+}
+
+function renderPosCharts() {
+  if (!posData) return;
+  const r = posData, qs = liveQ ? Object.fromEntries(liveQ.positions.map(p => [p.symbol, p])) : {};
+  $('posChartsSrc').textContent = `· 최근 60거래일 · ${SOURCE_LABEL[r.source] || r.source}${liveQ ? ' + 현재가' : ''}`;
+  const hists = r.positions.map(p => {
+    const h = p.history.slice(), q = qs[p.symbol];
+    if (q && q.live && q.date) {  // 오늘 캔들을 현재가로 바꾸거나 새로 붙인다
+      if (h.length && h[h.length - 1][0] === q.date) h[h.length - 1] = [q.date, q.price];
+      else if (!h.length || h[h.length - 1][0] < q.date) h.push([q.date, q.price]);
+    }
+    return h;
+  });
   $('posCharts').innerHTML = r.positions.map((p, i) => {
-    const now = p.history.length ? p.history[p.history.length - 1][1] : null;
+    const h = hists[i], now = h.length ? h[h.length - 1][1] : null, q = qs[p.symbol];
     const ret = now ? now / p.cost - 1 : 0;
     const toStop = now ? p.stop / now - 1 : 0, toTarget = now ? p.target / now - 1 : 0;
-    return `<div class="pos-card"><div class="pos-head"><b>${esc(p.name || p.symbol)} <span class="muted" style="font-weight:400;font-size:11px">${esc(p.symbol)}</span></b>
-        <span class="${cls(ret)}" style="font-weight:700">${now ? pct(ret, 2) : '—'}</span></div>
-      <div class="pos-meta">${p.qty}주 · ${esc(p.entry_date)} 매수 · ${p.days_held}/${p.horizon}일${now ? ` · 손절까지 ${pct(toStop,1)} · 익절까지 ${pct(toTarget,1)}` : ''}</div>
+    return `<div class="pos-card"><div class="pos-head"><b>${esc(p.name || p.symbol)} <span class="muted" style="font-weight:400;font-size:11px">${esc(p.symbol)}</span>${alertBadge(q && q.alert)}</b>
+        <span><span class="muted" style="font-size:12px">${now ? won(now) + '원' : ''}</span> <span class="${cls(ret)}" style="font-weight:700">${now ? pct(ret, 2) : '—'}</span></span></div>
+      <div class="pos-meta">${p.qty}주 · ${esc(p.entry_date)} 매수 · ${p.days_held}/${p.horizon}일${now ? ` · 손절까지 ${pct(toStop,1)} · 익절까지 ${pct(toTarget,1)}` : ''}${q && q.change != null ? ` · 오늘 <span class="${cls(q.change)}">${pct(q.change,2)}</span>` : ''}</div>
       <div class="chart" id="posChart${i}">${p.error ? `<div class="err">${esc(p.error)}</div>` : ''}</div></div>`;
   }).join('');
   r.positions.forEach((p, i) => {
-    if (p.error || !p.history.length) return;
-    lineChart($('posChart' + i), [{name:p.name || p.symbol, color:'#e8eaf0', points:p.history, width:1.6}], {
+    if (p.error || !hists[i].length) return;
+    lineChart($('posChart' + i), [{name:p.name || p.symbol, color:'#e8eaf0', points:hists[i], width:1.6}], {
       height: 200, L: 54,
       hlines: [{v:p.target, color:'var(--up)', label:'익절'}, {v:p.cost, color:'#8892a4', label:'평단'}, {v:p.stop, color:'var(--down)', label:'손절'}],
       vlines: [{date:p.entry_date, color:'var(--amber)', label:'매수'}],

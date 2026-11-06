@@ -128,6 +128,30 @@ def positions_history(days: int = 120, source: Optional[str] = None):
     return {"source": src, "positions": out}
 
 
+@router.get("/quotes")
+def quotes():
+    """보유 종목 현재가와 실시간 평가. 계좌 파일은 바꾸지 않는다 (손절·익절 매매는 '오늘 매매 실행' 때)."""
+    from .quotes import live_quotes, market_open
+    if not STATE.exists():
+        return {"positions": [], "market_open": market_open()}
+    pf = Portfolio.load(STATE)
+    syms = list(pf.positions)
+    q, source, errors = live_quotes(syms) if syms else ({}, "", {})
+    names = cached_names()
+    rows, value = [], 0.0
+    for sym, p in pf.positions.items():
+        price = q.get(sym, {}).get("price") or pf.last_prices.get(sym) or p.cost_per_share
+        value += p.qty * price
+        alert = "손절선 도달" if price <= p.stop_price else "익절선 도달" if price >= p.target_price else None
+        rows.append({"symbol": sym, "name": names.get(sym, ""), "price": price, "date": q.get(sym, {}).get("date"),
+                     "change": q.get(sym, {}).get("change"), "value": round(p.qty * price),
+                     "pnl_pct": price / p.cost_per_share - 1, "alert": alert, "live": sym in q})
+    equity = pf.cash + value
+    return {"fetched_at": datetime.now().strftime("%H:%M:%S"), "market_open": market_open(), "source": source,
+            "equity": round(equity), "return": equity / pf.initial_capital - 1, "cash": round(pf.cash),
+            "positions": rows, "errors": errors}
+
+
 @router.get("/toss-check")
 def toss_check(symbol: str = "005930"):
     from .toss_client import TossClient, TossError
