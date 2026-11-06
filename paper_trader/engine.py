@@ -14,7 +14,8 @@ from .strategy import Strategy
 class Engine:
     def __init__(self, portfolio: Portfolio, strategy: Strategy, mc_cfg: Optional[MCConfig] = None,
                  use_filter: bool = True, position_pct: float = 0.10, seed: Optional[int] = None,
-                 max_positions: int = 10, max_new: int = 3, names: Optional[Dict[str, str]] = None):
+                 max_positions: int = 10, max_new: int = 3, names: Optional[Dict[str, str]] = None,
+                 intraday_tp: bool = False, intraday_stop: bool = False):
         self.pf = portfolio
         self.strategy = strategy
         self.mc_cfg = mc_cfg or MCConfig()
@@ -23,13 +24,18 @@ class Engine:
         self.max_positions = max_positions  # 동시에 보유할 최대 종목 수
         self.max_new = max_new  # 하루 신규 매수 최대 종목 수
         self.names = names or {}
+        self.intraday_tp = intraday_tp  # 그날 고가가 익절선에 닿으면 익절가에 매도 (지정가 주문처럼)
+        self.intraday_stop = intraday_stop  # 그날 저가가 손절선에 닿으면 손절가에 매도
 
     def _label(self, sym: str) -> str:
         n = self.names.get(sym)
         return f"{n}({sym})" if n else sym
 
-    def step(self, date: str, history: Dict[str, Sequence[float]]) -> List[str]:
-        """history: 종목 → 오늘까지의 종가 목록. 오늘 종가(또는 현재가)에 체결한다고 가정."""
+    def step(self, date: str, history: Dict[str, Sequence[float]], highs: Optional[Dict[str, float]] = None,
+             lows: Optional[Dict[str, float]] = None) -> List[str]:
+        """history: 종목 → 오늘까지의 종가 목록. 오늘 종가(또는 현재가)에 체결한다고 가정.
+        highs/lows: 오늘 고가·저가 (장중 익절·손절을 켰을 때만 사용)."""
+        highs, lows = highs or {}, lows or {}
         log: List[str] = []
         prices = {s: float(h[-1]) for s, h in history.items() if len(h)}
         self.pf.last_prices.update(prices)
@@ -43,8 +49,12 @@ class Engine:
             if pos.entry_date >= date:
                 continue  # 오늘(이 시세로) 산 종목은 다음 거래일 종가부터 손절·익절을 판단한다
             pos.days_held = self.pf.held_days(pos, date)
-            reason = None
-            if p <= pos.stop_price:
+            reason, fill = None, p
+            if self.intraday_stop and lows.get(sym, p) <= pos.stop_price:
+                reason, fill = "손절 (장중 손절선 이탈)", min(pos.stop_price, max(p, lows[sym]))
+            elif self.intraday_tp and highs.get(sym, p) >= pos.target_price:
+                reason, fill = "익절 (장중 목표가 도달)", pos.target_price
+            elif p <= pos.stop_price:
                 reason = "손절"
             elif p >= pos.target_price:
                 reason = "익절"
@@ -55,14 +65,15 @@ class Engine:
                 if sig.action == "SELL":
                     reason = sig.reason
             if reason:
-                t = self.pf.sell(sym, p, date, reason)
+                t = self.pf.sell(sym, fill, date, reason)
                 log.append(f"[매도] {self._label(sym)} {t['qty']}주 @ {t['price']:,.0f} ({reason}) "
                            f"손익 {t['pnl']:+,}원 ({t['pnl_pct']:+.2%})")
 
         # 2) 신규 진입 후보: 신호 → 시뮬레이션 승인 → 위험 대비 기대수익(점수) 순
         candidates, rejected = [], 0
+        sold_today = {t["symbol"] for t in self.pf.trades if t["side"] == "SELL" and t["date"] == date}
         for sym, hist in history.items():
-            if sym in self.pf.positions or sym not in prices:
+            if sym in self.pf.positions or sym not in prices or sym in sold_today:  # 오늘 판 종목은 다시 사지 않는다
                 continue
             sig = self.strategy.decide(sym, hist, holding=False)
             if sig.action != "BUY":

@@ -89,6 +89,22 @@ class TossClient:
         raise TossError("인증 재시도 실패")
 
     # ---- 시세 ----
+    def daily_bars(self, symbol: str, count: int = 2) -> List[dict]:
+        """최근 일봉 (date, open, high, low, close). 장중에는 오늘 캔들이 진행 중인 값."""
+        raw = self.get(self.candles_path, {"symbol": symbol, "interval": "1d", "count": count})
+        out = {}
+        for row in _find_list(raw):
+            close = _pick(row, "close", "closePrice", "tradePrice", "c")
+            ts = _pick(row, "date", "baseDate", "datetime", "timestamp", "time", "t")
+            if close is None or ts is None:
+                continue
+            c = float(close)
+            out[_to_date(ts)] = {"date": _to_date(ts), "close": c,
+                                 "open": float(_pick(row, "open", "openPrice", "o") or c),
+                                 "high": float(_pick(row, "high", "highPrice", "h") or c),
+                                 "low": float(_pick(row, "low", "lowPrice", "l") or c)}
+        return [out[d] for d in sorted(out)]
+
     def daily_closes(self, symbol: str, count: int = 300) -> List[Tuple[str, float]]:
         """응답의 nextBefore 로 이전 페이지를 이어 받아 최대 count 일치를 모은다."""
         page = int(os.getenv("TOSS_CANDLE_PAGE", "100"))

@@ -140,6 +140,7 @@ td.r,th.r{text-align:right}
       <span class="spacer"></span>
       <label class="check" style="padding:0"><input type="checkbox" id="liveOn" checked onchange="toggleLive()">장중 실시간 갱신 (20초)</label>
     </div>
+    <div id="intraLog" class="log" style="display:none;margin-bottom:12px"></div>
     <div class="metrics" id="acctMetrics"></div>
 
     <div class="card">
@@ -156,6 +157,8 @@ td.r,th.r{text-align:right}
       </div>
       <div class="form" style="margin-top:10px">
         <label class="check"><input type="checkbox" id="runFilter" checked>시뮬레이션 필터 (끄면 전략 신호만으로 매수)</label>
+        <label class="check" title="서버가 켜져 있으면 장중 20초마다 확인해 오늘 고가가 익절선에 닿으면 익절가에 팝니다"><input type="checkbox" id="runIntraTp" checked onchange="saveIntraday()">장중 익절 (익절선 닿으면 바로 매도)</label>
+        <label class="check" title="장중에 손절선을 깨면 바로 팝니다. 끄면 종가 기준으로만 손절합니다"><input type="checkbox" id="runIntraStop" onchange="saveIntraday()">장중 손절</label>
         <label class="check"><input type="checkbox" id="runForce">강제 재실행</label>
         <button class="btn" id="runBtn" onclick="runToday()">오늘 매매 실행</button>
       </div>
@@ -399,6 +402,7 @@ function renderAccount(s) {
     $('runMode').value = s.settings.mode; $('runMaxPos').value = s.settings.max_positions; $('runMaxNew').value = s.settings.max_new;
     $('runPosPct').value = Math.round((s.settings.position_pct ?? 0.1) * 100);
     $('runTurnover').value = String(s.settings.min_turnover); syncRunMode();
+    $('runIntraTp').checked = s.settings.intraday_tp !== false; $('runIntraStop').checked = !!s.settings.intraday_stop;
   }
   $('acctEmpty').style.display = s.exists ? 'none' : '';
   if (!s.exists) {
@@ -434,6 +438,12 @@ function renderAccountView(s) {
   renderAllocation(s);
 }
 
+async function saveIntraday() {
+  if (!lastStatus || !lastStatus.exists) return;  // 계좌가 생기면 첫 매매 실행 때 함께 저장된다
+  try { await api('/settings', {intraday_tp:$('runIntraTp').checked, intraday_stop:$('runIntraStop').checked}); refreshLive(true); }
+  catch (e) { $('runErr').textContent = e.message; }
+}
+
 // ---------- 장중 실시간 시세 ----------
 let liveTimer = null;
 try { $('liveOn').checked = localStorage.getItem('trader-live') !== '0'; } catch (_) {}
@@ -449,12 +459,23 @@ async function refreshLive(immediate) {
   let q;
   try { q = await api('/quotes'); }
   catch (e) { $('liveText').textContent = '현재가 조회 실패: ' + e.message; liveTimer = setTimeout(refreshLive, 60000); return; }
+  // 장중 감시가 판 종목이 생기면 계좌를 새로 불러온다
+  if (q.trades_count != null && lastStatus.trades_total != null && q.trades_count > lastStatus.trades_total) {
+    loadAccount();  // renderAccount → refreshLive 로 다시 이어진다
+    return;
+  }
+  const today = (q.monitor && q.monitor.today && q.monitor.today.lines) || [];
+  $('intraLog').style.display = today.length ? '' : 'none';
+  $('intraLog').innerHTML = `<div class="muted">오늘 장중 자동 매도</div>` + today.map(l => `<div class="${l.includes('익절') ? 'buy' : 'sell'}">${esc(l)}</div>`).join('');
   liveQ = q;
   const live = q.market_open && $('liveOn').checked;
   $('liveDot').classList.toggle('on', live);
   const nErr = Object.keys(q.errors || {}).length;
   $('liveText').textContent = `${live ? '실시간' : '장 마감'} · ${q.fetched_at} 조회 · ${SOURCE_LABEL[q.source] || q.source}` +
-    (live ? '' : ' · 마지막 가격 기준') + (nErr ? ` · ${nErr}종목 조회 실패` : '');
+    (live ? '' : ' · 마지막 가격 기준') + (nErr ? ` · ${nErr}종목 조회 실패` : '') +
+    (q.settings && (q.settings.intraday_tp || q.settings.intraday_stop)
+      ? ` · 장중 ${[q.settings.intraday_tp && '익절', q.settings.intraday_stop && '손절'].filter(Boolean).join('·')} 자동 매도 켜짐${q.monitor && q.monitor.last_check ? ` (서버 확인 ${q.monitor.last_check})` : ''}`
+      : ' · 장중 자동 매도 꺼짐');
   // 계좌 상태에 현재가를 덮어써서 다시 그린다 (계좌 파일은 바뀌지 않음)
   const byS = Object.fromEntries(q.positions.map(p => [p.symbol, p]));
   const patched = {...lastStatus, equity:q.equity, return:q.return, cash:q.cash,
@@ -545,7 +566,8 @@ async function runToday() {
   try {
     await api('/run', {mode:$('runMode').value, source:$('runSource').value, symbols:$('runMode').value === 'watchlist' ? symbols('runSymbols') : [],
       use_filter:$('runFilter').checked, force:$('runForce').checked, max_positions:+$('runMaxPos').value,
-      max_new:+$('runMaxNew').value, min_turnover:+$('runTurnover').value, position_pct:+$('runPosPct').value/100});
+      max_new:+$('runMaxNew').value, min_turnover:+$('runTurnover').value, position_pct:+$('runPosPct').value/100,
+      intraday_tp:$('runIntraTp').checked, intraday_stop:$('runIntraStop').checked});
     $('runForce').checked = false;
     pollJobs();
   } catch (e) { $('runErr').textContent = e.message; }

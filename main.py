@@ -730,6 +730,13 @@ async def root():
 
 app.include_router(trader_router)
 
+
+@app.on_event("startup")
+def _start_trader_monitor():
+    # 장중에 보유 종목이 익절선에 닿으면 바로 가상 매도하는 감시 스레드
+    from paper_trader.web import start_monitor
+    start_monitor()
+
 @app.get("/trader")
 async def trader_page():
     return FileResponse(frontend_dir / "trader.html")

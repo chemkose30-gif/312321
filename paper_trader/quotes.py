@@ -22,18 +22,18 @@ def toss_available() -> bool:
     return bool(os.getenv("TOSS_CLIENT_ID") and os.getenv("TOSS_CLIENT_SECRET"))
 
 
-def _toss_last2(client, symbol: str) -> List[Tuple[str, float]]:
-    return client.daily_closes(symbol, 2)
+def _toss_last2(client, symbol: str) -> List[dict]:
+    return client.daily_bars(symbol, 2)
 
 
-def _naver_last2(symbol: str) -> List[Tuple[str, float]]:
-    from .krx import _fdr_fetch
-    rows = _fdr_fetch(symbol, (date.today() - timedelta(days=10)).isoformat())
-    return [(r[0], r[1]) for r in rows][-2:]
+def _naver_last2(symbol: str) -> List[dict]:
+    from .krx import _fdr_fetch, _norm
+    rows = [_norm(r) for r in _fdr_fetch(symbol, (date.today() - timedelta(days=10)).isoformat())]
+    return [{"date": r[0], "close": r[1], "open": r[3], "high": r[4], "low": r[5]} for r in rows][-2:]
 
 
 def live_quotes(symbols: List[str], prefer: str = "auto") -> Tuple[Dict[str, dict], str, Dict[str, str]]:
-    """{종목: {price, date, prev_close, change}}, 사용한 소스, 실패 종목"""
+    """{종목: {price, date, high, low, prev_close, change}}, 사용한 소스, 실패 종목"""
     source = "toss" if (prefer in ("auto", "toss") and toss_available()) else "krx"
     out, errors, todo = {}, {}, []
     now = time.time()
@@ -50,9 +50,11 @@ def live_quotes(symbols: List[str], prefer: str = "auto") -> Tuple[Dict[str, dic
             rows = fetch(sym)
             if not rows:
                 raise RuntimeError("시세 없음")
-            d, price = rows[-1]
-            prev = rows[-2][1] if len(rows) > 1 else None
-            q = {"price": price, "date": d, "prev_close": prev,
+            last = rows[-1]
+            price = last["close"]
+            prev = rows[-2]["close"] if len(rows) > 1 else None
+            q = {"price": price, "date": last["date"], "high": max(last["high"], price),
+                 "low": min(last["low"], price), "prev_close": prev,
                  "change": (price / prev - 1) if prev else None}
             with _lock:
                 _cache[(source, sym)] = (time.time(), q)

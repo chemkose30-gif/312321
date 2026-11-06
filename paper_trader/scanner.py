@@ -149,16 +149,21 @@ def universe_history(cfg: ScanConfig, prices: KrxPrices, progress: Progress,
     c = collect(cfg, prices, progress)
     rows = dict(c["eligible"])
     errors = dict(c["errors"])
+    full = dict(c["full"])
     for code in extra:  # 보유 종목은 조건에서 빠졌더라도 손절·익절 점검을 위해 포함
         if code not in rows:
             try:
-                rows[code] = prices.history(code, 320)
+                full[code] = prices.history_full(code, 320)
+                rows[code] = [r[:3] for r in full[code]]
             except Exception as e:  # noqa: BLE001
                 errors[code] = str(e)[:200]
     closes = {code: [x for _, x, _ in r] for code, r in rows.items() if r}
     names = {code: m["name"] for code, m in c["meta"].items()}
     day = max((r[-1][0] for r in rows.values() if r), default=c["listing_date"])
-    return day, closes, names, {**c, "errors": errors}
+    # 그날의 고가·저가 (장중 익절·손절 판정용). 그날 캔들이 없는 종목은 뺀다
+    highs = {code: r[-1][4] for code, r in full.items() if r and r[-1][0] == day}
+    lows = {code: r[-1][5] for code, r in full.items() if r and r[-1][0] == day}
+    return day, closes, names, {**c, "errors": errors, "highs": highs, "lows": lows}
 
 
 # ---------------- 과거 시점 스캔 검증 ----------------
