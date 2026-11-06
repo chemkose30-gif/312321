@@ -204,6 +204,10 @@ def _do_run(req: RunReq) -> dict:
         if not history:
             raise RuntimeError(f"시세를 하나도 가져오지 못했습니다. 예: {list(errors.items())[:3]}")
         # 같은 날 시세로 두 번 돌리면 보유일이 이중으로 늘어나므로 막는다 (주말에 눌러도 금요일 시세면 한 번만)
+        from .quotes import market_open
+        if day == date.today().isoformat() and market_open() and not req.force:
+            raise RuntimeError("지금은 장중이라 오늘 캔들이 아직 확정되지 않았습니다. 장 마감(15:30) 후에 실행하세요. "
+                               "(장중 가격으로라도 하려면 '강제 재실행')")
         if pf.equity_history and pf.equity_history[-1][0] == day and not req.force:
             raise RuntimeError(f"{day} 시세로 이미 매매했습니다. 다음 거래일 장 마감 후에 다시 누르세요. "
                                "(꼭 다시 하려면 '강제 재실행')")

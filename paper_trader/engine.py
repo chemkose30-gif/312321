@@ -40,7 +40,9 @@ class Engine:
                 log.append(f"[경고] {self._label(sym)} 오늘 시세가 없어 손절·익절 점검을 못 했습니다")
                 continue
             p = prices[sym]
-            pos.days_held += 1
+            if pos.entry_date >= date:
+                continue  # 오늘(이 시세로) 산 종목은 다음 거래일 종가부터 손절·익절을 판단한다
+            pos.days_held = self.pf.held_days(pos, date)
             reason = None
             if p <= pos.stop_price:
                 reason = "손절"

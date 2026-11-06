@@ -85,9 +85,19 @@ class Portfolio:
         data = asdict(self)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def held_days(self, pos: Position, today: Optional[str] = None) -> int:
+        """매수일 다음부터 매매를 실행한 거래일 수. 같은 날 여러 번 실행해도 하루로 센다."""
+        days = {d for d, _ in self.equity_history}
+        if today:
+            days.add(today)
+        return sum(1 for d in days if d > pos.entry_date)
+
     @classmethod
     def load(cls, path: Path) -> "Portfolio":
         d = json.loads(path.read_text(encoding="utf-8"))
         d["costs"] = Costs(**d["costs"])
         d["positions"] = {s: Position(**p) for s, p in d["positions"].items()}
-        return cls(**d)
+        pf = cls(**d)
+        for pos in pf.positions.values():  # 예전 버전에서 재실행 때 이중으로 센 보유일 바로잡기
+            pos.days_held = pf.held_days(pos)
+        return pf

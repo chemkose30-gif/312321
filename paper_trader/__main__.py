@@ -86,9 +86,10 @@ def cmd_run(args) -> None:
 
 def _print_status(pf: Portfolio, prices: dict) -> None:
     eq = pf.equity(prices)
-    print(f"\n총자산 {eq:,.0f}원 ({eq / pf.initial_capital - 1:+.2%}) | 현금 {pf.cash:,.0f}원")
+    last = pf.equity_history[-1][0] if pf.equity_history else "-"
+    print(f"\n총자산 {eq:,.0f}원 ({eq / pf.initial_capital - 1:+.2%}) | 현금 {pf.cash:,.0f}원 | 가격 기준: {last} 매매 실행 시점")
     for s, p in pf.positions.items():
-        now = prices.get(s, p.cost_per_share)
+        now = prices.get(s) or pf.last_prices.get(s) or p.cost_per_share
         print(f"  {s}: {p.qty}주, 평단 {p.cost_per_share:,.0f} → 현재 {now:,.0f} "
               f"({now / p.cost_per_share - 1:+.2%}), 손절 {p.stop_price:,.0f} / 익절 {p.target_price:,.0f}, "
               f"{p.days_held}/{p.horizon_days}일")
