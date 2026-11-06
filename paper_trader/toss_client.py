@@ -124,6 +124,8 @@ def _pick(row: dict, *keys: str) -> Any:
 
 
 def _to_date(ts: Any) -> str:
+    if isinstance(ts, int) and 19000101 <= ts <= 21001231:  # 20261106 형태 숫자
+        ts = str(ts)
     if isinstance(ts, (int, float)):
         sec = ts / 1000 if ts > 1e11 else ts
         return datetime.fromtimestamp(sec).strftime("%Y-%m-%d")
