@@ -25,6 +25,7 @@ class MCConfig:
     max_tail_loss: float = 0.12  # 승인 조건: 최악 5% 평균손실(CVaR5) ≤ 12%
     kelly_fraction: float = 0.25  # 켈리 비중의 1/4만 사용
     max_position: float = 0.20  # 종목당 최대 계좌 비중
+    drift_shrink: float = 0.0  # 과거 평균 상승률을 얼마나 깎을지 (0.5 = 절반만 믿음). 급등주 과대평가 방지
 
 
 @dataclass
@@ -59,6 +60,8 @@ def simulate_trade(closes: Sequence[float], target_pct: float, stop_pct: float, 
     rng = rng or np.random.default_rng()
     prices = np.asarray(closes, dtype=float)[-(cfg.lookback + 1):]
     rets = np.diff(np.log(prices))
+    if cfg.drift_shrink and len(rets):
+        rets = rets - rets.mean() * cfg.drift_shrink
     if len(rets) < max(30, cfg.block * 2) or horizon_days < 1:
         return _rejected("시뮬레이션용 과거 데이터 부족")
 

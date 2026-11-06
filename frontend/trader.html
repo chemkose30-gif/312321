@@ -71,6 +71,13 @@ td.r,th.r{text-align:right}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid #fff6;border-top-color:#fff;border-radius:50%;animation:sp 0.7s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .help{font-size:12px;color:var(--text2);line-height:1.8}
+.progress{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:10px}
+.progress>div{height:100%;background:var(--purple);transition:width .3s}
+.funnel{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;color:var(--text2);margin-bottom:10px}
+.funnel b{color:var(--text);font-size:14px}
+.mini{background:none;border:1px solid var(--border2);color:var(--text2);padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-family:var(--font);white-space:nowrap}
+.mini:hover{color:var(--text);border-color:var(--purple)}
+.mini.done{color:var(--green);border-color:rgba(16,185,129,.4);cursor:default}
 .help code{background:var(--bg3);padding:1px 6px;border-radius:4px;font-size:12px}
 @media (max-width:860px){
   .metrics{grid-template-columns:1fr 1fr}
@@ -87,6 +94,7 @@ td.r,th.r{text-align:right}
   <div class="logo"><div class="logo-dot"></div>AI 모의투자</div>
   <div class="tabs">
     <button class="tab active" data-page="account">내 가상계좌</button>
+    <button class="tab" data-page="scan">국내 전 종목 스캔</button>
     <button class="tab" data-page="backtest">백테스트</button>
     <button class="tab" data-page="mc">1000회 시뮬레이션</button>
     <button class="tab" data-page="settings">연결 설정</button>
@@ -137,6 +145,30 @@ td.r,th.r{text-align:right}
       <div class="card"><h3>최근 체결</h3><div class="tbl" id="trades" style="max-height:420px;overflow:auto"></div></div>
     </div>
     <div style="text-align:right"><button class="btn danger" onclick="resetAccount(true)">계좌 초기화</button></div>
+  </section>
+
+  <!-- 국내 전 종목 스캔 -->
+  <section class="page" id="page-scan">
+    <div class="card">
+      <h3>코스피·코스닥 전 종목에서 매수 후보 찾기</h3>
+      <div class="form">
+        <label class="field">20일 평균 거래대금 하한
+          <select id="scTurnover"><option value="500000000">5억 원</option><option value="1000000000" selected>10억 원</option><option value="3000000000">30억 원</option><option value="10000000000">100억 원</option></select></label>
+        <label class="field">보여줄 종목 수<input id="scTop" class="num" type="number" value="50" min="5" max="300"></label>
+        <button class="btn" id="scBtn" onclick="startScan()">스캔 시작</button>
+        <button class="btn ghost" id="vaBtn" onclick="startValidate()">과거 검증</button>
+      </div>
+      <p class="help" style="margin-top:8px">해외 주식은 제외합니다. 코넥스·우선주·스팩·관리종목·투자주의환기종목·상장 1년 미만 종목도 뺍니다.
+        첫 스캔은 종목마다 1년치 시세를 받느라 몇 분 걸리고, 다음부터는 하루치만 이어 받아 빨라집니다.</p>
+      <div id="scProg" style="display:none"><div class="help" id="scPhase"></div><div class="progress"><div id="scBar" style="width:0"></div></div></div>
+      <div id="scErr" class="err"></div>
+    </div>
+    <div class="banner" style="background:rgba(245,158,11,.07);border-color:rgba(245,158,11,.3);color:#fcd34d">
+      종목을 많이 돌릴수록 "최근 우연히 많이 오른 종목"이 위로 올라오기 쉽습니다. 그래서 과거 상승률을 절반만 믿고(보수적 시뮬레이션),
+      승인 기준을 기대수익 0.5% 이상으로 높였으며, 순위는 기대수익이 아니라 <b>위험 대비 기대수익(점수)</b>으로 매깁니다.
+      "과거 검증"으로 이 방식이 실제로 통했는지 꼭 확인하세요.</div>
+    <div id="scOut"></div>
+    <div id="vaOut"></div>
   </section>
 
   <!-- 백테스트 -->
@@ -203,7 +235,7 @@ td.r,th.r{text-align:right}
 
 <script>
 const API = '/api/trader';
-const SOURCE_LABEL = {synthetic:'가상 주가 (테스트)', yahoo:'Yahoo 무료 시세', toss:'토스증권', csv:'CSV 파일'};
+const SOURCE_LABEL = {krx:'국내 무료 시세 (네이버)', toss:'토스증권', synthetic:'가상 주가 (테스트)', yahoo:'Yahoo 무료 시세', csv:'CSV 파일'};
 let CFG = null;
 
 // ---------- 공통 ----------
@@ -324,14 +356,14 @@ function renderAccount(s) {
   $('lastRun').textContent = s.last_run ? `· 마지막 실행 ${s.last_run}` : '· 아직 실행 전';
   lineChart($('acctChart'), [{name:'총자산', color:'var(--purple)', points:s.equity_history}]);
   $('positions').innerHTML = s.positions.length ? `<table><tr><th>종목</th><th class="r">수량</th><th class="r">평단</th><th class="r">현재</th><th class="r">손익</th><th class="r">손절/익절</th><th class="r">보유</th></tr>` +
-    s.positions.map(p => `<tr><td><b>${esc(p.symbol)}</b><div class="muted">${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
+    s.positions.map(p => `<tr><td><b>${esc(p.name || p.symbol)}</b><div class="muted">${p.name ? esc(p.symbol) + ' · ' : ''}${esc(p.entry_date)}</div></td><td class="r">${p.qty}</td><td class="r">${won(p.cost)}</td><td class="r">${won(p.price)}</td><td class="r ${cls(p.pnl_pct)}">${pct(p.pnl_pct,2)}</td><td class="r"><span class="down">${won(p.stop)}</span> / <span class="up">${won(p.target)}</span></td><td class="r">${p.days_held}/${p.horizon}일</td></tr>`).join('') + '</table>'
     : '<div class="empty">보유 종목 없음</div>';
   $('trades').innerHTML = s.trades.length ? tradeTable(s.trades, true) : '<div class="empty">체결 기록 없음</div>';
 }
 
 function tradeTable(trades, withBuys) {
   return `<table><tr><th>날짜</th><th>구분</th><th>종목</th><th class="r">수량</th><th class="r">가격</th><th class="r">손익</th><th>사유</th></tr>` +
-    trades.map(t => `<tr><td class="muted">${esc(t.date)}</td><td class="${t.side==='BUY'?'up':'down'}">${t.side==='BUY'?'매수':'매도'}</td><td>${esc(t.symbol)}</td><td class="r">${t.qty}</td><td class="r">${won(t.price)}</td>` +
+    trades.map(t => `<tr><td class="muted">${esc(t.date)}</td><td class="${t.side==='BUY'?'up':'down'}">${t.side==='BUY'?'매수':'매도'}</td><td>${esc(t.name || t.symbol)}${t.name ? `<div class="muted">${esc(t.symbol)}</div>` : ''}</td><td class="r">${t.qty}</td><td class="r">${won(t.price)}</td>` +
       `<td class="r ${cls(t.pnl||0)}">${t.side==='SELL' ? `${t.pnl>0?'+':''}${won(t.pnl)}<div>${pct(t.pnl_pct,2)}</div>` : '<span class="muted">—</span>'}</td>` +
       `<td class="muted" style="max-width:260px">${esc((t.note||'').split(' | MC ')[0])}${t.days_held!=null?` · ${t.days_held}일`:''}</td></tr>`).join('') + '</table>';
 }
@@ -413,7 +445,7 @@ async function runMC() {
       ];
       $('mcOut').innerHTML = `
         <div class="metrics">${cards.map(([l,v,s]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('')}</div>
-        <div class="card"><h3>${esc(r.symbol)} 현재 ${won(r.price)}원 · 전략 신호: ${sig.action==='BUY'?'<span class="up">매수</span>':'<span class="muted">대기</span>'} ${esc(sig.reason||'')}</h3>
+        <div class="card"><h3>${esc(r.name ? r.name + ' ' : '')}${esc(r.symbol)} 현재 ${won(r.price)}원 · 전략 신호: ${sig.action==='BUY'?'<span class="up">매수</span>':'<span class="muted">대기</span>'} ${esc(sig.reason||'')}</h3>
           <p class="help">시뮬레이션은 전략 신호와 상관없이 "지금 사면"을 가정합니다. 실제 계좌는 전략이 매수 신호를 낼 때만 이 검증을 거칩니다.</p></div>
         <div class="grid2">
           <div class="card"><h3>1000개 미래의 거래 수익률 분포 (비용 차감)</h3><div class="chart" id="mcHist"></div></div>
@@ -423,6 +455,84 @@ async function runMC() {
       lineChart($('mcPrice'), [{name:r.symbol, color:'var(--purple)', points:r.price_history}], {height:240});
     } catch (e) { $('mcErr').textContent = e.message; }
   });
+}
+
+// ---------- 국내 전 종목 스캔 ----------
+let scanTimer = null;
+async function startScan() {
+  $('scErr').textContent = '';
+  try { await api('/scan', {min_turnover:+$('scTurnover').value, top:+$('scTop').value}); pollScan(); }
+  catch (e) { $('scErr').textContent = e.message; }
+}
+async function startValidate() {
+  $('scErr').textContent = '';
+  try { await api('/scan/validate', {min_turnover:+$('scTurnover').value}); pollScan(); }
+  catch (e) { $('scErr').textContent = e.message; }
+}
+async function pollScan(first) {
+  clearTimeout(scanTimer);
+  let st;
+  try { st = await api('/scan/status'); } catch (e) { $('scErr').textContent = e.message; return; }
+  $('scBtn').disabled = $('vaBtn').disabled = st.running;
+  $('scProg').style.display = st.running ? '' : 'none';
+  if (st.running) {
+    const pctDone = st.total > 1 ? st.done / st.total : 0;
+    $('scPhase').textContent = `${st.kind === 'scan' ? '스캔' : '과거 검증'} · ${st.phase}${st.total > 1 ? ` ${st.done.toLocaleString()} / ${st.total.toLocaleString()}` : ''}`;
+    $('scBar').style.width = (pctDone * 100).toFixed(1) + '%';
+    scanTimer = setTimeout(pollScan, 1500);
+    return;
+  }
+  if (st.error) $('scErr').textContent = st.error;
+  if (st.latest) renderScan(st.latest);
+  else if (first) $('scOut').innerHTML = '<div class="card"><div class="empty">아직 스캔 기록이 없습니다. "스캔 시작"을 눌러 주세요.</div></div>';
+  if (st.validation) renderValidation(st.validation);
+}
+
+function renderScan(r) {
+  const watch = new Set(symbols('runSymbols'));
+  const ok = r.results.filter(x => x.approved), no = r.results.filter(x => !x.approved);
+  const skip = Object.entries(r.skipped).filter(([, v]) => v).map(([k, v]) => `${esc(k)} ${v.toLocaleString()}`).join(' · ');
+  const row = x => `<tr><td><b>${esc(x.name)}</b><div class="muted">${esc(x.code)} · ${esc(x.market)}</div></td>
+    <td class="r">${won(x.price)}</td><td class="r">${(x.turnover/1e8).toFixed(0)}억</td>
+    <td class="r ${cls(x.mean)}">${pct(x.mean,2)}</td><td class="r ${cls(x.cvar5)}">${pct(x.cvar5,1)}</td>
+    <td class="r">${pct(x.win_rate,0,false)}</td><td class="r"><b>${x.score.toFixed(2)}</b></td><td class="r">${x.approved ? pct(x.size,1,false) : '<span class="muted">—</span>'}</td>
+    <td class="muted" style="max-width:220px">${esc(x.approved ? x.signal : x.reason)}</td>
+    <td class="r"><button class="mini" onclick="openMC('${esc(x.code)}')">1000회 상세</button>
+      ${x.approved ? `<button class="mini${watch.has(x.code) ? ' done' : ''}" onclick="addWatch('${esc(x.code)}', this)">${watch.has(x.code) ? '감시 중' : '감시 추가'}</button>` : ''}</td></tr>`;
+  const head = `<tr><th>종목</th><th class="r">현재가</th><th class="r">거래대금</th><th class="r">기대수익</th><th class="r">최악5%</th><th class="r">승률</th><th class="r">점수</th><th class="r">비중</th><th>신호 / 거절 사유</th><th></th></tr>`;
+  $('scOut').innerHTML = `
+    <div class="card"><h3>스캔 결과 · 기준일 ${esc(r.as_of)} · ${esc(r.started.replace('T',' '))} 실행 (${r.seconds}초)</h3>
+      <div class="funnel">상장 <b>${r.listed.toLocaleString()}</b> → 국내 보통주 <b>${r.universe.toLocaleString()}</b> → 조건 통과 <b>${r.eligible.toLocaleString()}</b>
+        → 매수 신호 <b>${r.signals.toLocaleString()}</b> → 시뮬레이션 승인 <b style="color:var(--green)">${r.approved.toLocaleString()}</b></div>
+      <div class="help muted">제외: ${skip || '없음'}${r.error_count ? ` · <span class="up">시세 조회 실패 ${r.error_count}종목</span>` : ''}</div></div>
+    <div class="card"><h3>승인 종목 (점수 순)</h3><div class="tbl">${ok.length ? `<table>${head}${ok.map(row).join('')}</table>` : '<div class="empty">오늘은 승인된 종목이 없습니다. 억지로 사지 않는 것도 전략입니다.</div>'}</div></div>
+    ${no.length ? `<div class="card"><h3>신호는 났지만 시뮬레이션에서 거절된 종목 (일부)</h3><div class="tbl" style="max-height:360px;overflow:auto"><table>${head}${no.map(row).join('')}</table></div></div>` : ''}`;
+}
+
+function renderValidation(v) {
+  const rows = Object.entries(v.groups).filter(([, g]) => g.n);
+  const base = v.groups['전체 종목 (아무거나 샀다면)'];
+  $('vaOut').innerHTML = `<div class="card"><h3>과거 검증 · 종목 ${v.stocks.toLocaleString()}개 · ${v.dates.length}개 시점 (${esc(v.dates[0])} ~ ${esc(v.dates[v.dates.length-1])})</h3>
+    <p class="help">각 시점에 그때까지의 데이터만으로 스캔하고, 같은 규칙(익절 +8% / 손절 -4% / 최대 ${v.horizon}일)으로 실제 결과를 계산했습니다. 비용 차감.</p>
+    <div class="tbl"><table><tr><th>그룹</th><th class="r">건수</th><th class="r">평균 수익</th><th class="r">중앙값</th><th class="r">승률</th><th class="r">아무거나 대비</th></tr>
+    ${rows.map(([k, g]) => `<tr><td>${esc(k)}</td><td class="r">${g.n.toLocaleString()}</td><td class="r ${cls(g.mean)}">${pct(g.mean,2)}</td><td class="r ${cls(g.median)}">${pct(g.median,2)}</td><td class="r">${pct(g.win_rate,0,false)}</td><td class="r ${cls(g.mean-base.mean)}">${pct(g.mean-base.mean,2)}p</td></tr>`).join('')}
+    </table></div>
+    <p class="help" style="margin-top:8px">"승인"이나 "상위" 그룹이 "아무거나 샀다면"보다 꾸준히 나아야 의미가 있습니다. 지금 상장된 종목만으로 계산해 상장폐지 종목이 빠졌으므로(생존 편향) 실제보다 좋게 나올 수 있습니다.</p></div>`;
+}
+
+function openMC(code) {
+  document.querySelector('.tab[data-page="mc"]').click();
+  $('mcSource').value = 'krx'; $('mcSymbol').value = code;
+  runMC();
+}
+
+async function addWatch(code, btn) {
+  if (btn.classList.contains('done')) return;
+  try {
+    const r = await api('/watchlist', {add:[code]});
+    $('runSymbols').value = r.symbols.join(', ');
+    btn.textContent = '감시 중'; btn.classList.add('done');
+  } catch (e) { alert(e.message); }
 }
 
 // ---------- 연결 설정 ----------
@@ -440,12 +550,13 @@ async function tossCheck() {
 // ---------- 시작 ----------
 (async function init() {
   try { CFG = await api('/config'); } catch (e) { $('runErr').textContent = '서버 연결 실패: ' + e.message; return; }
-  const def = CFG.toss_configured ? 'toss' : 'synthetic';
+  const def = CFG.toss_configured ? 'toss' : 'krx';
   ['runSource', 'btSource', 'mcSource'].forEach(id => {
     $(id).innerHTML = CFG.sources.map(s => `<option value="${s}">${SOURCE_LABEL[s] || s}</option>`).join('');
     $(id).value = id === 'btSource' ? 'synthetic' : def;
   });
-  $('runSymbols').value = $('btSymbols').value = CFG.default_symbols.join(', ');
+  $('runSymbols').value = CFG.watchlist.join(', ');
+  $('btSymbols').value = CFG.default_symbols.join(', ');
   $('tossState').innerHTML = CFG.toss_configured
     ? '<span class="badge ok">키 설정됨</span> .env 에서 토스 키를 찾았습니다.'
     : '<span class="badge no">키 없음</span> .env 에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 을 넣고 서버를 다시 켜세요. 그전까지는 "가상 주가"나 "Yahoo"로 써 볼 수 있습니다.';
@@ -456,6 +567,7 @@ async function tossCheck() {
     비용: 수수료 ${pct(c.fee_rate,3,false)} (양방향), 매도 거래세 ${pct(c.sell_tax,2,false)}, 슬리피지 ${pct(c.slippage,2,false)}`;
   try { const t = localStorage.getItem('trader-tab'); if (t) document.querySelector(`.tab[data-page="${t}"]`)?.click(); } catch (_) {}
   loadAccount();
+  pollScan(true);
 })();
 </script>
 </body>

@@ -74,6 +74,9 @@ def get_source(name: str, seed: int = 0, csv_dir: str = "data"):
         return YahooSource()
     if name == "csv":
         return CsvSource(csv_dir)
+    if name == "krx":
+        from .krx import KrxSource
+        return KrxSource()
     if name == "toss":
         from .toss_client import TossClient
         return TossClient()

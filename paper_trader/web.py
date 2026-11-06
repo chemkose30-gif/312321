@@ -4,9 +4,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,16 +16,33 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .data import fetch_series
+from .krx import CACHE, cached_names
 from .engine import Engine, backtest, metrics
 from .montecarlo import MCConfig, simulate_trade
 from .portfolio import Costs, Portfolio
+from .scanner import ScanConfig, scan, validate
 from .strategy import TrendMomentumStrategy
 
 router = APIRouter(prefix="/api/trader", tags=["paper-trader"])
 STATE = Path(os.getenv("PAPER_STATE", "paper_state.json"))
 DEFAULT_SYMBOLS = ["005930", "000660", "035420", "005380", "051910"]
-SOURCES = ["synthetic", "yahoo", "toss", "csv"]
+SOURCES = ["krx", "toss", "synthetic", "yahoo", "csv"]
+WATCHLIST = Path(os.getenv("PAPER_WATCHLIST", "watchlist.json"))
+SCAN_FILE = CACHE / "scan_latest.json"
 _lock = threading.Lock()
+
+
+def load_watchlist() -> List[str]:
+    try:
+        return [s for s in json.loads(WATCHLIST.read_text(encoding="utf-8")) if isinstance(s, str)]
+    except (OSError, ValueError):
+        return list(DEFAULT_SYMBOLS)
+
+
+def save_watchlist(symbols: List[str]) -> List[str]:
+    clean = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))[:300]
+    WATCHLIST.write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
+    return clean
 
 
 def _local_only(request: Request) -> None:
@@ -46,13 +64,14 @@ def _thin(curve: list, n: int = 400) -> list:
 
 
 def _status(pf: Portfolio) -> dict:
+    names = cached_names()
     m = metrics(pf)
     eq = pf.equity({})
     positions = []
     for s, p in pf.positions.items():
         now = pf.last_prices.get(s, p.cost_per_share)
         positions.append({
-            "symbol": s, "qty": p.qty, "cost": round(p.cost_per_share), "price": now,
+            "symbol": s, "name": names.get(s, ""), "qty": p.qty, "cost": round(p.cost_per_share), "price": now,
             "value": round(p.qty * now), "pnl_pct": now / p.cost_per_share - 1,
             "stop": round(p.stop_price), "target": round(p.target_price),
             "days_held": p.days_held, "horizon": p.horizon_days, "entry_date": p.entry_date,
@@ -61,7 +80,8 @@ def _status(pf: Portfolio) -> dict:
         "exists": True, "initial_capital": pf.initial_capital, "cash": round(pf.cash),
         "equity": round(eq), "return": eq / pf.initial_capital - 1, "max_drawdown": m.max_drawdown,
         "closed_trades": m.trades, "win_rate": m.win_rate, "avg_pnl_pct": m.avg_pnl_pct,
-        "positions": positions, "trades": pf.trades[-50:][::-1],
+        "positions": positions,
+        "trades": [{**t, "name": names.get(t["symbol"], "")} for t in pf.trades[-50:][::-1]],
         "equity_history": _thin(pf.equity_history),
         "last_run": pf.equity_history[-1][0] if pf.equity_history else None,
     }
@@ -71,7 +91,7 @@ def _status(pf: Portfolio) -> dict:
 @router.get("/config")
 def config():
     return {
-        "default_symbols": DEFAULT_SYMBOLS, "sources": SOURCES,
+        "default_symbols": DEFAULT_SYMBOLS, "watchlist": load_watchlist(), "sources": SOURCES,
         "toss_configured": bool(os.getenv("TOSS_CLIENT_ID") and os.getenv("TOSS_CLIENT_SECRET")),
         "state_exists": STATE.exists(), "costs": Costs().__dict__, "mc": MCConfig().__dict__,
     }
@@ -98,8 +118,8 @@ def toss_check(symbol: str = "005930"):
 
 # ---------- 계좌 변경 (localhost 전용) ----------
 class RunReq(BaseModel):
-    source: str = "toss"
-    symbols: List[str] = Field(default_factory=lambda: list(DEFAULT_SYMBOLS))
+    source: str = "krx"
+    symbols: List[str] = Field(default_factory=list)  # 비우면 감시 종목 목록 사용
     use_filter: bool = True
     force: bool = False
     capital: float = 10_000_000
@@ -115,7 +135,10 @@ def run(req: RunReq, request: Request):
         today = date.today().isoformat()
         if pf.equity_history and pf.equity_history[-1][0] == today and not req.force:
             raise HTTPException(409, f"{today} 에 이미 실행했습니다. 다시 하려면 '강제 재실행'을 켜세요.")
-        series, errors = fetch_series(req.source, req.symbols, 300, seed=42)
+        watch = save_watchlist(req.symbols) if req.symbols else load_watchlist()
+        # 감시 목록에서 뺐더라도 보유 중인 종목은 손절·익절 점검을 위해 항상 포함
+        symbols = list(dict.fromkeys(watch + list(pf.positions)))
+        series, errors = fetch_series(req.source, symbols, 300, seed=42)
         if not series:
             raise HTTPException(502, {"message": "시세를 하나도 가져오지 못했습니다.", "errors": errors})
         history = {s: [c for _, c in rows] for s, rows in series.items()}
@@ -192,8 +215,102 @@ def run_mc(req: MCReq):
     counts, edges = np.histogram(rets, bins=40)
     sample_dates = [d for d, _ in series[req.symbol][-120:]]
     return {
-        "symbol": req.symbol, "price": closes[-1], "signal": sig.__dict__,
+        "symbol": req.symbol, "name": cached_names().get(req.symbol, ""), "price": closes[-1], "signal": sig.__dict__,
         "result": {k: v for k, v in res.__dict__.items() if k != "returns"},
         "histogram": {"counts": counts.tolist(), "edges": edges.round(5).tolist()},
         "price_history": list(zip(sample_dates, closes[-120:])),
     }
+
+
+# ---------- 감시 종목 ----------
+class WatchReq(BaseModel):
+    symbols: List[str] = Field(default_factory=list)
+    add: List[str] = Field(default_factory=list)
+
+
+@router.get("/watchlist")
+def get_watchlist():
+    return {"symbols": load_watchlist()}
+
+
+@router.post("/watchlist")
+def set_watchlist(req: WatchReq, request: Request):
+    _local_only(request)
+    base = req.symbols or load_watchlist()
+    return {"symbols": save_watchlist(base + req.add)}
+
+
+# ---------- 국내 전 종목 스캔 (백그라운드) ----------
+_scan = {"running": False, "kind": None, "phase": "", "done": 0, "total": 0, "error": None, "started": None}
+_scan_lock = threading.Lock()
+
+
+def _progress(phase: str, done: int, total: int) -> None:
+    _scan.update(phase=phase, done=done, total=total)
+
+
+def _job(kind: str, fn) -> None:
+    try:
+        result = fn()
+        if kind == "scan":
+            CACHE.mkdir(exist_ok=True)
+            SCAN_FILE.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        else:
+            (CACHE / "validate_latest.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        _scan.update(error=None)
+    except Exception as e:  # noqa: BLE001
+        _scan.update(error=f"{type(e).__name__}: {e}")
+    finally:
+        _scan.update(running=False)
+
+
+class ScanReq(BaseModel):
+    min_turnover: float = Field(1e9, ge=0)
+    top: int = Field(50, ge=5, le=300)
+    workers: int = Field(6, ge=1, le=16)
+
+
+@router.post("/scan")
+def start_scan(req: ScanReq, request: Request):
+    _local_only(request)
+    with _scan_lock:
+        if _scan["running"]:
+            raise HTTPException(409, "이미 스캔이 진행 중입니다.")
+        _scan.update(running=True, kind="scan", phase="시작", done=0, total=0, error=None,
+                     started=datetime.now().isoformat(timespec="seconds"))
+    cfg = ScanConfig(min_turnover=req.min_turnover, top=req.top, workers=req.workers)
+    threading.Thread(target=_job, args=("scan", lambda: scan(cfg, progress=_progress)), daemon=True).start()
+    return scan_status()
+
+
+class ValidateReq(BaseModel):
+    min_turnover: float = Field(1e9, ge=0)
+    n_dates: int = Field(12, ge=2, le=40)
+    top_k: int = Field(10, ge=1, le=50)
+
+
+@router.post("/scan/validate")
+def start_validate(req: ValidateReq, request: Request):
+    _local_only(request)
+    with _scan_lock:
+        if _scan["running"]:
+            raise HTTPException(409, "다른 작업이 진행 중입니다.")
+        _scan.update(running=True, kind="validate", phase="시작", done=0, total=0, error=None,
+                     started=datetime.now().isoformat(timespec="seconds"))
+    cfg = ScanConfig(min_turnover=req.min_turnover)
+    fn = lambda: validate(cfg, n_dates=req.n_dates, top_k=req.top_k, progress=_progress)  # noqa: E731
+    threading.Thread(target=_job, args=("validate", fn), daemon=True).start()
+    return scan_status()
+
+
+def _read(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+@router.get("/scan/status")
+def scan_status():
+    return {**_scan, "latest": _read(SCAN_FILE) if not _scan["running"] else None,
+            "validation": _read(CACHE / "validate_latest.json") if not _scan["running"] else None}

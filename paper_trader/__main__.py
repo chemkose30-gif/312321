@@ -5,6 +5,8 @@
   status      가상 계좌 현황
   mc          한 종목에 매수 신호가 났다고 보고 1000회 시뮬레이션 결과 보기
   toss-check  토스 API 연결·응답 형식 확인 (토큰 값은 출력하지 않음)
+  scan        국내(코스피·코스닥) 전 종목 스캔
+  scan-check  과거 시점에 스캔을 돌려 뽑힌 종목이 실제로 어땠는지 검증
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from .strategy import TrendMomentumStrategy
 
 
 def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--source", default="synthetic", choices=["synthetic", "yahoo", "csv", "toss"])
+    p.add_argument("--source", default="synthetic", choices=["synthetic", "krx", "yahoo", "csv", "toss"])
     p.add_argument("--symbols", nargs="+", default=["005930", "000660", "035420", "005380", "051910"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--csv-dir", default="data")
@@ -64,6 +66,10 @@ def cmd_run(args) -> None:
     today = args.date or date.today().isoformat()
     if pf.equity_history and pf.equity_history[-1][0] == today and not args.force:
         sys.exit(f"{today} 에 이미 실행했습니다. 다시 하려면 --force")
+    if args.symbols is None:  # 지정하지 않으면 감시 종목(watchlist.json) + 보유 종목
+        from .web import load_watchlist
+        args.symbols = load_watchlist()
+    args.symbols = list(dict.fromkeys(args.symbols + list(pf.positions)))
     history = {s: [c for _, c in rows] for s, rows in _fetch(args, 300).items()}
     eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=args.paths), use_filter=not args.no_filter)
     lines = eng.step(today, history)
@@ -105,6 +111,41 @@ def cmd_mc(args) -> None:
               f" → {'승인' if res.approved else '거절: ' + res.reason}")
 
 
+def _bar(phase: str, done: int, total: int) -> None:
+    if total > 1:
+        print(f"\r{phase} {done}/{total}   ", end="", flush=True)
+        if done == total:
+            print()
+    else:
+        print(phase)
+
+
+def cmd_scan(args) -> None:
+    from .scanner import ScanConfig, scan
+    r = scan(ScanConfig(min_turnover=args.min_turnover, top=args.top, workers=args.workers), progress=_bar)
+    print(f"\n기준일 {r['as_of']} | 상장 {r['listed']} → 국내 보통주 {r['universe']} → 조건 통과 {r['eligible']} "
+          f"→ 매수 신호 {r['signals']} → 시뮬레이션 승인 {r['approved']} ({r['seconds']}초)")
+    if r["error_count"]:
+        print(f"  시세 조회 실패 {r['error_count']}종목 (예: {list(r['errors'].items())[:2]})")
+    print(f"{'코드':<8}{'종목명':<16}{'현재가':>10}{'기대수익':>9}{'CVaR5':>9}{'승률':>6}{'점수':>7}{'비중':>7}")
+    for x in [x for x in r["results"] if x["approved"]][: args.top]:
+        print(f"{x['code']:<8}{x['name'][:14]:<16}{x['price']:>10,.0f}{x['mean']:>+9.2%}{x['cvar5']:>+9.2%}"
+              f"{x['win_rate']:>6.0%}{x['score']:>7.2f}{x['size']:>7.1%}")
+    print("\n* 점수 = 기대수익 / 최악 5% 평균손실. 상위 종목일수록 운이 섞였을 가능성도 큽니다. scan-check 로 검증하세요.")
+
+
+def cmd_scan_check(args) -> None:
+    from .scanner import ScanConfig, validate
+    v = validate(ScanConfig(min_turnover=args.min_turnover), n_dates=args.dates, top_k=args.top_k, progress=_bar)
+    print(f"\n종목 {v['stocks']}개, 시점 {len(v['dates'])}개 ({v['dates'][0]} ~ {v['dates'][-1]}), "
+          f"각 시점에 사서 최대 {v['horizon']}일 보유(익절/손절 규칙 동일, 비용 차감)")
+    print(f"{'':28}{'건수':>7}{'평균':>9}{'중앙값':>9}{'승률':>7}")
+    for k, g in v["groups"].items():
+        if g["n"]:
+            print(f"{k:<26}{g['n']:>7}{g['mean']:>+9.2%}{g['median']:>+9.2%}{g['win_rate']:>7.0%}")
+    print("\n* 지금 상장된 종목만 써서 상장폐지 종목이 빠졌습니다(생존 편향). 실제보다 좋게 나올 수 있습니다.")
+
+
 def cmd_toss_check(args) -> None:
     from .toss_client import TossClient
     c = TossClient()
@@ -136,6 +177,7 @@ def main(argv=None) -> None:
 
     p = sub.add_parser("run", help="가상 계좌 1회 매매")
     _common(p)
+    p.set_defaults(symbols=None)
     p.add_argument("--state", default="paper_state.json")
     p.add_argument("--capital", type=float, default=10_000_000)
     p.add_argument("--date", help="기록할 날짜 (기본: 오늘)")
@@ -150,6 +192,18 @@ def main(argv=None) -> None:
     p = sub.add_parser("mc", help="종목별 1000회 시뮬레이션")
     _common(p)
     p.set_defaults(fn=cmd_mc)
+
+    p = sub.add_parser("scan", help="국내 전 종목 스캔")
+    p.add_argument("--min-turnover", type=float, default=1e9, help="20일 평균 거래대금 하한(원)")
+    p.add_argument("--top", type=int, default=30)
+    p.add_argument("--workers", type=int, default=6)
+    p.set_defaults(fn=cmd_scan)
+
+    p = sub.add_parser("scan-check", help="스캔 방식 과거 검증")
+    p.add_argument("--min-turnover", type=float, default=1e9)
+    p.add_argument("--dates", type=int, default=12)
+    p.add_argument("--top-k", type=int, default=10)
+    p.set_defaults(fn=cmd_scan_check)
 
     p = sub.add_parser("toss-check", help="토스 API 연결 확인")
     p.add_argument("--symbol", default="005930")
