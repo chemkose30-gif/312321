@@ -20,7 +20,8 @@ from .krx import CACHE, cached_names
 from .engine import Engine, backtest, metrics
 from .montecarlo import MCConfig, seed_for, simulate_trade
 from .portfolio import Costs, Portfolio
-from .scanner import ScanConfig, scan, validate
+from .krx import KrxPrices
+from .scanner import ScanConfig, scan, universe_history, validate
 from .strategy import TrendMomentumStrategy
 
 router = APIRouter(prefix="/api/trader", tags=["paper-trader"])
@@ -84,6 +85,7 @@ def _status(pf: Portfolio) -> dict:
         "trades": [{**t, "name": names.get(t["symbol"], "")} for t in pf.trades[-50:][::-1]],
         "equity_history": _thin(pf.equity_history),
         "last_run": pf.equity_history[-1][0] if pf.equity_history else None,
+        "settings": {**DEFAULT_SETTINGS, **pf.settings},
     }
 
 
@@ -100,7 +102,7 @@ def config():
 @router.get("/status")
 def status():
     if not STATE.exists():
-        return {"exists": False}
+        return {"exists": False, "settings": DEFAULT_SETTINGS}
     return _status(Portfolio.load(STATE))
 
 
@@ -117,35 +119,64 @@ def toss_check(symbol: str = "005930"):
 
 
 # ---------- 계좌 변경 (localhost 전용) ----------
+DEFAULT_SETTINGS = {"mode": "universe", "max_positions": 10, "max_new": 3, "min_turnover": 1e9}
+
+
 class RunReq(BaseModel):
-    source: str = "krx"
+    mode: str = "universe"  # universe: 국내 전 종목 | watchlist: 감시 종목만
+    source: str = "krx"  # watchlist 모드에서만 사용 (전 종목은 항상 국내 무료 시세)
     symbols: List[str] = Field(default_factory=list)  # 비우면 감시 종목 목록 사용
     use_filter: bool = True
     force: bool = False
     capital: float = 10_000_000
-    paths: int = Field(1000, ge=100, le=20000)
+    paths: int = Field(10000, ge=1000, le=50000)
+    max_positions: int = Field(10, ge=1, le=50)
+    max_new: int = Field(3, ge=1, le=20)
+    min_turnover: float = Field(1e9, ge=0)
+
+
+def _do_run(req: RunReq) -> dict:
+    with _lock:
+        pf = Portfolio.load(STATE) if STATE.exists() else Portfolio.new(req.capital)
+        pf.settings = {"mode": req.mode, "max_positions": req.max_positions, "max_new": req.max_new,
+                       "min_turnover": req.min_turnover}
+        if req.mode == "universe":
+            day, history, names, info = universe_history(ScanConfig(min_turnover=req.min_turnover), KrxPrices(),
+                                                         _progress, extra=list(pf.positions))
+            errors, source = info["errors"], "krx"
+        else:
+            _progress("감시 종목 시세 받는 중", 0, 1)
+            watch = save_watchlist(req.symbols) if req.symbols else load_watchlist()
+            # 감시 목록에서 뺐더라도 보유 중인 종목은 손절·익절 점검을 위해 항상 포함
+            symbols = list(dict.fromkeys(watch + list(pf.positions)))
+            series, errors = fetch_series(req.source, symbols, 300, seed=42)
+            history = {s: [c for _, c in rows] for s, rows in series.items()}
+            day = max((rows[-1][0] for rows in series.values() if rows), default=date.today().isoformat())
+            names, source = cached_names(), req.source
+        if not history:
+            raise RuntimeError(f"시세를 하나도 가져오지 못했습니다. 예: {list(errors.items())[:3]}")
+        # 같은 날 시세로 두 번 돌리면 보유일이 이중으로 늘어나므로 막는다 (주말에 눌러도 금요일 시세면 한 번만)
+        if pf.equity_history and pf.equity_history[-1][0] == day and not req.force:
+            raise RuntimeError(f"{day} 시세로 이미 매매했습니다. 다음 거래일 장 마감 후에 다시 누르세요. "
+                               "(꼭 다시 하려면 '강제 재실행')")
+        _progress("매매 판단 중", 0, 1)
+        eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=req.paths), use_filter=req.use_filter,
+                     max_positions=req.max_positions, max_new=req.max_new, names=names)
+        log = eng.step(day, history)
+        pf.save(STATE)
+    return {"day": day, "mode": req.mode, "source": source, "candidates": len(history), "log": log,
+            "errors": dict(list(errors.items())[:20]), "error_count": len(errors),
+            "finished": datetime.now().isoformat(timespec="seconds")}
 
 
 @router.post("/run")
 def run(req: RunReq, request: Request):
     _local_only(request)
+    if req.mode not in ("universe", "watchlist"):
+        raise HTTPException(400, "mode 는 universe 또는 watchlist")
     _check_source(req.source)
-    with _lock:
-        pf = Portfolio.load(STATE) if STATE.exists() else Portfolio.new(req.capital)
-        today = date.today().isoformat()
-        if pf.equity_history and pf.equity_history[-1][0] == today and not req.force:
-            raise HTTPException(409, f"{today} 에 이미 실행했습니다. 다시 하려면 '강제 재실행'을 켜세요.")
-        watch = save_watchlist(req.symbols) if req.symbols else load_watchlist()
-        # 감시 목록에서 뺐더라도 보유 중인 종목은 손절·익절 점검을 위해 항상 포함
-        symbols = list(dict.fromkeys(watch + list(pf.positions)))
-        series, errors = fetch_series(req.source, symbols, 300, seed=42)
-        if not series:
-            raise HTTPException(502, {"message": "시세를 하나도 가져오지 못했습니다.", "errors": errors})
-        history = {s: [c for _, c in rows] for s, rows in series.items()}
-        eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=req.paths), use_filter=req.use_filter)
-        log = eng.step(today, history)
-        pf.save(STATE)
-    return {"log": log, "errors": errors, "status": _status(pf)}
+    _start_job("run", lambda: _do_run(req))
+    return scan_status()
 
 
 class ResetReq(BaseModel):
@@ -170,7 +201,7 @@ class BacktestReq(BaseModel):
     days: int = Field(750, ge=150, le=2500)
     seed: int = 42
     capital: float = Field(10_000_000, gt=0)
-    paths: int = Field(1000, ge=100, le=5000)
+    paths: int = Field(10000, ge=1000, le=50000)
 
 
 @router.post("/backtest")
@@ -198,8 +229,8 @@ class MCReq(BaseModel):
     target_pct: float = Field(0.08, gt=0, lt=1)
     stop_pct: float = Field(0.04, gt=0, lt=1)
     horizon_days: int = Field(20, ge=1, le=120)
-    paths: int = Field(1000, ge=100, le=20000)
-    mode: str = "account"  # account: 계좌 매매 기준 | scan: 전 종목 스캔과 같은 보수적 기준
+    paths: int = Field(10000, ge=1000, le=50000)
+    mode: str = "scan"  # (예전 호환용) 이제 스캔과 계좌 매매가 같은 기준을 쓴다
 
 
 @router.post("/mc")
@@ -210,8 +241,7 @@ def run_mc(req: MCReq):
         raise HTTPException(502, errors.get(req.symbol, "시세 조회 실패"))
     closes = [c for _, c in series[req.symbol]]
     sig = TrendMomentumStrategy().decide(req.symbol, closes, holding=False)
-    cfg = ScanConfig().mc if req.mode == "scan" else MCConfig()
-    cfg.n_paths = req.paths
+    cfg = MCConfig(n_paths=req.paths)  # 스캔·계좌 매매와 같은 기준
     day = series[req.symbol][-1][0]
     res = simulate_trade(closes, req.target_pct, req.stop_pct, req.horizon_days, Costs().round_trip(),
                          cfg, np.random.default_rng(seed_for(req.symbol, day)), keep_returns=True)
@@ -255,19 +285,28 @@ def _progress(phase: str, done: int, total: int) -> None:
     _scan.update(phase=phase, done=done, total=total)
 
 
+JOB_FILES = {"scan": SCAN_FILE, "validate": CACHE / "validate_latest.json", "run": CACHE / "run_latest.json"}
+
+
 def _job(kind: str, fn) -> None:
     try:
         result = fn()
-        if kind == "scan":
-            CACHE.mkdir(exist_ok=True)
-            SCAN_FILE.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-        else:
-            (CACHE / "validate_latest.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        CACHE.mkdir(exist_ok=True)
+        JOB_FILES[kind].write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         _scan.update(error=None)
     except Exception as e:  # noqa: BLE001
-        _scan.update(error=f"{type(e).__name__}: {e}")
+        _scan.update(error=str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}")
     finally:
         _scan.update(running=False)
+
+
+def _start_job(kind: str, fn) -> None:
+    with _scan_lock:
+        if _scan["running"]:
+            raise HTTPException(409, "다른 작업(스캔·검증·매매)이 진행 중입니다. 끝난 뒤 다시 눌러 주세요.")
+        _scan.update(running=True, kind=kind, phase="시작", done=0, total=0, error=None,
+                     started=datetime.now().isoformat(timespec="seconds"))
+    threading.Thread(target=_job, args=(kind, fn), daemon=True).start()
 
 
 class ScanReq(BaseModel):
@@ -279,13 +318,8 @@ class ScanReq(BaseModel):
 @router.post("/scan")
 def start_scan(req: ScanReq, request: Request):
     _local_only(request)
-    with _scan_lock:
-        if _scan["running"]:
-            raise HTTPException(409, "이미 스캔이 진행 중입니다.")
-        _scan.update(running=True, kind="scan", phase="시작", done=0, total=0, error=None,
-                     started=datetime.now().isoformat(timespec="seconds"))
     cfg = ScanConfig(min_turnover=req.min_turnover, top=req.top, workers=req.workers)
-    threading.Thread(target=_job, args=("scan", lambda: scan(cfg, progress=_progress)), daemon=True).start()
+    _start_job("scan", lambda: scan(cfg, progress=_progress))
     return scan_status()
 
 
@@ -298,14 +332,8 @@ class ValidateReq(BaseModel):
 @router.post("/scan/validate")
 def start_validate(req: ValidateReq, request: Request):
     _local_only(request)
-    with _scan_lock:
-        if _scan["running"]:
-            raise HTTPException(409, "다른 작업이 진행 중입니다.")
-        _scan.update(running=True, kind="validate", phase="시작", done=0, total=0, error=None,
-                     started=datetime.now().isoformat(timespec="seconds"))
     cfg = ScanConfig(min_turnover=req.min_turnover)
-    fn = lambda: validate(cfg, n_dates=req.n_dates, top_k=req.top_k, progress=_progress)  # noqa: E731
-    threading.Thread(target=_job, args=("validate", fn), daemon=True).start()
+    _start_job("validate", lambda: validate(cfg, n_dates=req.n_dates, top_k=req.top_k, progress=_progress))
     return scan_status()
 
 
@@ -318,5 +346,7 @@ def _read(path: Path):
 
 @router.get("/scan/status")
 def scan_status():
-    return {**_scan, "latest": _read(SCAN_FILE) if not _scan["running"] else None,
-            "validation": _read(CACHE / "validate_latest.json") if not _scan["running"] else None}
+    idle = not _scan["running"]
+    return {**_scan, "latest": _read(SCAN_FILE) if idle else None,
+            "validation": _read(JOB_FILES["validate"]) if idle else None,
+            "run": _read(JOB_FILES["run"]) if idle else None}

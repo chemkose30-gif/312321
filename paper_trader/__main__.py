@@ -3,7 +3,7 @@
   backtest    과거 데이터로 "필터 사용 vs 미사용" 비교
   run         오늘 시세로 가상 계좌 1회 매매 (하루 1번 실행)
   status      가상 계좌 현황
-  mc          한 종목에 매수 신호가 났다고 보고 1000회 시뮬레이션 결과 보기
+  mc          한 종목에 매수 신호가 났다고 보고 미리 사보기 시뮬레이션 결과 보기 (1만 회)
   toss-check  토스 API 연결·응답 형식 확인 (토큰 값은 출력하지 않음)
   scan        국내(코스피·코스닥) 전 종목 스캔
   scan-check  과거 시점에 스캔을 돌려 뽑힌 종목이 실제로 어땠는지 검증
@@ -27,10 +27,11 @@ from .strategy import TrendMomentumStrategy
 
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--source", default="synthetic", choices=["synthetic", "krx", "yahoo", "csv", "toss"])
+    p.add_argument("--state", default="paper_state.json")
     p.add_argument("--symbols", nargs="+", default=["005930", "000660", "035420", "005380", "051910"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--csv-dir", default="data")
-    p.add_argument("--paths", type=int, default=1000, help="시뮬레이션 경로 수")
+    p.add_argument("--paths", type=int, default=10000, help="시뮬레이션 경로 수")
 
 
 def _fetch(args, count: int):
@@ -57,25 +58,27 @@ def cmd_backtest(args) -> None:
 
 
 def cmd_run(args) -> None:
-    state = Path(args.state)
-    if state.exists():
-        pf = Portfolio.load(state)
-    else:
-        pf = Portfolio.new(args.capital)
-        print(f"새 가상 계좌 생성: {args.capital:,.0f}원 → {state}")
-    today = args.date or date.today().isoformat()
-    if pf.equity_history and pf.equity_history[-1][0] == today and not args.force:
-        sys.exit(f"{today} 에 이미 실행했습니다. 다시 하려면 --force")
-    if args.symbols is None:  # 지정하지 않으면 감시 종목(watchlist.json) + 보유 종목
-        from .web import load_watchlist
-        args.symbols = load_watchlist()
-    args.symbols = list(dict.fromkeys(args.symbols + list(pf.positions)))
-    history = {s: [c for _, c in rows] for s, rows in _fetch(args, 300).items()}
-    eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=args.paths), use_filter=not args.no_filter)
-    lines = eng.step(today, history)
-    print("\n".join(lines) or "오늘은 매매 없음")
-    pf.save(state)
-    _print_status(pf, {s: h[-1] for s, h in history.items()})
+    from . import web
+    web.STATE = Path(args.state)
+    web._progress = _bar  # 진행 상황을 터미널에 표시
+    pf = Portfolio.load(web.STATE) if web.STATE.exists() else None
+    prev = {**web.DEFAULT_SETTINGS, **(pf.settings if pf else {})}
+    mode = ("universe" if args.universe else "watchlist" if (args.watchlist or args.symbols is not None)
+            else prev["mode"])
+    req = web.RunReq(mode=mode, source=args.source, symbols=args.symbols or [], force=args.force,
+                     use_filter=not args.no_filter, capital=args.capital, paths=args.paths,
+                     max_positions=args.max_positions or prev["max_positions"],
+                     max_new=args.max_new or prev["max_new"], min_turnover=prev["min_turnover"])
+    try:
+        r = web._do_run(req)
+    except RuntimeError as e:
+        sys.exit(str(e))
+    print(f"\n[{'국내 전 종목' if mode == 'universe' else '감시 종목'}] {r['day']} 시세, 대상 {r['candidates']}종목")
+    print("\n".join(r["log"]) or "오늘은 매매 없음")
+    if r["error_count"]:
+        print(f"[경고] 시세 조회 실패 {r['error_count']}종목")
+    pf = Portfolio.load(web.STATE)
+    _print_status(pf, {})
 
 
 def _print_status(pf: Portfolio, prices: dict) -> None:
@@ -177,10 +180,12 @@ def main(argv=None) -> None:
 
     p = sub.add_parser("run", help="가상 계좌 1회 매매")
     _common(p)
-    p.set_defaults(symbols=None)
-    p.add_argument("--state", default="paper_state.json")
+    p.set_defaults(symbols=None, source="krx")
+    p.add_argument("--watchlist", action="store_true", help="감시 종목(watchlist.json)에서만 고르기")
     p.add_argument("--capital", type=float, default=10_000_000)
-    p.add_argument("--date", help="기록할 날짜 (기본: 오늘)")
+    p.add_argument("--universe", action="store_true", help="국내 전 종목에서 고르기 (기본: 지난번 설정)")
+    p.add_argument("--max-positions", type=int, help="동시 보유 최대 종목 수 (기본 10)")
+    p.add_argument("--max-new", type=int, help="하루 신규 매수 최대 종목 수 (기본 3)")
     p.add_argument("--no-filter", action="store_true", help="시뮬레이션 필터 끄기")
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_run)
@@ -189,7 +194,7 @@ def main(argv=None) -> None:
     p.add_argument("--state", default="paper_state.json")
     p.set_defaults(fn=cmd_status)
 
-    p = sub.add_parser("mc", help="종목별 1000회 시뮬레이션")
+    p = sub.add_parser("mc", help="종목별 미리 사보기 시뮬레이션")
     _common(p)
     p.set_defaults(fn=cmd_mc)
 

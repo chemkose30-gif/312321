@@ -39,6 +39,7 @@ class Portfolio:
     trades: List[dict] = field(default_factory=list)
     equity_history: List[list] = field(default_factory=list)
     last_prices: Dict[str, float] = field(default_factory=dict)
+    settings: Dict[str, object] = field(default_factory=dict)  # 매매 방식(전 종목/감시 종목), 한도 등
 
     @classmethod
     def new(cls, capital: float, costs: Optional[Costs] = None) -> "Portfolio":

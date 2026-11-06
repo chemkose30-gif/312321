@@ -1,4 +1,4 @@
-"""국내 전 종목 스캔: 전략 신호가 난 종목만 1000회 시뮬레이션으로 검증한다.
+"""국내 전 종목 스캔: 전략 신호가 난 종목만 1만 회 시뮬레이션으로 검증한다.
 
 종목이 많을수록 "우연히 많이 오른 종목"이 상위에 오기 쉬우므로
 - 과거 상승률을 절반만 믿고(drift_shrink=0.5),
@@ -27,7 +27,7 @@ class ScanConfig:
     min_history: int = 250  # 상장 후 최소 거래일 (신규 상장주 제외)
     workers: int = 6
     top: int = 50
-    mc: MCConfig = field(default_factory=lambda: MCConfig(drift_shrink=0.5, min_edge=0.005))
+    mc: MCConfig = field(default_factory=MCConfig)  # 계좌 매매와 같은 기준
 
 
 def score_of(mean: float, cvar5: float) -> float:
@@ -38,7 +38,7 @@ def _evaluate(closes: List[float], strategy, cfg: ScanConfig, cost: float, code:
     sig = strategy.decide(code, closes, holding=False)
     if sig.action != "BUY":
         return None
-    # 종목·날짜별 고정 시드 → 웹의 "1000회 상세"에서 같은 경로로 똑같은 결과를 다시 볼 수 있다
+    # 종목·날짜별 고정 시드 → 웹의 "상세"에서 같은 경로로 똑같은 결과를 다시 볼 수 있다
     rng = np.random.default_rng(seed_for(code, day))
     res = simulate_trade(closes, sig.target_pct, sig.stop_pct, sig.horizon_days, cost, cfg.mc, rng)
     return {"signal": sig.reason, "target_pct": sig.target_pct, "stop_pct": sig.stop_pct,
@@ -53,57 +53,79 @@ def _turnover(rows) -> float:
     return float(np.mean([c * v for _, c, v in tail])) if tail else 0.0
 
 
+def collect(cfg: ScanConfig, prices: KrxPrices, progress: Progress) -> dict:
+    """국내 보통주 목록 → 시세 받기 → 상장 기간·거래대금 조건 통과 종목만 남긴다."""
+    progress("종목 목록 받는 중", 0, 1)
+    listing_date, listing = load_listing()
+    # 당일 거래대금이 기준의 30%도 안 되는 종목은 시세를 받기 전에 미리 뺀다
+    universe, skipped = domestic_universe(listing, min_amount=cfg.min_turnover * 0.3)
+    meta = {u["code"]: u for u in universe}
+    histories, errors = prices.bulk([u["code"] for u in universe], 320, cfg.workers,
+                                    lambda d, t: progress("시세 받는 중", d, t))
+    skipped |= {"상장 기간 부족": 0, "20일 평균 거래대금 미달": 0, "시세 조회 실패": len(errors)}
+    eligible = {}
+    for code, rows in histories.items():
+        if len(rows) < cfg.min_history:
+            skipped["상장 기간 부족"] += 1
+        elif _turnover(rows) < cfg.min_turnover:
+            skipped["20일 평균 거래대금 미달"] += 1
+        else:
+            eligible[code] = rows
+    return {"listing_date": listing_date, "listed": len(listing), "universe": len(universe), "meta": meta,
+            "eligible": eligible, "skipped": skipped, "errors": errors}
+
+
 def scan(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = None,
          progress: Optional[Progress] = None, seed: Optional[int] = None) -> dict:
     cfg = cfg or ScanConfig()
     prices = prices or KrxPrices()
     progress = progress or (lambda *a: None)
     started = datetime.now()
+    c = collect(cfg, prices, progress)
+    eligible, meta, errors = c["eligible"], c["meta"], c["errors"]
 
-    progress("종목 목록 받는 중", 0, 1)
-    listing_date, listing = load_listing()
-    # 당일 거래대금이 기준의 30%도 안 되는 종목은 시세를 받기 전에 미리 뺀다
-    universe, skipped = domestic_universe(listing, min_amount=cfg.min_turnover * 0.3)
-    meta = {u["code"]: u for u in universe}
-
-    codes = [u["code"] for u in universe]
-    histories, errors = prices.bulk(codes, 320, cfg.workers,
-                                    lambda d, t: progress("시세 받는 중", d, t))
-
-    progress("1000회 시뮬레이션 중", 0, len(histories))
     strategy, cost = TrendMomentumStrategy(), Costs().round_trip()
-    results, n_eligible = [], 0
-    skipped |= {"상장 기간 부족": 0, "20일 평균 거래대금 미달": 0, "시세 조회 실패": len(errors)}
-    for i, (code, rows) in enumerate(histories.items()):
+    results = []
+    for i, (code, rows) in enumerate(eligible.items()):
         if i % 50 == 0:
-            progress("1000회 시뮬레이션 중", i, len(histories))
-        if len(rows) < cfg.min_history:
-            skipped["상장 기간 부족"] += 1
-            continue
-        turnover = _turnover(rows)
-        if turnover < cfg.min_turnover:
-            skipped["20일 평균 거래대금 미달"] += 1
-            continue
-        n_eligible += 1
-        closes = [c for _, c, _ in rows]
+            progress("시뮬레이션 중", i, len(eligible))
+        closes = [x for _, x, _ in rows]
         ev = _evaluate(closes, strategy, cfg, cost, code, rows[-1][0])
         if ev:
             m = meta[code]
             results.append({"code": code, "name": m["name"], "market": m["market"], "price": closes[-1],
-                            "date": rows[-1][0], "turnover": turnover, **ev})
+                            "date": rows[-1][0], "turnover": _turnover(rows), **ev})
     results.sort(key=lambda r: (not r["approved"], -r["score"]))
     approved = [r for r in results if r["approved"]]
     progress("완료", 1, 1)
     return {
-        "as_of": max((r["date"] for r in results), default=listing_date), "listing_date": listing_date,
+        "as_of": max((r["date"] for r in results), default=c["listing_date"]), "listing_date": c["listing_date"],
         "started": started.isoformat(timespec="seconds"),
         "seconds": round((datetime.now() - started).total_seconds(), 1),
-        "listed": len(listing), "universe": len(universe), "eligible": n_eligible,
-        "signals": len(results), "approved": len(approved), "skipped": skipped,
+        "listed": c["listed"], "universe": c["universe"], "eligible": len(eligible),
+        "signals": len(results), "approved": len(approved), "skipped": c["skipped"],
         "errors": dict(list(errors.items())[:20]), "error_count": len(errors),
         "config": {"min_turnover": cfg.min_turnover, "min_history": cfg.min_history, "mc": asdict(cfg.mc)},
         "results": approved[: cfg.top] + [r for r in results if not r["approved"]][:30],
     }
+
+
+def universe_history(cfg: ScanConfig, prices: KrxPrices, progress: Progress,
+                     extra: List[str] = ()) -> tuple:
+    """가상계좌 '전 종목' 매매용: 조건 통과 종목 + 보유 종목의 종가와 이름."""
+    c = collect(cfg, prices, progress)
+    rows = dict(c["eligible"])
+    errors = dict(c["errors"])
+    for code in extra:  # 보유 종목은 조건에서 빠졌더라도 손절·익절 점검을 위해 포함
+        if code not in rows:
+            try:
+                rows[code] = prices.history(code, 320)
+            except Exception as e:  # noqa: BLE001
+                errors[code] = str(e)[:200]
+    closes = {code: [x for _, x, _ in r] for code, r in rows.items() if r}
+    names = {code: m["name"] for code, m in c["meta"].items()}
+    day = max((r[-1][0] for r in rows.values() if r), default=c["listing_date"])
+    return day, closes, names, {**c, "errors": errors}
 
 
 # ---------------- 과거 시점 스캔 검증 ----------------

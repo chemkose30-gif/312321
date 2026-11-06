@@ -1,4 +1,4 @@
-"""매수 신호 하나를 1000개의 가상 미래에서 미리 거래해 보는 시뮬레이터.
+"""매수 신호 하나를 1만 개의 가상 미래에서 미리 거래해 보는 시뮬레이터.
 
 과거 일간 로그수익률을 블록 단위로 재추출(block bootstrap)해 가격 경로를 만들고,
 일부 경로는 변동성을 키워(스트레스) 급락장을 섞는다. 각 경로에서 신호의
@@ -17,16 +17,17 @@ import numpy as np
 
 @dataclass
 class MCConfig:
-    n_paths: int = 1000
+    n_paths: int = 10000  # 1000개면 경계 종목의 판정이 시드마다 뒤집힘(신호 종목의 약 1/3) → 1만 개
     lookback: int = 250  # 재추출에 쓸 과거 거래일 수
     block: int = 5  # 블록 길이(일). 수익률의 연속성(변동성 군집)을 일부 보존
     stress_share: float = 0.2  # 스트레스 경로 비율
     stress_vol: float = 1.8  # 스트레스 경로의 변동성 배수
-    min_edge: float = 0.003  # 승인 조건: 비용 차감 후 기대수익 ≥ 0.3%
+    min_edge: float = 0.005  # 승인 조건: 비용 차감 후 기대수익 ≥ 0.5%
     max_tail_loss: float = 0.12  # 승인 조건: 최악 5% 평균손실(CVaR5) ≤ 12%
     kelly_fraction: float = 0.25  # 켈리 비중의 1/4만 사용
     max_position: float = 0.20  # 종목당 최대 계좌 비중
-    drift_shrink: float = 0.0  # 과거 평균 상승률을 얼마나 깎을지 (0.5 = 절반만 믿음). 급등주 과대평가 방지
+    drift_shrink: float = 0.5  # 과거 평균 상승률을 얼마나 깎을지 (0.5 = 절반만 믿음). 급등주 과대평가 방지
+    confidence_z: float = 2.0  # 기대수익에서 오차(표준오차 × 2)를 뺀 값이 기준을 넘어야 승인 → 경계 종목은 일관되게 거절
 
 
 @dataclass
@@ -43,15 +44,16 @@ class MCResult:
     size_fraction: float
     reason: str
     returns: Optional[list] = None  # keep_returns=True 일 때 경로별 순수익률
+    se: float = 0.0  # 기대수익 추정의 표준오차 (시뮬레이션 자체의 흔들림)
 
     def summary(self) -> str:
-        return (f"승률 {self.win_rate:.0%} | 기대수익 {self.mean:+.2%} | 중앙값 {self.median:+.2%} | "
+        return (f"승률 {self.win_rate:.0%} | 기대수익 {self.mean:+.2%}±{2 * self.se:.2%} | 중앙값 {self.median:+.2%} | "
                 f"하위5% {self.p5:+.2%} | CVaR5 {self.cvar5:+.2%} | 손절 {self.stop_rate:.0%} "
                 f"익절 {self.target_rate:.0%} | 비중 {self.size_fraction:.1%}")
 
 
 def seed_for(symbol: str, day: str) -> int:
-    """같은 종목·같은 날이면 같은 1000개 경로가 나오도록 고정된 시드."""
+    """같은 종목·같은 날이면 같은 경로가 나오도록 고정된 시드."""
     return zlib.crc32(f"{symbol}|{day}".encode())
 
 
@@ -106,10 +108,13 @@ def simulate_trade(closes: Sequence[float], target_pct: float, stop_pct: float, 
         p5=float(np.percentile(net, 5)), cvar5=float(worst.mean()),
         stop_rate=float(stop_first.mean()), target_rate=float(target_first.mean()),
         approved=False, size_fraction=size, reason="",
-        returns=net.round(5).tolist() if keep_returns else None,
+        returns=net.round(5).tolist() if keep_returns else None, se=float(np.sqrt(var / n)),
     )
+    lower = mean - cfg.confidence_z * res.se
     if mean < cfg.min_edge:
         res.reason = f"기대수익 {mean:+.2%} < 기준 {cfg.min_edge:.2%}"
+    elif lower < cfg.min_edge:
+        res.reason = f"경계: 기대수익 {mean:+.2%}이지만 오차(±{cfg.confidence_z * res.se:.2%})를 빼면 기준 {cfg.min_edge:.2%} 미만"
     elif res.cvar5 < -cfg.max_tail_loss:
         res.reason = f"꼬리위험 CVaR5 {res.cvar5:+.2%} > 허용 -{cfg.max_tail_loss:.0%}"
     elif size <= 0:
