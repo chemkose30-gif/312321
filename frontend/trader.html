@@ -131,6 +131,7 @@ td.r,th.r{text-align:right}
         <label class="field grow" id="runSymbolsF">감시 종목 (쉼표로 구분)<input id="runSymbols" class="wide"></label>
         <label class="field">최대 보유<input id="runMaxPos" class="num" type="number" value="10" min="1" max="50"></label>
         <label class="field">하루 신규 매수<input id="runMaxNew" class="num" type="number" value="3" min="1" max="20"></label>
+        <label class="field">종목당 비중 %<input id="runPosPct" class="num" type="number" value="10" min="1" max="100" step="1"></label>
       </div>
       <div class="form" style="margin-top:10px">
         <label class="check"><input type="checkbox" id="runFilter" checked>시뮬레이션 필터 (끄면 전략 신호만으로 매수)</label>
@@ -203,7 +204,8 @@ td.r,th.r{text-align:right}
       <div class="form">
         <label class="field">시세 소스<select id="mcSource"></select></label>
         <label class="field">종목<input id="mcSymbol" class="num" style="width:110px" value="005930"></label>
-        <label class="field">익절 %<input id="mcTarget" class="num" type="number" value="8" step="0.5"></label>
+        <label class="check"><input type="checkbox" id="mcAuto" checked onchange="$('mcTarget').disabled=this.checked">익절 자동 (3~10%)</label>
+        <label class="field">익절 % (수동)<input id="mcTarget" class="num" type="number" value="8" step="0.5" disabled></label>
         <label class="field">손절 %<input id="mcStop" class="num" type="number" value="4" step="0.5"></label>
         <label class="field">보유일<input id="mcHorizon" class="num" type="number" value="20"></label>
         <label class="field">경로 수<input id="mcPaths" class="num" type="number" value="10000" step="5000" min="1000" max="50000"></label>
@@ -351,6 +353,7 @@ function renderAccount(s) {
   if (s.settings && !settingsApplied) {
     settingsApplied = true;
     $('runMode').value = s.settings.mode; $('runMaxPos').value = s.settings.max_positions; $('runMaxNew').value = s.settings.max_new;
+    $('runPosPct').value = Math.round((s.settings.position_pct ?? 0.1) * 100);
     $('runTurnover').value = String(s.settings.min_turnover); syncRunMode();
   }
   $('acctEmpty').style.display = s.exists ? 'none' : '';
@@ -400,7 +403,7 @@ async function runToday() {
   try {
     await api('/run', {mode:$('runMode').value, source:$('runSource').value, symbols:$('runMode').value === 'watchlist' ? symbols('runSymbols') : [],
       use_filter:$('runFilter').checked, force:$('runForce').checked, max_positions:+$('runMaxPos').value,
-      max_new:+$('runMaxNew').value, min_turnover:+$('runTurnover').value});
+      max_new:+$('runMaxNew').value, min_turnover:+$('runTurnover').value, position_pct:+$('runPosPct').value/100});
     $('runForce').checked = false;
     pollJobs();
   } catch (e) { $('runErr').textContent = e.message; }
@@ -461,21 +464,27 @@ async function runMC() {
   $('mcErr').textContent = '';
   await busy('mcBtn', async () => {
     try {
-      const r = await api('/mc', {source:$('mcSource').value, symbol:$('mcSymbol').value.trim(), target_pct:$('mcTarget').value/100, stop_pct:$('mcStop').value/100, horizon_days:+$('mcHorizon').value, paths:+$('mcPaths').value});
+      const r = await api('/mc', {source:$('mcSource').value, symbol:$('mcSymbol').value.trim(), target_pct:$('mcTarget').value/100, stop_pct:$('mcStop').value/100, horizon_days:+$('mcHorizon').value, paths:+$('mcPaths').value, auto_target:$('mcAuto').checked});
       const m = r.result, sig = r.signal;
       const cards = [
         ['판정', m.approved ? '<span class="badge ok">매수 승인</span>' : '<span class="badge no">거절</span>', esc(m.reason)],
         ['승률', pct(m.win_rate,0,false), `${m.n_paths.toLocaleString()}개 경로 중`],
         ['기대수익', `<span class="${cls(m.mean)}">${pct(m.mean,2)}</span>`, `오차 ±${pct(2*m.se,2,false)} · 중앙값 ${pct(m.median,2)}`],
         ['최악 5% 평균', `<span class="${cls(m.cvar5)}">${pct(m.cvar5,2)}</span>`, `하위 5% 경계 ${pct(m.p5,2)}`],
-        ['추천 비중', pct(m.size_fraction,1,false), `손절 ${pct(m.stop_rate,0,false)} · 익절 ${pct(m.target_rate,0,false)}`],
+        ['익절선', '+' + pct(m.target_pct,0,false), `${r.auto_target ? '3~10% 중 선택' : '직접 지정'} · 익절 도달 ${pct(m.target_rate,0,false)} · 손절 ${pct(m.stop_rate,0,false)}`],
       ];
       $('mcOut').innerHTML = `
         <div class="metrics">${cards.map(([l,v,s]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('')}</div>
         <div class="card"><h3>${esc(r.name ? r.name + ' ' : '')}${esc(r.symbol)} 현재 ${won(r.price)}원 · 전략 신호: ${sig.action==='BUY'?'<span class="up">매수</span>':'<span class="muted">대기</span>'} ${esc(sig.reason||'')}</h3>
           <p class="help">판정 기준(스캔·가상계좌 공통): 과거 상승률을 ${pct(r.config.drift_shrink,0,false)} 깎고 시뮬레이션해, 기대수익에서 오차를 뺀 값이 ${pct(r.config.min_edge,1,false)} 이상이어야 승인. 같은 날 같은 종목이면 스캔 표와 같은 결과가 나옵니다. 기준일 ${esc(r.date)}.<br>시뮬레이션은 전략 신호와 상관없이 "지금 사면"을 가정합니다. 실제 계좌는 전략이 매수 신호를 낼 때만 이 검증을 거칩니다.</p></div>
+        ${m.by_target ? `<div class="card"><h3>익절선별 결과 (같은 가상 미래 ${m.n_paths.toLocaleString()}개에서 비교)</h3><div class="tbl"><table>
+          <tr><th>익절선</th><th class="r">기대수익</th><th class="r">오차</th><th class="r">승률</th><th class="r">익절 도달</th><th class="r">손절</th><th class="r">최악5%</th><th class="r">점수</th><th>판정</th></tr>
+          ${m.by_target.map(t => `<tr${t.target_pct === m.target_pct ? ' style="background:rgba(139,92,246,.1)"' : ''}><td><b>+${pct(t.target_pct,0,false)}</b>${t.target_pct === m.target_pct ? ' <span class="badge ok" style="font-size:10px;padding:1px 6px">선택</span>' : ''}</td>
+            <td class="r ${cls(t.mean)}">${pct(t.mean,2)}</td><td class="r muted">±${pct(2*t.se,2,false)}</td><td class="r">${pct(t.win_rate,0,false)}</td><td class="r">${pct(t.target_rate,0,false)}</td><td class="r">${pct(t.stop_rate,0,false)}</td>
+            <td class="r ${cls(t.cvar5)}">${pct(t.cvar5,1)}</td><td class="r">${t.score.toFixed(2)}</td><td>${t.approved ? '<span class="up">승인</span>' : '<span class="muted">거절</span>'}</td></tr>`).join('')}
+          </table></div><p class="help" style="margin-top:8px">승인된 익절선 중 점수(기대수익 / 최악 5% 평균손실)가 가장 높은 값을 고릅니다. 승인된 것이 없으면 점수가 가장 높은 값을 보여 줍니다.</p></div>` : ''}
         <div class="grid2">
-          <div class="card"><h3>가상 미래별 거래 수익률 분포 (비용 차감)</h3><div class="chart" id="mcHist"></div></div>
+          <div class="card"><h3>가상 미래별 거래 수익률 분포 (비용 차감, 익절 +${pct(m.target_pct,0,false)} 기준)</h3><div class="chart" id="mcHist"></div></div>
           <div class="card"><h3>최근 120거래일 주가</h3><div class="chart" id="mcPrice"></div></div>
         </div>`;
       histogram($('mcHist'), r.histogram.counts, r.histogram.edges, [{v:0,label:'0',color:'#8892a4'},{v:m.mean,label:'평균',color:'var(--amber)'},{v:m.p5,label:'하위5%',color:'var(--down)'}]);
@@ -529,11 +538,11 @@ function renderScan(r) {
   const row = x => `<tr><td><b>${esc(x.name)}</b><div class="muted">${esc(x.code)} · ${esc(x.market)}</div></td>
     <td class="r">${won(x.price)}</td><td class="r">${(x.turnover/1e8).toFixed(0)}억</td>
     <td class="r ${cls(x.mean)}">${pct(x.mean,2)}</td><td class="r ${cls(x.cvar5)}">${pct(x.cvar5,1)}</td>
-    <td class="r">${pct(x.win_rate,0,false)}</td><td class="r"><b>${x.score.toFixed(2)}</b></td><td class="r">${x.approved ? pct(x.size,1,false) : '<span class="muted">—</span>'}</td>
+    <td class="r">${pct(x.win_rate,0,false)}</td><td class="r"><b>${x.score.toFixed(2)}</b></td><td class="r">${x.approved ? '+' + pct(x.target_pct,0,false) : '<span class="muted">—</span>'}</td>
     <td class="muted" style="max-width:220px">${esc(x.approved ? x.signal : x.reason)}</td>
     <td class="r"><button class="mini" onclick="openMC('${esc(x.code)}')">상세</button>
       ${x.approved ? `<button class="mini${watch.has(x.code) ? ' done' : ''}" onclick="addWatch('${esc(x.code)}', this)">${watch.has(x.code) ? '감시 중' : '감시 추가'}</button>` : ''}</td></tr>`;
-  const head = `<tr><th>종목</th><th class="r">현재가</th><th class="r">거래대금</th><th class="r">기대수익</th><th class="r">최악5%</th><th class="r">승률</th><th class="r">점수</th><th class="r">비중</th><th>신호 / 거절 사유</th><th></th></tr>`;
+  const head = `<tr><th>종목</th><th class="r">현재가</th><th class="r">거래대금</th><th class="r">기대수익</th><th class="r">최악5%</th><th class="r">승률</th><th class="r">점수</th><th class="r">익절선</th><th>신호 / 거절 사유</th><th></th></tr>`;
   $('scOut').innerHTML = `
     <div class="card"><h3>스캔 결과 · 기준일 ${esc(r.as_of)} · ${esc(r.started.replace('T',' '))} 실행 (${r.seconds}초)</h3>
       <div class="funnel">상장 <b>${r.listed.toLocaleString()}</b> → 국내 보통주 <b>${r.universe.toLocaleString()}</b> → 조건 통과 <b>${r.eligible.toLocaleString()}</b>
@@ -547,7 +556,7 @@ function renderValidation(v) {
   const rows = Object.entries(v.groups).filter(([, g]) => g.n);
   const base = v.groups['전체 종목 (아무거나 샀다면)'];
   $('vaOut').innerHTML = `<div class="card"><h3>과거 검증 · 종목 ${v.stocks.toLocaleString()}개 · ${v.dates.length}개 시점 (${esc(v.dates[0])} ~ ${esc(v.dates[v.dates.length-1])})</h3>
-    <p class="help">각 시점에 그때까지의 데이터만으로 스캔하고, 같은 규칙(익절 +8% / 손절 -4% / 최대 ${v.horizon}일)으로 실제 결과를 계산했습니다. 비용 차감.</p>
+    <p class="help">각 시점에 그때까지의 데이터만으로 스캔하고, 같은 규칙(손절 -4% / 최대 ${v.horizon}일, 승인 종목은 시뮬레이션이 고른 익절선, 나머지는 +8%)으로 실제 결과를 계산했습니다. 비용 차감.</p>
     <div class="tbl"><table><tr><th>그룹</th><th class="r">건수</th><th class="r">평균 수익</th><th class="r">중앙값</th><th class="r">승률</th><th class="r">아무거나 대비</th></tr>
     ${rows.map(([k, g]) => `<tr><td>${esc(k)}</td><td class="r">${g.n.toLocaleString()}</td><td class="r ${cls(g.mean)}">${pct(g.mean,2)}</td><td class="r ${cls(g.median)}">${pct(g.median,2)}</td><td class="r">${pct(g.win_rate,0,false)}</td><td class="r ${cls(g.mean-base.mean)}">${pct(g.mean-base.mean,2)}p</td></tr>`).join('')}
     </table></div>
@@ -557,7 +566,7 @@ function renderValidation(v) {
 function openMC(code) {
   document.querySelector('.tab[data-page="mc"]').click();
   $('mcSource').value = 'krx'; $('mcSymbol').value = code;
-  $('mcTarget').value = 8; $('mcStop').value = 4; $('mcHorizon').value = 20; $('mcPaths').value = 10000;
+  $('mcAuto').checked = true; $('mcTarget').disabled = true; $('mcStop').value = 4; $('mcHorizon').value = 20; $('mcPaths').value = 10000;
   runMC();
 }
 
@@ -596,9 +605,10 @@ async function tossCheck() {
     ? '<span class="badge ok">키 설정됨</span> .env 에서 토스 키를 찾았습니다.'
     : '<span class="badge no">키 없음</span> .env 에 TOSS_CLIENT_ID / TOSS_CLIENT_SECRET 을 넣고 서버를 다시 켜세요. 그전까지는 "가상 주가"나 "Yahoo"로 써 볼 수 있습니다.';
   const c = CFG.costs, mc = CFG.mc;
-  $('rules').innerHTML = `전략: 20일 평균 > 60일 평균, 20일 모멘텀 양수, RSI 70 미만이면 매수 신호 · 익절 +8% / 손절 -4% / 최대 20거래일 보유<br>
+  $('rules').innerHTML = `전략: 20일 평균 > 60일 평균, 20일 모멘텀 양수, RSI 70 미만이면 매수 신호 · 익절 +3~10% 중 종목별로 시뮬레이션이 선택 / 손절 -4% / 최대 20거래일 보유<br>
+    매수 금액: 종목당 총자산의 10% (가상계좌 설정에서 변경)<br>
     시뮬레이션: 과거 ${mc.lookback}일 수익률을 ${mc.block}일 블록으로 섞어 ${mc.n_paths.toLocaleString()}개 경로 (종목·날짜별 고정 시드), 그중 ${pct(mc.stress_share,0,false)}는 변동성 ${mc.stress_vol}배<br>
-    승인: 과거 상승률을 ${pct(mc.drift_shrink,0,false)} 깎고 시뮬레이션한 기대수익 − 오차(표준오차×${mc.confidence_z}) ≥ ${pct(mc.min_edge,1,false)}, 최악 5% 평균손실 ≤ ${pct(mc.max_tail_loss,0,false)} · 비중 = 켈리 × ${mc.kelly_fraction} (최대 ${pct(mc.max_position,0,false)})<br>
+    승인: 과거 상승률을 ${pct(mc.drift_shrink,0,false)} 깎고 시뮬레이션한 기대수익 − 오차(표준오차×${mc.confidence_z}) ≥ ${pct(mc.min_edge,1,false)}, 최악 5% 평균손실 ≤ ${pct(mc.max_tail_loss,0,false)}, 켈리 비중 > 0<br>
     비용: 수수료 ${pct(c.fee_rate,3,false)} (양방향), 매도 거래세 ${pct(c.sell_tax,2,false)}, 슬리피지 ${pct(c.slippage,2,false)}`;
   try { const t = localStorage.getItem('trader-tab'); if (t) document.querySelector(`.tab[data-page="${t}"]`)?.click(); } catch (_) {}
   loadAccount();

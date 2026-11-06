@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 
 from .krx import KrxPrices, domestic_universe, load_listing
-from .montecarlo import MCConfig, seed_for, simulate_trade
+from .montecarlo import MCConfig, score_of, seed_for, simulate_trade
 from .portfolio import Costs
 from .strategy import TrendMomentumStrategy
 
@@ -30,18 +30,14 @@ class ScanConfig:
     mc: MCConfig = field(default_factory=MCConfig)  # 계좌 매매와 같은 기준
 
 
-def score_of(mean: float, cvar5: float) -> float:
-    return mean / max(abs(cvar5), 0.01)
-
-
 def _evaluate(closes: List[float], strategy, cfg: ScanConfig, cost: float, code: str, day: str) -> Optional[dict]:
     sig = strategy.decide(code, closes, holding=False)
     if sig.action != "BUY":
         return None
     # 종목·날짜별 고정 시드 → 웹의 "상세"에서 같은 경로로 똑같은 결과를 다시 볼 수 있다
     rng = np.random.default_rng(seed_for(code, day))
-    res = simulate_trade(closes, sig.target_pct, sig.stop_pct, sig.horizon_days, cost, cfg.mc, rng)
-    return {"signal": sig.reason, "target_pct": sig.target_pct, "stop_pct": sig.stop_pct,
+    res = simulate_trade(closes, cfg.mc.target_choices, sig.stop_pct, sig.horizon_days, cost, cfg.mc, rng)
+    return {"signal": sig.reason, "target_pct": res.target_pct, "stop_pct": sig.stop_pct,
             "horizon_days": sig.horizon_days, "approved": res.approved, "reason": res.reason,
             "win_rate": res.win_rate, "mean": res.mean, "median": res.median, "p5": res.p5,
             "cvar5": res.cvar5, "stop_rate": res.stop_rate, "size": res.size_fraction,
@@ -181,9 +177,12 @@ def validate(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = Non
             future = [c for _, c, _ in rows[idx + 1: idx + 1 + horizon]]
             if len(future) < horizon:
                 continue
+            # 비교 기준(아무거나/신호 전체)은 전략 기본 익절선, 승인 종목은 시뮬레이션이 고른 익절선으로 계산
             actual = realized_return(closes[-1], future, strategy.target_pct, strategy.stop_pct, horizon, cost)
             groups["전체 종목 (아무거나 샀다면)"].append(actual)
             ev = _evaluate(closes, strategy, cfg, cost, code, td)
+            if ev and ev["approved"]:
+                actual = realized_return(closes[-1], future, ev["target_pct"], strategy.stop_pct, horizon, cost)
             if ev:
                 groups["전략 신호 전체"].append(actual)
                 if ev["approved"]:

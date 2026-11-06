@@ -119,7 +119,7 @@ def toss_check(symbol: str = "005930"):
 
 
 # ---------- 계좌 변경 (localhost 전용) ----------
-DEFAULT_SETTINGS = {"mode": "universe", "max_positions": 10, "max_new": 3, "min_turnover": 1e9}
+DEFAULT_SETTINGS = {"mode": "universe", "max_positions": 10, "max_new": 3, "min_turnover": 1e9, "position_pct": 0.10}
 
 
 class RunReq(BaseModel):
@@ -132,6 +132,7 @@ class RunReq(BaseModel):
     paths: int = Field(10000, ge=1000, le=50000)
     max_positions: int = Field(10, ge=1, le=50)
     max_new: int = Field(3, ge=1, le=20)
+    position_pct: float = Field(0.10, gt=0, le=1)  # 종목당 매수 금액 = 총자산 × 이 비율
     min_turnover: float = Field(1e9, ge=0)
 
 
@@ -139,6 +140,7 @@ def _do_run(req: RunReq) -> dict:
     with _lock:
         pf = Portfolio.load(STATE) if STATE.exists() else Portfolio.new(req.capital)
         pf.settings = {"mode": req.mode, "max_positions": req.max_positions, "max_new": req.max_new,
+                       "position_pct": req.position_pct,
                        "min_turnover": req.min_turnover}
         if req.mode == "universe":
             day, history, names, info = universe_history(ScanConfig(min_turnover=req.min_turnover), KrxPrices(),
@@ -161,7 +163,8 @@ def _do_run(req: RunReq) -> dict:
                                "(꼭 다시 하려면 '강제 재실행')")
         _progress("매매 판단 중", 0, 1)
         eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=req.paths), use_filter=req.use_filter,
-                     max_positions=req.max_positions, max_new=req.max_new, names=names)
+                     max_positions=req.max_positions, max_new=req.max_new, names=names,
+                     position_pct=req.position_pct)
         log = eng.step(day, history)
         pf.save(STATE)
     return {"day": day, "mode": req.mode, "source": source, "candidates": len(history), "log": log,
@@ -231,6 +234,7 @@ class MCReq(BaseModel):
     horizon_days: int = Field(20, ge=1, le=120)
     paths: int = Field(10000, ge=1000, le=50000)
     mode: str = "scan"  # (예전 호환용) 이제 스캔과 계좌 매매가 같은 기준을 쓴다
+    auto_target: bool = True  # True 면 익절선 3~10% 중 가장 좋은 값을 고른다 (스캔·계좌와 동일)
 
 
 @router.post("/mc")
@@ -243,14 +247,16 @@ def run_mc(req: MCReq):
     sig = TrendMomentumStrategy().decide(req.symbol, closes, holding=False)
     cfg = MCConfig(n_paths=req.paths)  # 스캔·계좌 매매와 같은 기준
     day = series[req.symbol][-1][0]
-    res = simulate_trade(closes, req.target_pct, req.stop_pct, req.horizon_days, Costs().round_trip(),
+    targets = cfg.target_choices if req.auto_target else req.target_pct
+    res = simulate_trade(closes, targets, req.stop_pct, req.horizon_days, Costs().round_trip(),
                          cfg, np.random.default_rng(seed_for(req.symbol, day)), keep_returns=True)
     rets = np.asarray(res.returns or [0.0])
     counts, edges = np.histogram(rets, bins=40)
     sample_dates = [d for d, _ in series[req.symbol][-120:]]
     return {
         "symbol": req.symbol, "name": cached_names().get(req.symbol, ""), "price": closes[-1], "date": day,
-        "mode": req.mode, "config": {"drift_shrink": cfg.drift_shrink, "min_edge": cfg.min_edge},
+        "mode": req.mode, "auto_target": req.auto_target,
+        "config": {"drift_shrink": cfg.drift_shrink, "min_edge": cfg.min_edge},
         "signal": sig.__dict__,
         "result": {k: v for k, v in res.__dict__.items() if k != "returns"},
         "histogram": {"counts": counts.tolist(), "edges": edges.round(5).tolist()},

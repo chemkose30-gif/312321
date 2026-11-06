@@ -20,7 +20,9 @@ from dotenv import load_dotenv
 
 from .data import fetch_series
 from .engine import Engine, backtest, metrics
-from .montecarlo import MCConfig, simulate_trade
+import numpy as np
+
+from .montecarlo import MCConfig, seed_for, simulate_trade
 from .portfolio import Costs, Portfolio
 from .strategy import TrendMomentumStrategy
 
@@ -68,7 +70,8 @@ def cmd_run(args) -> None:
     req = web.RunReq(mode=mode, source=args.source, symbols=args.symbols or [], force=args.force,
                      use_filter=not args.no_filter, capital=args.capital, paths=args.paths,
                      max_positions=args.max_positions or prev["max_positions"],
-                     max_new=args.max_new or prev["max_new"], min_turnover=prev["min_turnover"])
+                     max_new=args.max_new or prev["max_new"], min_turnover=prev["min_turnover"],
+                     position_pct=(args.position / 100) if args.position else prev["position_pct"])
     try:
         r = web._do_run(req)
     except RuntimeError as e:
@@ -107,10 +110,11 @@ def cmd_mc(args) -> None:
     for sym, rows in series.items():
         closes = [c for _, c in rows]
         sig = st.decide(sym, closes, holding=False)
-        res = simulate_trade(closes, st.target_pct, st.stop_pct, st.horizon_days, Costs().round_trip(),
-                             MCConfig(n_paths=args.paths))
+        cfg = MCConfig(n_paths=args.paths)
+        res = simulate_trade(closes, cfg.target_choices, st.stop_pct, st.horizon_days, Costs().round_trip(),
+                             cfg, np.random.default_rng(seed_for(sym, rows[-1][0])))
         print(f"{sym} 현재 {closes[-1]:,.0f} | 전략 신호 {sig.action} {sig.reason}")
-        print(f"   가정: +{st.target_pct:.0%} 익절 / -{st.stop_pct:.0%} 손절 / {st.horizon_days}일 → {res.summary()}"
+        print(f"   익절 3~10% 중 +{res.target_pct:.0%} 선택 / -{st.stop_pct:.0%} 손절 / {st.horizon_days}일 → {res.summary()}"
               f" → {'승인' if res.approved else '거절: ' + res.reason}")
 
 
@@ -186,6 +190,7 @@ def main(argv=None) -> None:
     p.add_argument("--universe", action="store_true", help="국내 전 종목에서 고르기 (기본: 지난번 설정)")
     p.add_argument("--max-positions", type=int, help="동시 보유 최대 종목 수 (기본 10)")
     p.add_argument("--max-new", type=int, help="하루 신규 매수 최대 종목 수 (기본 3)")
+    p.add_argument("--position", type=float, help="종목당 매수 비중 %% (기본 10)")
     p.add_argument("--no-filter", action="store_true", help="시뮬레이션 필터 끄기")
     p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_run)
