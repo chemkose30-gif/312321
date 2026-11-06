@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 
 from .krx import KrxPrices, domestic_universe, load_listing
-from .montecarlo import MCConfig, simulate_trade
+from .montecarlo import MCConfig, seed_for, simulate_trade
 from .portfolio import Costs
 from .strategy import TrendMomentumStrategy
 
@@ -34,10 +34,12 @@ def score_of(mean: float, cvar5: float) -> float:
     return mean / max(abs(cvar5), 0.01)
 
 
-def _evaluate(closes: List[float], strategy, cfg: ScanConfig, cost: float, rng) -> Optional[dict]:
-    sig = strategy.decide("", closes, holding=False)
+def _evaluate(closes: List[float], strategy, cfg: ScanConfig, cost: float, code: str, day: str) -> Optional[dict]:
+    sig = strategy.decide(code, closes, holding=False)
     if sig.action != "BUY":
         return None
+    # 종목·날짜별 고정 시드 → 웹의 "1000회 상세"에서 같은 경로로 똑같은 결과를 다시 볼 수 있다
+    rng = np.random.default_rng(seed_for(code, day))
     res = simulate_trade(closes, sig.target_pct, sig.stop_pct, sig.horizon_days, cost, cfg.mc, rng)
     return {"signal": sig.reason, "target_pct": sig.target_pct, "stop_pct": sig.stop_pct,
             "horizon_days": sig.horizon_days, "approved": res.approved, "reason": res.reason,
@@ -70,7 +72,6 @@ def scan(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = None,
 
     progress("1000회 시뮬레이션 중", 0, len(histories))
     strategy, cost = TrendMomentumStrategy(), Costs().round_trip()
-    rng = np.random.default_rng(seed)
     results, n_eligible = [], 0
     skipped |= {"상장 기간 부족": 0, "20일 평균 거래대금 미달": 0, "시세 조회 실패": len(errors)}
     for i, (code, rows) in enumerate(histories.items()):
@@ -85,7 +86,7 @@ def scan(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = None,
             continue
         n_eligible += 1
         closes = [c for _, c, _ in rows]
-        ev = _evaluate(closes, strategy, cfg, cost, rng)
+        ev = _evaluate(closes, strategy, cfg, cost, code, rows[-1][0])
         if ev:
             m = meta[code]
             results.append({"code": code, "name": m["name"], "market": m["market"], "price": closes[-1],
@@ -127,7 +128,6 @@ def validate(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = Non
     prices = prices or KrxPrices()
     progress = progress or (lambda *a: None)
     strategy, cost = TrendMomentumStrategy(), Costs().round_trip()
-    rng = np.random.default_rng(seed)
     horizon = strategy.horizon_days
 
     data, index = {}, {}
@@ -161,7 +161,7 @@ def validate(cfg: Optional[ScanConfig] = None, prices: Optional[KrxPrices] = Non
                 continue
             actual = realized_return(closes[-1], future, strategy.target_pct, strategy.stop_pct, horizon, cost)
             groups["전체 종목 (아무거나 샀다면)"].append(actual)
-            ev = _evaluate(closes, strategy, cfg, cost, rng)
+            ev = _evaluate(closes, strategy, cfg, cost, code, td)
             if ev:
                 groups["전략 신호 전체"].append(actual)
                 if ev["approved"]:

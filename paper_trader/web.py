@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from .data import fetch_series
 from .krx import CACHE, cached_names
 from .engine import Engine, backtest, metrics
-from .montecarlo import MCConfig, simulate_trade
+from .montecarlo import MCConfig, seed_for, simulate_trade
 from .portfolio import Costs, Portfolio
 from .scanner import ScanConfig, scan, validate
 from .strategy import TrendMomentumStrategy
@@ -199,6 +199,7 @@ class MCReq(BaseModel):
     stop_pct: float = Field(0.04, gt=0, lt=1)
     horizon_days: int = Field(20, ge=1, le=120)
     paths: int = Field(1000, ge=100, le=20000)
+    mode: str = "account"  # account: 계좌 매매 기준 | scan: 전 종목 스캔과 같은 보수적 기준
 
 
 @router.post("/mc")
@@ -209,13 +210,18 @@ def run_mc(req: MCReq):
         raise HTTPException(502, errors.get(req.symbol, "시세 조회 실패"))
     closes = [c for _, c in series[req.symbol]]
     sig = TrendMomentumStrategy().decide(req.symbol, closes, holding=False)
+    cfg = ScanConfig().mc if req.mode == "scan" else MCConfig()
+    cfg.n_paths = req.paths
+    day = series[req.symbol][-1][0]
     res = simulate_trade(closes, req.target_pct, req.stop_pct, req.horizon_days, Costs().round_trip(),
-                         MCConfig(n_paths=req.paths), keep_returns=True)
+                         cfg, np.random.default_rng(seed_for(req.symbol, day)), keep_returns=True)
     rets = np.asarray(res.returns or [0.0])
     counts, edges = np.histogram(rets, bins=40)
     sample_dates = [d for d, _ in series[req.symbol][-120:]]
     return {
-        "symbol": req.symbol, "name": cached_names().get(req.symbol, ""), "price": closes[-1], "signal": sig.__dict__,
+        "symbol": req.symbol, "name": cached_names().get(req.symbol, ""), "price": closes[-1], "date": day,
+        "mode": req.mode, "config": {"drift_shrink": cfg.drift_shrink, "min_edge": cfg.min_edge},
+        "signal": sig.__dict__,
         "result": {k: v for k, v in res.__dict__.items() if k != "returns"},
         "histogram": {"counts": counts.tolist(), "edges": edges.round(5).tolist()},
         "price_history": list(zip(sample_dates, closes[-120:])),

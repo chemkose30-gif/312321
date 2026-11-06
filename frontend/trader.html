@@ -199,6 +199,7 @@ td.r,th.r{text-align:right}
         <label class="field">손절 %<input id="mcStop" class="num" type="number" value="4" step="0.5"></label>
         <label class="field">보유일<input id="mcHorizon" class="num" type="number" value="20"></label>
         <label class="field">경로 수<input id="mcPaths" class="num" type="number" value="1000" step="500"></label>
+        <label class="field">판정 기준<select id="mcMode"><option value="account">계좌 매매 기준</option><option value="scan">스캔 기준 (보수적)</option></select></label>
         <button class="btn" id="mcBtn" onclick="runMC()">시뮬레이션</button>
       </div>
       <div id="mcErr" class="err"></div>
@@ -434,7 +435,7 @@ async function runMC() {
   $('mcErr').textContent = '';
   await busy('mcBtn', async () => {
     try {
-      const r = await api('/mc', {source:$('mcSource').value, symbol:$('mcSymbol').value.trim(), target_pct:$('mcTarget').value/100, stop_pct:$('mcStop').value/100, horizon_days:+$('mcHorizon').value, paths:+$('mcPaths').value});
+      const r = await api('/mc', {source:$('mcSource').value, symbol:$('mcSymbol').value.trim(), target_pct:$('mcTarget').value/100, stop_pct:$('mcStop').value/100, horizon_days:+$('mcHorizon').value, paths:+$('mcPaths').value, mode:$('mcMode').value});
       const m = r.result, sig = r.signal;
       const cards = [
         ['판정', m.approved ? '<span class="badge ok">매수 승인</span>' : '<span class="badge no">거절</span>', esc(m.reason)],
@@ -446,7 +447,7 @@ async function runMC() {
       $('mcOut').innerHTML = `
         <div class="metrics">${cards.map(([l,v,s]) => `<div class="metric"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('')}</div>
         <div class="card"><h3>${esc(r.name ? r.name + ' ' : '')}${esc(r.symbol)} 현재 ${won(r.price)}원 · 전략 신호: ${sig.action==='BUY'?'<span class="up">매수</span>':'<span class="muted">대기</span>'} ${esc(sig.reason||'')}</h3>
-          <p class="help">시뮬레이션은 전략 신호와 상관없이 "지금 사면"을 가정합니다. 실제 계좌는 전략이 매수 신호를 낼 때만 이 검증을 거칩니다.</p></div>
+          <p class="help">${r.mode === 'scan' ? `<b>스캔 기준</b>: 과거 상승률을 ${pct(r.config.drift_shrink,0,false)} 깎고, 기대수익 ${pct(r.config.min_edge,1,false)} 이상이면 승인. 같은 날 같은 종목이면 스캔 표와 같은 경로·같은 숫자가 나옵니다.` : `<b>계좌 매매 기준</b>: 기대수익 ${pct(r.config.min_edge,1,false)} 이상이면 승인 (상승률 할인 없음).`} 기준일 ${esc(r.date)}.<br>시뮬레이션은 전략 신호와 상관없이 "지금 사면"을 가정합니다. 실제 계좌는 전략이 매수 신호를 낼 때만 이 검증을 거칩니다.</p></div>
         <div class="grid2">
           <div class="card"><h3>1000개 미래의 거래 수익률 분포 (비용 차감)</h3><div class="chart" id="mcHist"></div></div>
           <div class="card"><h3>최근 120거래일 주가</h3><div class="chart" id="mcPrice"></div></div>
@@ -522,7 +523,8 @@ function renderValidation(v) {
 
 function openMC(code) {
   document.querySelector('.tab[data-page="mc"]').click();
-  $('mcSource').value = 'krx'; $('mcSymbol').value = code;
+  $('mcSource').value = 'krx'; $('mcSymbol').value = code; $('mcMode').value = 'scan';
+  $('mcTarget').value = 8; $('mcStop').value = 4; $('mcHorizon').value = 20; $('mcPaths').value = 1000;
   runMC();
 }
 

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -47,6 +48,11 @@ class MCResult:
         return (f"승률 {self.win_rate:.0%} | 기대수익 {self.mean:+.2%} | 중앙값 {self.median:+.2%} | "
                 f"하위5% {self.p5:+.2%} | CVaR5 {self.cvar5:+.2%} | 손절 {self.stop_rate:.0%} "
                 f"익절 {self.target_rate:.0%} | 비중 {self.size_fraction:.1%}")
+
+
+def seed_for(symbol: str, day: str) -> int:
+    """같은 종목·같은 날이면 같은 1000개 경로가 나오도록 고정된 시드."""
+    return zlib.crc32(f"{symbol}|{day}".encode())
 
 
 def _rejected(reason: str) -> MCResult:
