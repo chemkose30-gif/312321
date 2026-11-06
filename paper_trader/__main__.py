@@ -1,0 +1,163 @@
+"""명령줄 실행: python -m paper_trader <명령> ...
+
+  backtest    과거 데이터로 "필터 사용 vs 미사용" 비교
+  run         오늘 시세로 가상 계좌 1회 매매 (하루 1번 실행)
+  status      가상 계좌 현황
+  mc          한 종목에 매수 신호가 났다고 보고 1000회 시뮬레이션 결과 보기
+  toss-check  토스 API 연결·응답 형식 확인 (토큰 값은 출력하지 않음)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import date
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+from .data import get_source
+from .engine import Engine, backtest, metrics
+from .montecarlo import MCConfig, simulate_trade
+from .portfolio import Costs, Portfolio
+from .strategy import TrendMomentumStrategy
+
+
+def _common(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--source", default="synthetic", choices=["synthetic", "yahoo", "csv", "toss"])
+    p.add_argument("--symbols", nargs="+", default=["005930", "000660", "035420", "005380", "051910"])
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--csv-dir", default="data")
+    p.add_argument("--paths", type=int, default=1000, help="시뮬레이션 경로 수")
+
+
+def _fetch(args, count: int):
+    src = get_source(args.source, args.seed, args.csv_dir)
+    series = {}
+    for s in args.symbols:
+        try:
+            series[s] = src.daily_closes(s, count)
+        except Exception as e:  # noqa: BLE001 - 종목 하나 실패해도 나머지는 진행
+            print(f"[경고] {s} 시세 조회 실패: {e}", file=sys.stderr)
+    if not series:
+        sys.exit("시세를 하나도 가져오지 못했습니다.")
+    return series
+
+
+def cmd_backtest(args) -> None:
+    series = _fetch(args, args.days)
+    cfg = MCConfig(n_paths=args.paths)
+    start, end, results, bh = backtest(series, TrendMomentumStrategy(), args.capital, Costs(), cfg,
+                                       seed=args.seed, verbose=args.verbose)
+    print(f"\n백테스트 {start} ~ {end} | 종목 {', '.join(series)} | 소스 {args.source} | 초기자금 {args.capital:,.0f}원")
+    print(f"{'':32}{'최종자산':>14}{'수익률':>9}{'최대낙폭':>9}{'거래':>6}{'승률':>7}{'평균손익':>9}")
+    for name, (_, m) in results.items():
+        print(f"{name:<30}{m.final_equity:>14,.0f}{m.total_return:>+9.1%}{m.max_drawdown:>9.1%}"
+              f"{m.trades:>6}{m.win_rate:>7.0%}{m.avg_pnl_pct:>+9.2%}")
+    print(f"{'균등 매수 후 보유 (벤치마크)':<30}{'':>14}{bh:>+9.1%}")
+    print("\n* 과거 성과가 미래를 보장하지 않습니다. 수수료·세금·슬리피지 반영.")
+
+
+def cmd_run(args) -> None:
+    state = Path(args.state)
+    if state.exists():
+        pf = Portfolio.load(state)
+    else:
+        pf = Portfolio.new(args.capital)
+        print(f"새 가상 계좌 생성: {args.capital:,.0f}원 → {state}")
+    today = args.date or date.today().isoformat()
+    if pf.equity_history and pf.equity_history[-1][0] == today and not args.force:
+        sys.exit(f"{today} 에 이미 실행했습니다. 다시 하려면 --force")
+    history = {s: [c for _, c in rows] for s, rows in _fetch(args, 300).items()}
+    eng = Engine(pf, TrendMomentumStrategy(), MCConfig(n_paths=args.paths), use_filter=not args.no_filter)
+    lines = eng.step(today, history)
+    print("\n".join(lines) or "오늘은 매매 없음")
+    pf.save(state)
+    _print_status(pf, {s: h[-1] for s, h in history.items()})
+
+
+def _print_status(pf: Portfolio, prices: dict) -> None:
+    eq = pf.equity(prices)
+    print(f"\n총자산 {eq:,.0f}원 ({eq / pf.initial_capital - 1:+.2%}) | 현금 {pf.cash:,.0f}원")
+    for s, p in pf.positions.items():
+        now = prices.get(s, p.cost_per_share)
+        print(f"  {s}: {p.qty}주, 평단 {p.cost_per_share:,.0f} → 현재 {now:,.0f} "
+              f"({now / p.cost_per_share - 1:+.2%}), 손절 {p.stop_price:,.0f} / 익절 {p.target_price:,.0f}, "
+              f"{p.days_held}/{p.horizon_days}일")
+    m = metrics(pf)
+    if m.trades:
+        print(f"  청산 {m.trades}건, 승률 {m.win_rate:.0%}, 평균 {m.avg_pnl_pct:+.2%}, 최대낙폭 {m.max_drawdown:.1%}")
+
+
+def cmd_status(args) -> None:
+    pf = Portfolio.load(Path(args.state))
+    _print_status(pf, {})
+    for t in pf.trades[-10:]:
+        print("  ", json.dumps(t, ensure_ascii=False))
+
+
+def cmd_mc(args) -> None:
+    series = _fetch(args, 300)
+    st = TrendMomentumStrategy()
+    for sym, rows in series.items():
+        closes = [c for _, c in rows]
+        sig = st.decide(sym, closes, holding=False)
+        res = simulate_trade(closes, st.target_pct, st.stop_pct, st.horizon_days, Costs().round_trip(),
+                             MCConfig(n_paths=args.paths))
+        print(f"{sym} 현재 {closes[-1]:,.0f} | 전략 신호 {sig.action} {sig.reason}")
+        print(f"   가정: +{st.target_pct:.0%} 익절 / -{st.stop_pct:.0%} 손절 / {st.horizon_days}일 → {res.summary()}"
+              f" → {'승인' if res.approved else '거절: ' + res.reason}")
+
+
+def cmd_toss_check(args) -> None:
+    from .toss_client import TossClient
+    c = TossClient()
+    c._token()
+    print("토큰 발급/캐시 OK (값은 출력하지 않음)")
+    raw = c.get(c.candles_path, {"symbol": args.symbol, "interval": "1d", "count": 3})
+    print("캔들 원본 응답(앞부분):", json.dumps(raw, ensure_ascii=False)[:1500])
+    try:
+        print("해석 결과:", c.daily_closes(args.symbol, 3))
+    except Exception as e:  # noqa: BLE001
+        print("해석 실패:", e)
+
+
+def main(argv=None) -> None:
+    load_dotenv()
+    ap = argparse.ArgumentParser(prog="python -m paper_trader", description="가상머니 모의투자 엔진")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("backtest", help="필터 사용 vs 미사용 비교")
+    _common(p)
+    p.add_argument("--days", type=int, default=750)
+    p.add_argument("--capital", type=float, default=10_000_000)
+    p.add_argument("--verbose", action="store_true")
+    p.set_defaults(fn=cmd_backtest)
+
+    p = sub.add_parser("run", help="가상 계좌 1회 매매")
+    _common(p)
+    p.add_argument("--state", default="paper_state.json")
+    p.add_argument("--capital", type=float, default=10_000_000)
+    p.add_argument("--date", help="기록할 날짜 (기본: 오늘)")
+    p.add_argument("--no-filter", action="store_true", help="시뮬레이션 필터 끄기")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("status", help="가상 계좌 현황")
+    p.add_argument("--state", default="paper_state.json")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("mc", help="종목별 1000회 시뮬레이션")
+    _common(p)
+    p.set_defaults(fn=cmd_mc)
+
+    p = sub.add_parser("toss-check", help="토스 API 연결 확인")
+    p.add_argument("--symbol", default="005930")
+    p.set_defaults(fn=cmd_toss_check)
+
+    args = ap.parse_args(argv)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

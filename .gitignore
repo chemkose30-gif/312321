@@ -1,0 +1,6 @@
+# 비밀 키·토큰·가상계좌 상태는 올리지 않음
+.env
+.toss_token.json
+paper_state*.json
+__pycache__/
+*.pyc
