@@ -467,7 +467,7 @@ async def meta_data_deletion() -> dict:
 
 # 지금 서버에서 돌고 있는 코드가 어느 버전인지.
 # APP_VERSION 은 배포가 반영됐는지 눈으로 확인하려고 손으로 올리는 값이다.
-APP_VERSION = "2026-10-01-끊긴연결표시"
+APP_VERSION = "2026-11-10-성과속도계기판"
 BUILD_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or "")[:7]
 BUILD_STARTED = time.time()
 
@@ -1455,10 +1455,22 @@ async def refresh_all_tokens() -> dict:
     return {"refreshed": done}
 
 
+def _timed(fn):
+    """서버가 계산에 쓴 시간을 응답에 함께 돌려준다.
+
+    화면이 느릴 때 서버가 느린 건지 네트워크·브라우저가 느린 건지
+    구분하려면 이 값이 필요하다.
+    """
+    started = time.perf_counter()
+    out = fn()
+    out["server_ms"] = round((time.perf_counter() - started) * 1000)
+    return out
+
+
 @app.get("/api/stats")
 async def get_stats(days: int = 30) -> dict:
     """성과 요약 — 조회수·시청시간 집계."""
-    return stats.summary(days if days > 0 else None)
+    return _timed(lambda: stats.summary(days if days > 0 else None))
 
 
 @app.post("/api/stats/refresh")
@@ -1476,7 +1488,7 @@ async def refresh_stats(days: int = stats.COLLECT_WINDOW_DAYS) -> dict:
 @app.get("/api/stats/weekly")
 async def weekly_stats(weeks: int = stats.WEEKLY_WEEKS) -> dict:
     """주차별로 몇 개를 올렸는지. 직접 올린 것도 함께 센다."""
-    return stats.weekly(max(1, min(weeks, 52)))
+    return _timed(lambda: stats.weekly(max(1, min(weeks, 52))))
 
 
 @app.get("/api/scheduled")

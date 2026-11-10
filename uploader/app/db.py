@@ -125,6 +125,12 @@ def connect() -> sqlite3.Connection:
     if _conn is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        # WAL 이 아니면 쓰는 동안 읽기가 막힌다. 6시간마다 도는 수집이 수천 줄을
+        # 쓰는데, 그때 성과 화면이 그 뒤에 줄을 서게 된다. 네트워크 디스크에서는
+        # 커밋 한 번의 비용도 커서 차이가 크다.
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.execute("PRAGMA synchronous=NORMAL")
+        _conn.execute("PRAGMA busy_timeout=5000")
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
         _migrate(_conn)
@@ -171,6 +177,14 @@ def _exec(sql: str, params: tuple = ()) -> sqlite3.Cursor:
         cur = connect().execute(sql, params)
         connect().commit()
         return cur
+
+
+def _exec_many(sql: str, rows: list[tuple]) -> None:
+    """여러 줄을 한 번의 커밋으로 쓴다."""
+    with _lock:
+        conn = connect()
+        conn.executemany(sql, rows)
+        conn.commit()
 
 
 def _rows(sql: str, params: tuple = ()) -> list[sqlite3.Row]:
@@ -501,24 +515,29 @@ def published_targets(since: float | None = None) -> list[dict]:
 
 
 def save_channel_uploads(account_id: str, rows: list[dict]) -> int:
-    """채널에서 받아온 영상 목록을 저장한다(이미 있으면 갱신)."""
+    """채널에서 받아온 영상 목록을 저장한다(이미 있으면 갱신).
+
+    수백 줄이 한꺼번에 들어오므로 한 줄씩 커밋하지 않고 한 번에 쓴다.
+    (커밋마다 디스크 동기화가 일어나고, 그동안 읽기가 기다린다.)
+    """
     now = time.time()
-    saved = 0
-    for row in rows:
-        remote_id = (row.get("remote_id") or "").strip()
-        if not remote_id:
-            continue
-        _exec(
-            """INSERT INTO channel_uploads (account_id, remote_id, published_at, title, fetched_at)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT(account_id, remote_id) DO UPDATE SET
-                 published_at=excluded.published_at, title=excluded.title,
-                 fetched_at=excluded.fetched_at""",
-            (account_id, remote_id, float(row.get("published_at") or 0),
-             (row.get("title") or "")[:300], now),
-        )
-        saved += 1
-    return saved
+    values = [
+        (account_id, rid, float(row.get("published_at") or 0),
+         (row.get("title") or "")[:300], now)
+        for row in rows
+        if (rid := (row.get("remote_id") or "").strip())
+    ]
+    if not values:
+        return 0
+    _exec_many(
+        """INSERT INTO channel_uploads (account_id, remote_id, published_at, title, fetched_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(account_id, remote_id) DO UPDATE SET
+             published_at=excluded.published_at, title=excluded.title,
+             fetched_at=excluded.fetched_at""",
+        values,
+    )
+    return len(values)
 
 
 def _col(row, name):

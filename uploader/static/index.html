@@ -626,6 +626,7 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
       </div>
       <button class="btn" id="btnStatRefresh" style="margin-left:auto">지금 받아오기</button>
       <span class="small muted" id="statFetched"></span>
+      <span class="small muted mono" id="statTiming" style="flex-basis:100%"></span>
     </div>
 
     <div class="grid4" id="statTotals"></div>
@@ -2500,9 +2501,14 @@ function weeklyRows(d){
 async function loadWeekly(){
   const box = $('#statWeekly');
   if(!box) return;
+  const t0 = performance.now();
   try{
     const d = await fetch('/api/stats/weekly').then(r => r.json());
+    const fetched = performance.now() - t0;
     box.innerHTML = weeklyRows(d);
+    state.timing = {...(state.timing||{}), weekly: {fetch: fetched, server: d.server_ms,
+                                                    render: performance.now() - t0 - fetched}};
+    showTiming();
   }catch(_){ box.innerHTML = '<div class="acc-empty">주간 집계를 불러오지 못했습니다.</div>'; }
 }
 
@@ -2511,7 +2517,9 @@ async function loadStats(){
     b.classList.toggle('active', String(state.statDays) === b.dataset.days);
     b.onclick = () => { state.statDays = Number(b.dataset.days); loadStats(); };
   });
+  const t0 = performance.now();
   const d = await fetch(`/api/stats?days=${state.statDays}`).then(r => r.json()).catch(() => null);
+  const fetched = performance.now() - t0;
   if(!d){ $('#statMsg').innerHTML = '<div class="warn">성과를 불러오지 못했습니다.</div>'; return; }
 
   $('#statTotals').innerHTML = [
@@ -2547,6 +2555,20 @@ async function loadStats(){
       <div class="val small muted">${fmtWatch(v.watch_sec)}</div>
       ${v.url ? `<a href="${esc(v.url)}" target="_blank" rel="noopener">열기 ↗</a>` : ''}
     </div>`).join('') : '<div class="acc-empty">아직 게시한 영상이 없습니다.</div>';
+
+  // 느릴 때 서버·네트워크·화면 중 어디가 느린지 바로 보이게 적어 둔다.
+  state.timing = {...(state.timing||{}), stats: {fetch: fetched, server: d.server_ms,
+                                                 render: performance.now() - t0 - fetched}};
+  showTiming();
+}
+
+function showTiming(){
+  const el = $('#statTiming');
+  if(!el) return;
+  const t = state.timing || {};
+  const part = (name, x) => !x ? '' :
+    `${name} ${Math.round(x.fetch)}ms(서버 ${x.server ?? '?'}ms · 화면 ${Math.round(x.render)}ms)`;
+  el.textContent = [part('성과', t.stats), part('주간', t.weekly)].filter(Boolean).join(' · ');
 }
 
 if($('#btnStatRefresh')) $('#btnStatRefresh').onclick = async () => {
