@@ -546,12 +546,9 @@ def weekly(weeks: int = WEEKLY_WEEKS) -> dict:
     # 올린 기록도 같이 넣고 같은 영상은 하나로 친다.
     posts: dict[tuple, dict] = {}
 
-    for target in db.published_targets(since=None):
-        when = target.get("updated_at") or target.get("job_created_at") or 0
-        if when < since:
-            continue
+    for target in db.targets_published_since(since):
         posts[(target["account_id"], target["remote_id"])] = {
-            "at": when, "platform": target["platform"], "manual": False,
+            "at": target["updated_at"], "platform": target["platform"], "manual": False,
         }
 
     for row in db.channel_uploads_since(since):
@@ -574,11 +571,7 @@ def weekly(weeks: int = WEEKLY_WEEKS) -> dict:
         )
 
     # 영상 수(같은 영상을 여러 채널에 올린 것은 하나로) — 앱 기록으로만 알 수 있다.
-    for job in db.list_jobs(500):
-        done = [t for t in job["targets"] if t["status"] == "success"]
-        if not done:
-            continue
-        when = max((t.get("updated_at") or job["created_at"]) for t in done)
+    for when in db.job_publish_times(since):
         bucket = buckets.get(_week_start(when))
         if bucket is not None:
             bucket["videos"] = bucket.get("videos", 0) + 1

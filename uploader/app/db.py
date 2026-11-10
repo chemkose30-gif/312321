@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS channel_uploads (
 CREATE INDEX IF NOT EXISTS idx_targets_job ON job_targets(job_id);
 CREATE INDEX IF NOT EXISTS idx_stats_day ON stats(day);
 CREATE INDEX IF NOT EXISTS idx_uploads_at ON channel_uploads(published_at);
+CREATE INDEX IF NOT EXISTS idx_targets_updated ON job_targets(updated_at);
 """
 
 
@@ -576,6 +577,35 @@ def channel_uploads_since(since: float) -> list[dict]:
 def uploads_fetched_at() -> float:
     rows = _rows("SELECT MAX(fetched_at) AS at FROM channel_uploads")
     return (rows[0]["at"] or 0) if rows else 0
+
+
+def targets_published_since(since: float) -> list[dict]:
+    """그 시각 이후에 올라간 게시 대상만. (주간 집계용)
+
+    예전에는 전부 읽어 파이썬에서 걸렀는데, 기록이 쌓일수록 느려져서
+    SQL 에서 자른다.
+    """
+    return [dict(r) for r in _rows(
+        "SELECT t.account_id, t.platform, t.remote_id, t.updated_at, t.job_id"
+        "  FROM job_targets t"
+        " WHERE t.status='success' AND t.remote_id IS NOT NULL AND t.remote_id <> ''"
+        "   AND t.updated_at >= ?",
+        (since,),
+    )]
+
+
+def job_publish_times(since: float) -> list[float]:
+    """그 시각 이후에 게시가 끝난 작업마다 '마지막으로 올라간 시각' 하나씩.
+
+    영상 개수(같은 영상을 여러 채널에 올려도 하나)를 세는 데 쓴다.
+    예전에는 작업 500개를 읽고 작업마다 대상을 또 조회했다(쿼리 501번).
+    """
+    return [r["at"] for r in _rows(
+        "SELECT MAX(t.updated_at) AS at FROM job_targets t"
+        " WHERE t.status='success'"
+        " GROUP BY t.job_id HAVING at >= ?",
+        (since,),
+    )]
 
 
 def latest_stats() -> dict[str, dict]:
