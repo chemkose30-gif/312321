@@ -2506,7 +2506,7 @@ $jobs = @(
   @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 3; All = $true; Top = 40; Known = "${host}/api/settlements/known" },
   @{ Name = "수입관리대장"; Dir = "${(impTplDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/template"; Ext = @('.xlsx', '.xlsm'); Like = '*수입관리대장*'; Depth = 0 },
-  @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png'); Like = '*'; Depth = 12; All = $true; Top = 150; MaxAge = 400; RelName = $true; Known = "${host}/api/import-ledger/docs/known" }
+  @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png', '.zip'); Like = '*'; Depth = 12; All = $true; Top = 150; MaxAge = 400; RelName = $true; Known = "${host}/api/import-ledger/docs/known" }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -2999,8 +2999,8 @@ function openImportLedger() {
       <span class="spacer"></span>${state.me.role === 'admin' ? '<label class="btn sm" style="margin:0">📤 양식(수입관리대장 엑셀) 올리기<input type="file" id="ilTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
     <div id="ilRead" style="margin-top:8px"></div>
     <div class="ec-box" style="margin-top:8px"><div class="row" style="gap:8px;flex-wrap:wrap"><b style="font-size:14px">📎 서류 PDF로 채우기</b>
-      <span class="muted" style="font-size:12px">인보이스 · 송금증(외국환거래계산서) · 수입신고필증 · 수입세금계산서 · 정산서 — 여러 개를 한꺼번에 올리면 AI가 읽어 같은 수입 건끼리 묶습니다</span><span class="spacer"></span>
-      ${state.me.role === 'admin' ? '<label class="btn sm primary" style="margin:0">📎 PDF 올리기<input type="file" id="ilDocFile" accept=".pdf,.jpg,.jpeg,.png" multiple hidden></label>' : ''}</div>
+      <span class="muted" style="font-size:12px">인보이스 · 송금증(외국환거래계산서) · 수입신고필증 · 수입세금계산서 · 정산서 — 여러 개를 한꺼번에, 또는 ZIP 으로 묶어 올리면 AI가 읽어 같은 수입 건끼리 묶습니다</span><span class="spacer"></span>
+      ${state.me.role === 'admin' ? '<label class="btn sm primary" style="margin:0">📎 PDF·ZIP 올리기<input type="file" id="ilDocFile" accept=".pdf,.jpg,.jpeg,.png,.zip" multiple hidden></label>' : ''}</div>
       <div id="ilDocs" style="font-size:12px;margin-top:6px"></div></div>
     <div id="ilBody" class="muted" style="margin-top:10px">불러오는 중…</div><div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ilGo" disabled>📥 채운 엑셀 받기</button></div>`, (bg, close) => {

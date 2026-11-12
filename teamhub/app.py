@@ -4550,7 +4550,8 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
     for ym in by_month:
         _imp_sheet(wb, ym)
     nb = lambda x: mailin.norm_bl(str(x or "")) if x not in (None, "") else ""
-    by_bl, by_inv, by_sd = {}, {}, []
+    by_bl, by_inv, by_sd, by_fx, fx_at = {}, {}, [], [], {}
+    num = lambda v: float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
     for n in wb.sheetnames:
         if not re.match(r"^\d{2}월$", n):
             continue
@@ -4564,10 +4565,13 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
             d = v(10) if isinstance(v(10), datetime) else d
             if nb(v(11)):
                 by_bl.setdefault(nb(v(11)), (ws, r))
-            if _inv_key(v(4)):
-                by_inv.setdefault(_inv_key(v(4)), (ws, r))
+            for k in _invs(v(4)) | ({_inv_key(v(4))} if _inv_key(v(4)) else set()):   # 한 칸에 인보이스 여러 개도
+                by_inv.setdefault(k, (ws, r))
             if v(5) and d:
                 by_sd.append((sup, d, ws, r))
+            if sup and num(v(7)):   # 거래처 + 외화 금액 (이어지는 줄은 위 줄 거래처)
+                by_fx.append((sup, num(v(7)), d, ws, r))
+            fx_at[(ws.title, r)] = num(v(7))
     res, used = {}, set()
     for ym, rows in by_month.items():
         ws = _imp_sheet(wb, ym)
@@ -4577,11 +4581,19 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
         no_room = []
         for x in rows:
             hit = by_bl.get(nb(x["bl"])) if x["bl"] else None
-            hit = hit or (by_inv.get(_inv_key(x["invoice"])) if _inv_key(x["invoice"]) else None)
-            if not hit:
-                d, sk = _d(x["decl_date"]), _sup_key(x["supplier"])
-                hit = next(((w, r) for s, dd, w, r in by_sd if s == sk and d and abs((dd - d).days) <= 3
-                            and (w.title, r) not in used), None)
+            for k in (_invs(x["invoice"]) | ({_inv_key(x["invoice"])} if _inv_key(x["invoice"]) else set())) if not hit else ():
+                hit = hit or by_inv.get(k)
+            d, sk = _d(x["decl_date"]), _sup_key(x.get("grp") or x["supplier"])
+            if not hit and sk and x["fx"]:   # 같은 거래처 · 같은 외화 금액 (통관일이 조금 달라도, 60일 안)
+                hit = next(((w, r) for s, f, dd, w, r in by_fx if s == sk and abs(f - x["fx"]) <= max(1, x["fx"] * 0.005)
+                            and (not d or not dd or abs((dd - d).days) <= 60) and (w.title, r) not in used), None)
+            if not hit and sk and not x.get("cont"):   # 같은 거래처 · 통관일 ±7일
+                same_fx = lambda f: not f or not x["fx"] or abs(f - x["fx"]) <= max(1, x["fx"] * 0.005)
+                hit = next(((w, r) for s, dd, w, r in by_sd if s == sk and d and abs((dd - d).days) <= 7
+                            and (w.title, r) not in used and same_fx(fx_at.get((w.title, r)))), None)
+            near = None
+            if not hit and sk and d:   # 새로 넣지만 같은 거래처 줄이 가까이 있으면 확인하라고 표시
+                near = next((dd for s, dd, w, r in by_sd if s == sk and abs((dd - d).days) <= 20), None)
             vals = {2: x["kind"] or None, 3: _d(x["invoice_date"]), 4: x["invoice"] or None, 5: x["supplier"] or None,
                     6: _d(x["remit_date"]), 7: x["fx"] or None, 8: x["rate"], 10: _d(x["decl_date"]), 11: x["bl"] or None,
                     12: _d(x.get("tax_date") or x["decl_date"]) if x["tax_base"] else None, 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"],
@@ -4616,7 +4628,7 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
             if x["jpy"]:   # 엔화는 100엔 기준 환율
                 ws.cell(row=r, column=9).value = f"=G{r}*H{r}/100"
             added += 1
-            x["status"] = "새로"
+            x["status"] = "새로" + (f" — 같은 거래처 {near.month}/{near.day} 줄 있음, 확인" if near else "")
         res[ym] = {"added": added, "filled": filled, "no_room": no_room, "sheet": ws.title}
     buf = io.BytesIO()
     wb.save(buf)
@@ -4795,12 +4807,47 @@ async def impdoc_upload(files: List[UploadFile] = File(...), user: dict = Depend
         raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다.")
     added = skipped = 0
     for f in files:
-        if impdoc_save(f.filename or "", await f.read(), user["name"]):
-            added += 1
-        else:
-            skipped += 1
+        data = await f.read()
+        for name, body in impdoc_unzip(f.filename or "", data):
+            if impdoc_save(name, body, user["name"]):
+                added += 1
+            else:
+                skipped += 1
     threading.Thread(target=impdoc_read_run, daemon=True).start()
     return {"ok": True, "added": added, "skipped": skipped}
+
+
+def impdoc_unzip(name: str, data: bytes) -> list:
+    """ZIP 이면 안의 PDF·사진을 (zip이름/폴더/파일, 내용) 로 꺼냄 (폴더 안의 ZIP 까지 한 번 더). 아니면 그대로."""
+    import io
+    import zipfile
+    if not name.lower().endswith(".zip"):
+        return [(name, data)]
+    out, total = [], 0
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return []
+    for info in z.infolist():
+        if info.is_dir() or info.file_size > 30 * 1024 * 1024:
+            continue
+        inner = info.filename
+        if not info.flag_bits & 0x800:   # 윈도우에서 만든 ZIP 은 한글 이름이 CP949
+            try:
+                inner = info.filename.encode("cp437").decode("cp949")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+        if "__MACOSX" in inner or inner.rsplit("/", 1)[-1].startswith("."):
+            continue
+        total += info.file_size
+        if total > 500 * 1024 * 1024:   # 너무 큰 묶음은 여기까지
+            break
+        full = name[:-4] + "/" + inner
+        if inner.lower().endswith(".zip") and name.count("/") < 3:
+            out += impdoc_unzip(full, z.read(info))
+        elif inner.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")):
+            out.append((full, z.read(info)))
+    return out
 
 
 def impdoc_save(name: str, data: bytes, by: str) -> bool:
@@ -4822,7 +4869,9 @@ def impdoc_save(name: str, data: bytes, by: str) -> bool:
 async def impdoc_upload_one(file: UploadFile = File(...), user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
     """사무실 PC 자동 업로드: 통관서류 폴더(필증·인보이스·송금증)의 새 파일."""
     name = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
-    ok = impdoc_save(name, await file.read(), user["name"])
+    ok = False
+    for n, body in impdoc_unzip(name, await file.read()):   # ZIP 이면 안의 PDF 들
+        ok = impdoc_save(n, body, user["name"]) or ok
     if ok and ai_mail.enabled():
         threading.Thread(target=impdoc_read_run, daemon=True).start()
     return {"ok": True, "skipped": "" if ok else "이미 있음 또는 PDF·사진 아님"}
