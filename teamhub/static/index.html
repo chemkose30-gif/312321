@@ -2506,7 +2506,7 @@ $jobs = @(
   @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 3; All = $true; Top = 40; Known = "${host}/api/settlements/known" },
   @{ Name = "수입관리대장"; Dir = "${(impTplDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/template"; Ext = @('.xlsx', '.xlsm'); Like = '*수입관리대장*'; Depth = 0 },
-  @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png'); Like = '*'; Depth = 4; All = $true; Top = 30; MaxAge = 60; Known = "${host}/api/import-ledger/docs/known" }
+  @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png'); Like = '*'; Depth = 12; All = $true; Top = 150; MaxAge = 400; RelName = $true; Known = "${host}/api/import-ledger/docs/known" }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -2557,7 +2557,8 @@ foreach ($job in $jobs) {
   }
   $top = if ($job.Top) { $job.Top } else { 5 }
   $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth $job.Depth -ErrorAction SilentlyContinue |
-           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like -and $known -notcontains $_.Name -and (-not $job.MaxAge -or $_.LastWriteTime -gt (Get-Date).AddDays(-$job.MaxAge)) } |
+           ForEach-Object { $_ | Add-Member -NotePropertyName UpName -NotePropertyValue $(if ($job.RelName) { $_.FullName.Substring($job.Dir.TrimEnd('\\').Length).TrimStart('\\').Replace('\\', '/') } else { $_.Name }) -Force -PassThru } |
+           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like -and $known -notcontains $_.UpName -and (-not $job.MaxAge -or $_.LastWriteTime -gt (Get-Date).AddDays(-$job.MaxAge)) } |
            Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
            Select-Object -First $top
   }
@@ -2567,7 +2568,7 @@ foreach ($job in $jobs) {
   foreach ($f in $files) {   # 맞는 시트가 없는 파일이면 다음 파일로
     $tmp = Join-Path $env:TEMP ("teamhub_upload" + $f.Extension)   # curl 은 한글 경로를 못 읽는 경우가 있어 임시 복사
     Copy-Item -LiteralPath $f.FullName $tmp -Force
-    $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($f.Name))" -F "file=@$tmp" $job.Url
+    $out = curl.exe -s -X POST -w "|%{http_code}" -H "X-Upload-Key: $key" -H "X-File-Name: $([uri]::EscapeDataString($(if ($f.UpName) { $f.UpName } else { $f.Name })))" -F "file=@$tmp" $job.Url
     $code = ("$out" -split '\\|')[-1]
     if ($code -eq '200') { Say "[$($job.Name)] 올림 성공: $($f.Name)"; $done = $true; if (-not $job.All) { break } else { continue } }
     Say "[$($job.Name)] 실패($code): $($f.Name)  $out"

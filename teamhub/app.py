@@ -4639,8 +4639,8 @@ def impdoc_read_run():
                 data = base64.b64encode(f.read_bytes()).decode()
                 block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}} \
                     if mt == "application/pdf" else {"type": "image", "source": {"type": "base64", "media_type": mt, "data": data}}
-                with AI_LOCK:
-                    r = ai_mail.extract_import_doc([block])
+                with AI_LOCK:   # 폴더 이름(거래처·B/L 등)도 힌트로
+                    r = ai_mail.extract_import_doc([block, {"type": "text", "text": f"파일 위치: {d['filename']}"}])
                 with db() as c:
                     c.execute("UPDATE imp_docs SET status = 'read', extract = ?, error = '' WHERE id = ?",
                               (json.dumps(r, ensure_ascii=False), d["id"]))
@@ -4757,7 +4757,7 @@ async def impdoc_upload(files: List[UploadFile] = File(...), user: dict = Depend
 
 def impdoc_save(name: str, data: bytes, by: str) -> bool:
     """서류 하나 저장 (형식이 안 맞거나 같은 이름·크기가 이미 있으면 False)."""
-    name = name.split("/")[-1].split("\\")[-1]
+    name = name.replace("\\", "/").strip("/")[-300:]   # 사무실 PC 는 '2026/10월/Lluch/수입신고필증.pdf' 처럼 폴더 안 경로로 보냄
     if not name.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")) or not data or len(data) > 30 * 1024 * 1024:
         return False
     IMP_DOC_DIR.mkdir(parents=True, exist_ok=True)
