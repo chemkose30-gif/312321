@@ -2496,7 +2496,7 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir, inbDir, costDir, settleDir, impTplDir, impDocDir) => `param([switch]$Install, [switch]$Pull)
+  const script = (key, time, invDir, ledDir, inbDir, costDir, settleDir, impTplDir, impDocDir, salesPath) => `param([switch]$Install, [switch]$Pull)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
@@ -2506,6 +2506,7 @@ $jobs = @(
   @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 3; All = $true; Top = 40; Known = "${host}/api/settlements/known" },
   @{ Name = "수입관리대장"; Dir = "${(impTplDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/template"; Ext = @('.xlsx', '.xlsm'); Like = '*수입관리대장*'; NotLike = '*팀허브채움*'; Depth = 0 },
+  @{ Name = "매출관리대장"; Dir = "${(salesPath || '').replace(/"/g, '')}"; Url = "${host}/api/sales-ledger/template"; Ext = @('.xlsx', '.xlsm'); Like = '*매출*'; NotLike = '*팀허브채움*'; Depth = 0 },
   @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png', '.zip'); Like = '*'; Depth = 12; All = $true; Top = 150; MaxAge = 400; RelName = $true; Known = "${host}/api/import-ledger/docs/known" }
 )
 $key = "${key || '(키 만들기 필요)'}"
@@ -2521,13 +2522,15 @@ if ($Install) {
 }
 $costDir = "${(costDir || '').replace(/"/g, '')}"
 $impTplDir = "${(impTplDir || '').replace(/"/g, '')}"
+$salesPath = "${(salesPath || '').replace(/"/g, '')}"
+$salesDir = if ($salesPath -and (Test-Path -LiteralPath $salesPath -PathType Leaf)) { Split-Path -LiteralPath $salesPath -Parent } else { $salesPath }
 function Pull-Costs {
-  if (-not $costDir -and -not $impTplDir) { return }
+  if (-not $costDir -and -not $impTplDir -and -not $salesDir) { return }
   try { $list = Invoke-RestMethod -Uri "${host}/api/costs/outbox" -Headers @{ 'X-Upload-Key' = $key } -TimeoutSec 60 } catch { Say "[원가계산서 받기] 실패: $($_.Exception.Message)"; return }
   foreach ($x in @($list)) {
     if (-not $x.id) { continue }
     $name = [uri]::UnescapeDataString($x.name_enc)
-    $dir = if ($x.dest -eq 'import') { $impTplDir } else { $costDir }   # 수입관리대장은 ★매출.수입관리대장 폴더로
+    $dir = if ($x.dest -eq 'import') { $impTplDir } elseif ($x.dest -eq 'sales') { $salesDir } else { $costDir }   # 수입관리대장·매출관리대장은 그 폴더로
     if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { Say "[파일 받기] 폴더를 찾을 수 없습니다: $dir ($name)"; continue }
     $target = Join-Path $dir $name
     if ($x.base_sha -and (Test-Path -LiteralPath $target)) {   # 원본에 덮어쓰기: 서버가 채운 그 원본 그대로일 때만, 백업 남기고
@@ -2593,7 +2596,7 @@ foreach ($job in $jobs) {
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#costDir').value, $('#settleDir').value, $('#impTplDir').value, $('#impDocDir').value).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#costDir').value, $('#settleDir').value, $('#impTplDir').value, $('#impDocDir').value, $('#salesPath').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
@@ -2614,6 +2617,7 @@ foreach ($job in $jobs) {
       <label>📑 통관 정산서·청구서 폴더 <small class="muted">— 관세사 정산서 PDF, 원가계산서 없는 건 찾기용 (비워 두면 안 올림)</small></label><input id="settleDir" value="${esc(s.settle_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서">
       <label>📒 수입관리대장 폴더 <small class="muted">— 이름에 '수입관리대장'이 들어간 최신 엑셀을 양식으로 올림 (비워 두면 안 올림)</small></label><input id="impTplDir" value="${esc(s.imp_tpl_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장">
       <label>📎 통관서류 폴더 <small class="muted">— 수입신고필증·인보이스·송금증 PDF, 최근 60일 안에 생긴 새 파일만 올려 AI가 읽음 (비워 두면 안 올림)</small></label><input id="impDocDir" value="${esc(s.imp_doc_dir || '')}" placeholder="예: Z:\\VOL1\\업무용 파일\\aaa이알씨통관서류aaa\\주 이알씨 통관서류">
+      <label>🧾 매출관리대장 파일 <small class="muted">— 매출관리대장(수금 내역) 엑셀 <b>파일 경로</b>를 그대로 (그 파일을 양식으로 올리고, 채운 파일도 같은 폴더에 저장 · 비워 두면 안 함)</small></label><input id="salesPath" value="${esc(s.sales_path || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장\\매출관리대장 2026.xlsx">
       <label>📋 인바운딩(수입 예정) 파일이 있는 곳 <small class="muted">— 공유문서 폴더(이름에 'Inbound' 가 들어간 엑셀을 찾음) 또는 파일 경로 그대로</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
@@ -2650,10 +2654,10 @@ foreach ($job in $jobs) {
       await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
-    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', costDir: 'cost_dir', settleDir: 'settle_dir', impTplDir: 'imp_tpl_dir', impDocDir: 'imp_doc_dir'};
+    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', costDir: 'cost_dir', settleDir: 'settle_dir', impTplDir: 'imp_tpl_dir', impDocDir: 'imp_doc_dir', salesPath: 'sales_path'};
     Object.keys(DIRK).forEach(id => $('#' + id, bg).onchange = e => save({[DIRK[id]]: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#costDir', bg).value, $('#settleDir', bg).value, $('#impTplDir', bg).value, $('#impDocDir', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#costDir', bg).value, $('#settleDir', bg).value, $('#impTplDir', bg).value, $('#impDocDir', bg).value, $('#salesPath', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
@@ -3001,6 +3005,73 @@ async function drawSettlements(box, refresh) {
 }
 
 // ---- 📒 수입관리대장: 회사 엑셀(월별 시트)의 빈 줄을 TeamHub 정보로 채워 받기
+// ---- 🧾 매출관리대장(수금 내역) 채우기: 거래명세서 월 매출 → 월 시트에 거래처마다 한 줄
+function openSalesLedger() {
+  const now = new Date(), ymOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const ym = ymOf(now), ym0 = ymOf(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const admin = state.me.role === 'admin';
+  openModal(`<h2>🧾 매출관리대장 채우기</h2>
+    <div class="muted" style="font-size:13px;line-height:1.6">매출관리대장(수금 내역) 엑셀을 양식으로 올려 두면, 고른 달 시트에 <b>TeamHub 거래명세서(이알씨 창고) 월 매출</b>을 거래처마다 한 줄로 채웁니다.
+      <br>· 작성일자 = 그 달 그 거래처 마지막 거래명세서 날짜 · 품목 = "첫 품목 외 N종" · 공급가액·부가세 · 사업자등록번호는 대장·거래처 정보·명세서에서
+      <br>· 그 달에 이미 그 거래처 줄이 있으면 <b>금액이 같으면 그대로, 다르면 안 고치고 '확인'</b> 표시 · 임대료 줄과 입금일자·입금액 칸은 건드리지 않습니다.
+      <br>· 빈 줄이 모자라면 Total 위에 줄을 더하고, <b>2026년도 시트</b>의 그 달 합계 범위와 새 거래처 줄도 같이 맞춥니다.</div>
+    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><label style="margin:0">기간</label><input type="month" id="slFrom" value="${ym0}" style="width:auto"> ~ <input type="month" id="slTo" value="${ym}" style="width:auto">
+      <span class="spacer"></span>${admin ? '<label class="btn sm" style="margin:0">📤 양식(매출관리대장 엑셀) 올리기<input type="file" id="slTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
+    ${admin ? `<div class="ec-box" style="margin-top:8px"><div class="row" style="gap:8px;align-items:center"><b style="font-size:14px">🔄 매일 자동</b>
+      <span class="muted" style="font-size:12px" id="slAutoInfo">📒 수입관리대장의 '매일 자동' 설정(시각·최근 몇 달·원본에 바로/따로)과 같이 돌아갑니다. ⚙ 자동 업로드에 <b>매출관리대장 파일 경로</b>를 넣어야 사무실 PC가 원본을 올리고 채운 파일을 저장합니다.</span>
+      <span class="spacer"></span><button class="btn sm" id="slAutoRun">지금 저장</button></div></div>` : ''}
+    <div id="slBody" class="muted" style="margin-top:10px">불러오는 중…</div><div class="err"></div>
+    <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="slGo" disabled>📥 채운 엑셀 받기</button></div>`, (bg) => {
+    bg.firstElementChild.classList.add('wide');
+    const q = () => `month=${$('#slFrom', bg).value}&month_to=${$('#slTo', bg).value}`;
+    const load = async () => {
+      $('.err', bg).textContent = '';
+      try {
+        const d = await api(`/api/sales-ledger?${q()}`);
+        if (!document.body.contains(bg)) return;
+        $('#slBody', bg).classList.remove('muted');
+        $('#slBody', bg).innerHTML = (d.template ? `<div class="muted" style="font-size:12px;margin-bottom:6px">양식: <b>${esc(d.meta.filename || '')}</b> (${esc((d.meta.uploaded_at || '').slice(0, 16))} 올림${d.meta.by ? ' · ' + esc(d.meta.by) : ''})</div>`
+            : '<div class="down" style="margin-bottom:6px">아직 양식이 없습니다. 📤 양식 올리기로 매출관리대장 엑셀을 올려 주세요.</div>')
+          + d.months.map(m => {
+            const rows = d.by_month[m] || [], res = (d.result || {})[m];
+            return `<h3 style="margin:12px 0 4px;font-size:15px">${+m.slice(5)}월 ${res ? `<small class="muted" style="font-weight:400">→ ${esc(res.sheet || '')} 시트 ${res.error ? `<span class="down">${esc(res.error)}</span>` : `새로 ${res.added}줄 · 그대로 ${res.same} · <span class="${res.diff ? 'down' : ''}">금액 다름 ${res.diff}</span>${res.year_added ? ` · 2026년도 시트에 새 거래처 ${res.year_added}곳` : ''}`}</small>` : ''}
+              <small class="muted" style="font-weight:400"> · 합계 ${won(sum(rows.map(x => x.supply)))}원 (공급가액)</small></h3>
+              <div class="qscroll" style="overflow:auto"><table class="an-table"><thead><tr><th>작성일자</th><th>사업자번호</th><th>거래처</th><th>품목</th><th class="num">공급가액</th><th class="num">부가세</th><th class="num">명세서</th><th>엑셀</th></tr></thead><tbody>
+              ${rows.map(x => `<tr><td>${esc(x.date.slice(5))}</td><td><small>${esc(x.biz || '')}</small></td><td>${esc(x.ledger_name || x.name)}${x.ledger_name && x.ledger_name !== x.name ? `<br><small class="muted">${esc(x.name)}</small>` : ''}</td>
+                <td><small>${esc(x.item)}</small></td><td class="num">${won(x.supply)}</td><td class="num">${won(x.vat)}</td><td class="num">${x.docs}</td>
+                <td><small class="${/다름|없음/.test(x.status || '') ? 'down' : 'muted'}">${esc(x.status || '')}</small></td></tr>`).join('') || '<tr><td colspan="8" class="empty">이 달 이알씨 거래명세서가 없습니다.</td></tr>'}
+              </tbody></table></div>`;
+          }).join('');
+        $('#slGo', bg).disabled = !d.template;
+      } catch (err) { $('#slBody', bg).textContent = ''; $('.err', bg).textContent = err.message; }
+    };
+    $('#slFrom', bg).onchange = load; $('#slTo', bg).onchange = load;
+    if ($('#slTpl', bg)) $('#slTpl', bg).onchange = async e => {
+      const fd = new FormData(); fd.append('file', e.target.files[0]);
+      const res = await fetch('/api/sales-ledger/template', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '올리지 못했습니다.'; return; }
+      toast('양식을 올렸습니다.'); load();
+    };
+    if ($('#slAutoRun', bg)) {
+      api('/api/sales-ledger/auto').then(a => {
+        if (a.last && a.last.at) $('#slAutoInfo', bg).innerHTML += `<br>마지막: <b>${esc(a.last.at.slice(0, 16))}</b> (${esc(a.last.by)}) · ${a.last.skipped ? esc(a.last.skipped) : `새로 ${a.last.added}줄 → ${esc(a.last.file)}`}`;
+        if (!a.path) $('#slAutoInfo', bg).innerHTML += '<br><span class="down">⚙ 자동 업로드에 매출관리대장 파일 경로가 아직 없습니다.</span>';
+      }).catch(() => {});
+      $('#slAutoRun', bg).onclick = async () => {
+        try { const r = await api('/api/sales-ledger/auto/run', {method: 'POST'}); toast(r.skipped ? '더할 내용이 없어 저장하지 않았습니다.' : `${r.file} — 새로 ${r.added}줄. 사무실 PC가 1시간 안에 폴더에 저장합니다.`); }
+        catch (err) { $('.err', bg).textContent = err.message; }
+      };
+    }
+    $('#slGo', bg).onclick = async () => {
+      const res = await fetch(`/api/sales-ledger?${q()}&download=1`, {headers: {Authorization: 'Bearer ' + state.token}});
+      if (!res.ok) { $('.err', bg).textContent = (await res.json()).detail || '만들지 못했습니다.'; return; }
+      const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || '매출관리대장.xlsx');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    load();
+  });
+}
+
 function openImportLedger() {
   const now = new Date(), ymOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   const ym = ymOf(now), ym0 = ymOf(new Date(now.getFullYear(), now.getMonth() - 2, 1));
@@ -3278,6 +3349,7 @@ async function renderProfit() {
   const tools = (admin ? '<button class="btn" id="pfSet" title="자동 업로드 설정">⚙</button><button class="btn" id="pfUp">매입매출장 올리기</button>' : '')
     + '<button class="btn" id="pfCost" title="원가계산서 만들기 · 올리기 · 일계장 매입단가 체크">🧮 원가계산서</button>'
     + '<button class="btn" id="pfImp" title="수입관리대장 엑셀의 그 달 시트를 TeamHub 정보로 채우기">📒 수입관리대장</button>'
+    + '<button class="btn" id="pfSales" title="매출관리대장(수금 내역) 엑셀의 월 시트를 거래명세서 월 매출로 채우기">🧾 매출관리대장</button>'
     + '<button class="btn primary" id="pfMake" title="거래명세서로 그날 기준 일계장 엑셀 만들기">📒 일계장 만들기</button>';
   if (!d.years.length) {   // 일계장이 아직 없어도 원가계산서는 쓸 수 있게
     $('#main').innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">💰 이익분석</h3><span class="spacer"></span>${tools}</div>
@@ -3285,7 +3357,7 @@ async function renderProfit() {
     if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
     $('#pfMake').onclick = openLedgerMake;
     $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit(); };
-    $('#pfImp').onclick = openImportLedger;
+    $('#pfImp').onclick = openImportLedger; $('#pfSales').onclick = openSalesLedger;
     if (pf.tab === 'cost') drawCostCheck(new Date().getFullYear());
     return;
   }
@@ -3351,7 +3423,7 @@ async function renderProfit() {
   if ($('#pfLow')) $('#pfLow').onchange = e => { pf.low = +e.target.value; renderProfit(); };
   if (admin) { $('#pfUp').onclick = () => openLedgerUpload(renderProfit); $('#pfSet').onclick = openInvSettings; }
   $('#pfMake').onclick = openLedgerMake;
-  $('#pfImp').onclick = openImportLedger;
+  $('#pfImp').onclick = openImportLedger; $('#pfSales').onclick = openSalesLedger;
   $('#pfCost').onclick = () => { pf.tab = 'cost'; renderProfit().then(() => { const t = $('#pfCheck'); if (t) t.scrollIntoView({behavior: 'smooth'}); }); };
   let timer;
   $('#pfQ').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { pf.q = e.target.value; renderProfit().then(() => { const i = $('#pfQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };

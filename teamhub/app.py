@@ -3096,7 +3096,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir", "settle_dir", "imp_tpl_dir", "imp_doc_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir", "settle_dir", "imp_tpl_dir", "imp_doc_dir", "sales_path"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -3109,7 +3109,8 @@ def inv_settings(c) -> dict:
             "cost_dir": get_setting(c, "cost_dir", "Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨"),
             "settle_dir": get_setting(c, "settle_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서"),
             "imp_tpl_dir": get_setting(c, "imp_tpl_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장"),
-            "imp_doc_dir": get_setting(c, "imp_doc_dir", "Z:\\VOL1\\업무용 파일\\aaa이알씨통관서류aaa\\주 이알씨 통관서류")}
+            "imp_doc_dir": get_setting(c, "imp_doc_dir", "Z:\\VOL1\\업무용 파일\\aaa이알씨통관서류aaa\\주 이알씨 통관서류"),
+            "sales_path": get_setting(c, "sales_path", "")}
 
 
 # ---- 📑 소비기한 임박 로트의 서류 갱신 (식향/향장) — 재고 엑셀은 올릴 때마다 바뀌므로 재고번호 기준으로 따로 보관
@@ -5180,6 +5181,7 @@ def imp_auto_loop():
                     set_setting(c, "imp_auto_day", today)
                 if not IMPDOC_LOCK.locked():
                     imp_auto_run("자동")
+                    sales_auto_run("자동")   # 매출관리대장도 같은 시각에
                 else:   # AI 가 서류를 읽는 중이면 다 읽고 나서
                     with db() as c:
                         set_setting(c, "imp_auto_day", "")
@@ -8482,6 +8484,318 @@ def ecweb_shot(rid: str, name: str, _: dict = Depends(admin_user)):
     if not f.exists():
         raise HTTPException(404, "없습니다.")
     return Response(content=f.read_bytes(), media_type="image/png" if name.endswith(".png") else "text/plain; charset=utf-8")
+
+
+# ---------------------------------------------------------------- 🧾 매출관리대장(수금 내역) 채우기
+#   월 시트(작성일자·사업자번호·거래처·품목·공급가액·부가세)에 TeamHub 거래명세서(이알씨 창고) 월 매출을 거래처마다 한 줄로.
+#   이미 그 달에 그 거래처 줄이 있으면 금액이 같으면 그대로, 다르면 안 고치고 '확인' 표시. 임대료 줄·입금 칸은 안 건드림.
+#   빈 줄이 모자라면 Total 위에 줄을 더하고, '2026년도' 시트의 그 달 합계 범위·새 거래처 줄도 같이 맞춤.
+SALES_TPL = Path(os.getenv("TEAMHUB_LEDGER_TPL_DIR", str(Path(DB_PATH).parent / "ledger_tpl"))) / "sales_ledger.xlsx"
+_REF_RE = re.compile(r"(?<![A-Za-z0-9_$!'\.])(\$?)([A-Z]{1,3})(\$?)(\d+)(?::(\$?)([A-Z]{1,3})(\$?)(\d+))?(?![\d(A-Za-z_])")
+
+
+def _shift_formula(f: str, at: int, k: int) -> str:
+    """at 행에 k 줄을 끼워 넣은 뒤 이 시트 안 참조 고치기: at 이상 행은 +k, 여러 행 범위가 at-1 에서 끝나면 늘림 (SUM(F4:F23) → F4:F25).
+    다른 시트 참조('10월'!…)·따옴표 안 글자는 그대로."""
+    if not isinstance(f, str) or not f.startswith("="):
+        return f
+    parts = re.split(r'("[^"]*")', f)
+
+    def fix(m):
+        d1, c1, d2, r1, e1, c2, e2, r2 = m.groups()
+        r1 = int(r1)
+        if r2 is None:
+            return f"{d1}{c1}{d2}{r1 + k if r1 >= at else r1}"
+        r2 = int(r2)
+        n1 = r1 + k if r1 >= at else r1
+        n2 = r2 + k if r2 >= at or (r2 == at - 1 and r1 < r2) else r2
+        return f"{d1}{c1}{d2}{n1}:{e1}{c2}{e2}{n2}"
+    return "".join(p if p.startswith('"') else _REF_RE.sub(fix, p) for p in parts)
+
+
+def _insert_rows(ws, at: int, k: int):
+    """at 행 앞에 k 줄 (아래 줄 수식도 맞추고, 새 줄은 바로 위 데이터 줄의 서식·수식을 옮겨 씀)."""
+    from openpyxl.formula.translate import Translator
+    from copy import copy
+    src = at - 1
+    ws.insert_rows(at, k)
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = _shift_formula(cell.value, at, k)
+    for r in range(at, at + k):
+        ws.row_dimensions[r].height = ws.row_dimensions[src].height
+        for col in range(1, ws.max_column + 1):
+            s, t = ws.cell(row=src, column=col), ws.cell(row=r, column=col)
+            if s.has_style:
+                t._style = copy(s._style)
+            v = s.value
+            if isinstance(v, str) and v.startswith("="):
+                try:
+                    t.value = Translator(v, origin=s.coordinate).translate_formula(t.coordinate)
+                except Exception:
+                    t.value = None
+
+
+def _biz(v) -> str:
+    d = re.sub(r"\D", "", str(v or ""))
+    return f"{d[:3]}-{d[3:5]}-{d[5:]}" if len(d) == 10 else ""
+
+
+def sales_ledger_rows(c, ym: str) -> list:
+    """그 달 이알씨 거래명세서(작성중 제외)를 거래처마다 한 줄로: 사업자번호·거래처·작성일자(그 달 마지막 명세서 날짜)·품목·공급가액·부가세."""
+    comp = stmt_company(c)
+    biz_by_name, biz_by_cd = {}, {}
+    for r in c.execute("SELECT code, name, biz_no FROM ecount_customers"):
+        b = _biz(r["biz_no"]) or _biz(r["code"])
+        if b:
+            biz_by_name[_norm_company(r["name"])] = b
+            biz_by_cd[r["code"]] = b
+    groups = {}
+    for r in c.execute(
+            "SELECT q.id, q.quote_date, q.customer_name, q.cust_cd, q.customer_biz_no, q.ecount_wh, qi.name, qi.supply, qi.vat, qi.wh"
+            " FROM quote_items qi JOIN quotes q ON q.id = qi.quote_id WHERE q.doc_type = 'statement' AND q.status != 'draft'"
+            " AND substr(q.quote_date, 1, 7) = ? AND qi.name != '' ORDER BY q.quote_date, q.id, qi.seq", (ym,)):
+        if comp(r["wh"], r["ecount_wh"]) != "이알씨":
+            continue
+        b = _biz(r["customer_biz_no"]) or biz_by_cd.get(r["cust_cd"] or "") or biz_by_name.get(_norm_company(r["customer_name"]), "")
+        key = b or _norm_company(r["customer_name"])
+        g = groups.setdefault(key, {"biz": b, "name": r["customer_name"], "date": "", "items": [], "supply": 0, "vat": 0, "docs": set()})
+        g["date"] = max(g["date"], r["quote_date"])
+        g["supply"] += r["supply"] or 0
+        g["vat"] += r["vat"] or 0
+        g["docs"].add(r["id"])
+        if r["name"] not in g["items"]:
+            g["items"].append(r["name"])
+    out = []
+    for g in groups.values():
+        if not round(g["supply"]):
+            continue
+        n = len(g["items"])
+        out.append({"biz": g["biz"], "name": g["name"], "date": g["date"], "supply": round(g["supply"]), "vat": round(g["vat"]),
+                    "item": g["items"][0] + (f" 외 {n - 1}종" if n > 1 else ""), "docs": len(g["docs"])})
+    out.sort(key=lambda x: (x["date"], x["name"]))
+    return out
+
+
+def _month_sheet(wb, ym: str):
+    mm = f"{int(ym[5:7]):02d}월"
+    return next((wb[n] for n in wb.sheetnames if n.startswith(mm)), None)
+
+
+def _sheet_bounds(ws, key="Total") -> tuple:
+    hdr = next((r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "NO"), 3)
+    total = next((r for r in range(hdr + 1, ws.max_row + 1) if str(ws.cell(row=r, column=1).value or "").strip() == key), None)
+    return hdr, total
+
+
+def sales_ledger_fill(data: bytes, by_month: dict) -> tuple:
+    import difflib
+    import io
+    import openpyxl
+    from openpyxl.formula.translate import Translator
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    year = next((wb[n] for n in wb.sheetnames if re.search(r"\d{4}년", n)), None)
+    # 대장에서 배우기: 사업자번호 → 거래처 이름(최근 월 시트 표기), 이름 → 사업자번호
+    name_of, biz_of = {}, {}
+    for n in wb.sheetnames:
+        ws = wb[n]
+        if ws is year:
+            for r in range(1, ws.max_row + 1):
+                b = _biz(ws.cell(row=r, column=2).value)
+                if b and ws.cell(row=r, column=3).value:
+                    biz_of.setdefault(_norm_company(ws.cell(row=r, column=3).value), b)
+            continue
+        if not re.match(r"^\d{2}월", n):
+            continue
+        hdr, total = _sheet_bounds(ws)
+        for r in range(hdr + 1, total or ws.max_row + 1):
+            b, nm = _biz(ws.cell(row=r, column=3).value), ws.cell(row=r, column=4).value
+            if b and nm and "임대료" not in str(ws.cell(row=r, column=5).value or ""):
+                name_of[b] = str(nm)
+                biz_of[_norm_company(nm)] = b
+
+    def find_biz(name):
+        k = _norm_company(name)
+        if k in biz_of:
+            return biz_of[k]
+        digits = re.findall(r"\d+", k)   # '2공장' 과 '인천제2공장' 처럼 숫자가 같아야
+        best = max(((difflib.SequenceMatcher(None, _company_key(name), _company_key(n2)).ratio(), b)
+                    for n2, b in biz_of.items() if re.findall(r"\d+", n2) == digits), default=(0, ""))
+        return best[1] if best[0] >= 0.75 else ""
+
+    res = {}
+    for ym, rows in by_month.items():
+        ws = _month_sheet(wb, ym)
+        if ws is None:
+            res[ym] = {"sheet": "", "added": 0, "same": 0, "diff": 0, "error": f"{int(ym[5:7]):02d}월 시트가 없습니다."}
+            for x in rows:
+                x["status"] = "시트 없음"
+            continue
+        hdr, total = _sheet_bounds(ws)
+        if not total:
+            res[ym] = {"sheet": ws.title, "added": 0, "same": 0, "diff": 0, "error": "Total 줄을 찾지 못했습니다."}
+            continue
+        have = {}
+        for r in range(hdr + 1, total):
+            if "임대료" in str(ws.cell(row=r, column=5).value or ""):
+                continue
+            b = _biz(ws.cell(row=r, column=3).value) or find_biz(ws.cell(row=r, column=4).value or "")
+            nm = ws.cell(row=r, column=4).value
+            if b or nm:
+                e = have.setdefault(b or _norm_company(nm), {"sum": 0, "rows": []})
+                e["sum"] += float(ws.cell(row=r, column=6).value or 0) if isinstance(ws.cell(row=r, column=6).value, (int, float)) else 0
+                e["rows"].append(r)
+        todo = []
+        for x in rows:
+            x["biz"] = x["biz"] or find_biz(x["name"])
+            x["ledger_name"] = name_of.get(x["biz"]) or x["name"]
+            e = have.get(x["biz"] or _norm_company(x["name"]))
+            if e:
+                if abs(e["sum"] - x["supply"]) <= 10:
+                    x["status"] = "그대로 (같은 금액)"
+                else:
+                    x["status"] = f"금액 다름 — 대장 {int(e['sum']):,} / 팀허브 {x['supply']:,}, 확인"
+                continue
+            todo.append(x)
+        free = [r for r in range(hdr + 1, total) if not any(ws.cell(row=r, column=k).value for k in (2, 3, 4, 5, 6))]
+        if len(todo) > len(free):   # 빈 줄이 모자라면 Total 위에 더함 + 연도 시트의 그 달 범위도 늘림
+            k = len(todo) - len(free)
+            _insert_rows(ws, total, k)
+            free += list(range(total, total + k))
+            if year is not None:
+                pat = re.compile(r"('" + re.escape(ws.title) + r"'!\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?)(\d+)")
+                for row in year.iter_rows():
+                    for cell in row:
+                        if isinstance(cell.value, str) and ws.title in cell.value:
+                            cell.value = pat.sub(lambda m: m.group(1) + str(int(m.group(2)) + k if int(m.group(2)) == total - 1 else m.group(2)),
+                                                 cell.value)
+            total += k
+        for x in todo:
+            r = free.pop(0)
+            for col, v in ((2, x["date"]), (3, x["biz"] or None), (4, x["ledger_name"]), (5, x["item"]), (6, x["supply"]), (7, x["vat"])):
+                ws.cell(row=r, column=col).value = v
+            if not ws.cell(row=r, column=8).value:
+                ws.cell(row=r, column=8).value = f"=SUM(F{r}:G{r})"
+            if not ws.cell(row=r, column=12).value:
+                ws.cell(row=r, column=12).value = f"=H{r}-K{r}"
+            if not ws.cell(row=r, column=1).value:
+                ws.cell(row=r, column=1).value = f"=ROW()-{hdr}"
+            x["status"] = "새로" + ("" if x["biz"] else " — 사업자번호 없음 (연도 합계에 안 잡힘), 확인")
+        res[ym] = {"sheet": ws.title, "added": len(todo), "same": sum(1 for x in rows if x["status"].startswith("그대로")),
+                   "diff": sum(1 for x in rows if x["status"].startswith("금액 다름"))}
+    # 연도 시트에 없는 거래처(사업자번호)는 줄을 더함 — 위 거래처 줄 수식을 그대로 옮겨서
+    if year is not None:
+        _, ytotal = _sheet_bounds(year)
+        if ytotal:
+            listed = {_biz(year.cell(row=r, column=2).value) for r in range(1, ytotal)}
+            new = []
+            for rows in by_month.values():
+                for x in rows:
+                    if x["biz"] and x["biz"] not in listed and x["biz"] not in [n[0] for n in new]:
+                        new.append((x["biz"], x["ledger_name"]))
+            proto = next((r for r in range(ytotal - 1, 0, -1) if _biz(year.cell(row=r, column=2).value)
+                          and "임대료" not in str(year.cell(row=r, column=3).value or "")), None)
+            if new and proto:
+                _insert_rows(year, ytotal, len(new))
+                for i, (b, nm) in enumerate(new):
+                    r = ytotal + i
+                    for col in range(1, year.max_column + 1):   # 수식은 '임대료' 아닌 거래처 줄에서
+                        v = year.cell(row=proto, column=col).value
+                        if isinstance(v, str) and v.startswith("="):
+                            year.cell(row=r, column=col).value = Translator(v, origin=year.cell(row=proto, column=col).coordinate) \
+                                .translate_formula(year.cell(row=r, column=col).coordinate)
+                    year.cell(row=r, column=2).value = b
+                    year.cell(row=r, column=3).value = nm
+                for rv in res.values():
+                    rv["year_added"] = len(new)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), res
+
+
+@app.post("/api/sales-ledger/template")
+async def sales_ledger_template(file: UploadFile = File(...), user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
+    """매출관리대장 엑셀(양식) — 관리자가 올리거나 사무실 PC 자동 업로드가 폴더의 최신 파일을 올림."""
+    import hashlib
+    data = await file.read()
+    name = (urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")).replace("\\", "/").split("/")[-1]
+    if not name.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "매출관리대장 엑셀(.xlsx)을 올려 주세요.")
+    SALES_TPL.parent.mkdir(parents=True, exist_ok=True)
+    SALES_TPL.write_bytes(data)
+    with db() as c:
+        set_setting(c, "sales_tpl_meta", json.dumps({"filename": name, "uploaded_at": now(), "by": user["name"],
+                                                    "sha": hashlib.sha256(data).hexdigest()}, ensure_ascii=False))
+    return {"ok": True}
+
+
+@app.get("/api/sales-ledger")
+def sales_ledger(month: str = "", month_to: str = "", download: bool = False, user: dict = Depends(current_user)):
+    """그 기간 매출관리대장에 들어갈 줄 미리보기 / 채운 엑셀 받기."""
+    months = _imp_months(month, month_to)
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        by_month = {ym: sales_ledger_rows(c, ym) for ym in months}
+        meta = json.loads(get_setting(c, "sales_tpl_meta", "{}") or "{}")
+    if not download:
+        res = {"months": months, "by_month": by_month, "template": SALES_TPL.exists(), "meta": meta}
+        if SALES_TPL.exists():
+            _, res["result"] = sales_ledger_fill(SALES_TPL.read_bytes(), by_month)
+        return res
+    if not SALES_TPL.exists():
+        raise HTTPException(400, "매출관리대장 엑셀(양식)을 먼저 올려 주세요.")
+    out, _ = sales_ledger_fill(SALES_TPL.read_bytes(), by_month)
+    tag = months[0] if len(months) == 1 else f"{months[0]}~{months[-1][5:]}"
+    name = (meta.get("filename") or "매출관리대장.xlsx").rsplit(".", 1)[0] + f"_{tag}.xlsx"
+    return Response(content=out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
+
+
+def sales_auto_run(by: str = "자동") -> dict:
+    """매출관리대장: 수입관리대장 매일 자동 설정(시각·최근 몇 달·원본/따로)을 같이 씀."""
+    if not SALES_TPL.exists():
+        return {"ok": False, "message": "매출관리대장 양식이 아직 없습니다."}
+    with db() as c:
+        cfg = imp_auto_cfg(c)
+        y, m = datetime.now().year, datetime.now().month
+        months = []
+        for _ in range(max(1, min(int(cfg.get("months") or 3), 12))):
+            months.insert(0, f"{y}-{m:02d}")
+            y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        by_month = {ym: sales_ledger_rows(c, ym) for ym in months}
+        meta = json.loads(get_setting(c, "sales_tpl_meta", "{}") or "{}")
+    out, res = sales_ledger_fill(SALES_TPL.read_bytes(), by_month)
+    orig = re.sub(r"[\\/]", "_", meta.get("filename") or "매출관리대장.xlsx")
+    overwrite = cfg.get("mode", "overwrite") == "overwrite" and orig.lower().endswith(".xlsx")
+    name = orig if overwrite else orig.rsplit(".", 1)[0] + "_팀허브채움.xlsx"
+    added = sum(r.get("added", 0) for r in res.values())
+    info = {"at": now(), "by": by, "file": name, "months": months, "added": added,
+            "diff": sum(r.get("diff", 0) for r in res.values())}
+    if overwrite and not added:
+        info["skipped"] = "더할 내용 없음"
+    else:
+        with db() as c:
+            cost_outbox_add(c, "이알씨", name, out, dest="sales", base_sha=meta.get("sha", "") if overwrite else "")
+    with db() as c:
+        set_setting(c, "sales_auto_last", json.dumps(info, ensure_ascii=False))
+    return {"ok": True, **info}
+
+
+@app.get("/api/sales-ledger/auto")
+def sales_auto_get(user: dict = Depends(admin_user)):
+    with db() as c:
+        return {"cfg": imp_auto_cfg(c), "last": json.loads(get_setting(c, "sales_auto_last", "{}") or "{}"),
+                "path": get_setting(c, "sales_path", "")}
+
+
+@app.post("/api/sales-ledger/auto/run")
+def sales_auto_now(user: dict = Depends(admin_user)):
+    r = sales_auto_run(user["name"])
+    if not r["ok"]:
+        raise HTTPException(400, r["message"])
+    return r
 
 
 if __name__ == "__main__":
