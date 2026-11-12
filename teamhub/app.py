@@ -4488,18 +4488,27 @@ def import_ledger_rows(c, ym: str) -> list:
                     "jpy": (r.get("currency") or "").upper() == "JPY" or bool(cost and cost["rate"] and cost["rate"] < 50)})
         if r.get("bl_no"):
             seen.add(nb(r["bl_no"]))
-    for f, cost in costs.items():   # 정산서 없이 원가계산서만 있는 건
+    dup = set()
+    for f, cost in costs.items():   # 정산서 없이 원가계산서만 있는 건 (통관일이 있으니 수입 끝난 건)
         if f in used or (cost["customs_date"] or "")[:7] != ym or cost["company"] == "켐코스":
             continue
+        cost["invoice"] = (cost["invoice"] or "").strip(" ,.;/") if re.search(r"[0-9A-Za-z]", cost["invoice"] or "") else ""
+        k = (_sup_key(cost["supplier"]), cost["customs_date"], _inv_key(cost["invoice"]), round(cost["fx"] or 0, 2))
+        if k in dup:   # 같은 원가계산서가 다른 이름으로 또 있는 경우
+            continue
+        dup.add(k)
         ok = cost["confirmed"] and cost["remit_date"]
         cd = cost["customs_date"]
         out.append({"src": "원가계산서", "supplier": cost["supplier"], "bl": "", "invoice": cost["invoice"] or "", "invoice_date": "",
                     "fx": round(cost["fx"], 2) if cost["fx"] else None, "currency": "", "remit_date": cost["remit_date"] if ok else "",
                     "rate": _imp_rate(cost["rate"]) if ok else None,
                     "kind": ("사전" if cost["remit_date"] <= cd else "사후") if ok else "", "decl_date": cd, "office": "",
-                    "tax_base": None, "vat": None, "settle": "", "new_ok": False, "jpy": bool(cost["rate"] and cost["rate"] < 50)})
+                    "tax_base": None, "vat": None, "settle": "", "new_ok": bool(cd), "jpy": bool(cost["rate"] and cost["rate"] < 50)})
+    for i, x in enumerate(out):
+        x["seq"] = i
     impdoc_merge(c, ym, out)
-    out.sort(key=lambda x: (x["decl_date"], (x["supplier"] or "").lower()))
+    # 이어지는 줄(같은 필증의 두 번째 인보이스)은 첫 줄 바로 아래에
+    out.sort(key=lambda x: (x["decl_date"], (x.get("grp") or x["supplier"] or "").lower(), x.get("seq", 0)))
     return out
 
 
@@ -4677,7 +4686,7 @@ def impdoc_records(c) -> list:
         if not hit:
             hit = {"bls": set(), "invs": set(), "dno": "", "supplier": "", "bl": "", "invoice": "", "invoice_date": "", "fx": None,
                    "currency": "", "remit_date": "", "rate": None, "decl_date": "", "office": "", "tax_base": None, "vat": None,
-                   "tax_date": "", "docs": [], "settle": False}
+                   "tax_date": "", "docs": [], "settle": False, "inv_list": {}}
             recs.append(hit)
         if bl:
             hit["bls"].add(bl)
@@ -4700,8 +4709,35 @@ def impdoc_records(c) -> list:
         put("vat", r.get("import_vat"))
         put("tax_date", r.get("tax_date"))
         hit["settle"] = hit["settle"] or r.get("doc_type") == "settlement"
+        # 인보이스별: 번호·날짜·외화·송금 (필증 하나에 인보이스가 여러 개인 건을 인보이스마다 한 줄로 적기 위해)
+        nos = [x.strip() for x in re.split(r"[,;/]+", str(r.get("invoice_no") or "")) if _inv_key(x)]
+        for no in nos:
+            e = hit["inv_list"].setdefault(_inv_key(no), {"no": no, "date": "", "fx": None, "remit_date": "", "rate": None})
+            if r.get("doc_type") == "invoice":
+                e["date"] = e["date"] or r.get("invoice_date") or ""
+                if len(nos) == 1:
+                    e["fx"] = e["fx"] or fx or None
+        if r.get("doc_type") == "remittance" and not nos:   # 인보이스 번호 없는 송금증 → 그 건 전체
+            hit["remit_generic"] = True
+        for no in nos:
+            e = hit["inv_list"][_inv_key(no)]
+            if r.get("doc_type") == "remittance" and len(nos) == 1:
+                e["remit_date"] = e["remit_date"] or r.get("remit_date") or ""
+                e["rate"] = e["rate"] or r.get("remit_rate") or None
         hit["docs"].append({"id": did, "kind": IMPDOC_KIND.get(r.get("doc_type"), "기타"), "file": fname})
     return recs
+
+
+def _imp_cont(main: dict, e: dict, r: dict, jpy: bool) -> dict:
+    """같은 필증의 두 번째 이후 인보이스 줄: 인보이스 날짜·번호·외화·송금·통관일만 (거래처·B/L·세관·금액은 첫 줄에만 — 대장 양식대로)."""
+    cd = main["decl_date"]
+    generic = r.get("remit_generic")   # 인보이스를 안 적은 송금증만 모든 인보이스 줄에
+    remit = e["remit_date"] or (main.get("remit_date") if generic else "") or ""
+    return {"src": main["src"], "supplier": "", "grp": main["supplier"], "seq": main.get("seq", 0) + 0.5, "cont": True,
+            "bl": "", "invoice": e["no"], "invoice_date": e["date"], "fx": e["fx"], "currency": r.get("currency") or "",
+            "remit_date": remit, "rate": _imp_rate(e["rate"], r.get("currency")) or (main.get("rate") if generic else None),
+            "kind": ("사전" if remit <= cd else "사후") if remit and cd else "", "decl_date": cd, "office": "", "tax_base": None,
+            "vat": None, "tax_date": "", "settle": "", "jpy": jpy, "new_ok": main.get("new_ok", True)}
 
 
 def impdoc_merge(c, ym: str, out: list):
@@ -4730,14 +4766,26 @@ def impdoc_merge(c, ym: str, out: list):
             if hit["remit_date"] and hit["decl_date"] and not hit["kind"]:
                 hit["kind"] = "사전" if hit["remit_date"] <= hit["decl_date"] else "사후"
             hit["src"] += " + PDF(" + files + ")"
+            have = _invs(hit["invoice"])
+            for e in list(r["inv_list"].values())[1:] if len(r["inv_list"]) > 1 else []:
+                if _inv_key(e["no"]) not in have:
+                    out.append(_imp_cont(hit, e, r, jpy))
             continue
         cd = r["decl_date"]
-        out.append({"src": "PDF(" + files + ")", "supplier": r["supplier"], "bl": r["bl"], "invoice": r["invoice"],
+        invl = list(r["inv_list"].values())
+        first = invl[0] if len(invl) > 1 else None
+        if first:   # 첫 줄은 첫 인보이스 몫
+            r = {**r, "invoice": first["no"], "invoice_date": first["date"] or r["invoice_date"], "fx": first["fx"],
+                 "remit_date": first["remit_date"] or r["remit_date"]}
+            rate = _imp_rate(first["rate"], r["currency"]) or rate
+        out.append({"src": "PDF(" + files + ")", "seq": len(out), "supplier": r["supplier"], "bl": r["bl"], "invoice": r["invoice"],
                     "invoice_date": r["invoice_date"], "fx": r["fx"] or None, "currency": r["currency"], "remit_date": r["remit_date"],
                     "rate": rate, "kind": ("사전" if r["remit_date"] <= cd else "사후") if r["remit_date"] and cd else "",
                     "decl_date": cd, "office": r["office"], "tax_base": r["tax_base"] or None, "vat": r["vat"] or None,
                     "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy,
                     "new_ok": bool(r["decl_date"] or r["tax_base"])})
+        for e in invl[1:] if first else []:
+            out.append(_imp_cont(out[-1], e, r, jpy))
 
 
 @app.post("/api/import-ledger/docs")
