@@ -6,3 +6,4 @@ xlrd
 cryptography
 anthropic
 playwright
+pypdf

@@ -4656,12 +4656,26 @@ def impdoc_read_run():
                 break
             f = IMP_DOC_DIR / str(d["id"])
             try:
-                mt = mimetypes.guess_type(d["filename"])[0] or "application/pdf"
-                data = base64.b64encode(f.read_bytes()).decode()
+                mt = (mimetypes.guess_type(d["filename"].lower())[0] or "application/pdf") if f.exists() else ""
+                if not mt:
+                    raise RuntimeError("서버에 파일이 없습니다 (다시 올려 주세요)")
+                raw = f.read_bytes()
+                if mt == "application/pdf":
+                    raw = pdf_for_ai(raw)
+                if len(raw) > 22 * 1024 * 1024:
+                    raise RuntimeError("file too large for AI")
+                data = base64.b64encode(raw).decode()
                 block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}} \
                     if mt == "application/pdf" else {"type": "image", "source": {"type": "base64", "media_type": mt, "data": data}}
-                with AI_LOCK:   # 폴더 이름(거래처·B/L 등)도 힌트로
-                    r = ai_mail.extract_import_doc([block, {"type": "text", "text": f"파일 위치: {d['filename']}"}])
+                for attempt in range(4):   # AI 사용량 한도·서버 바쁨·시간 초과는 기다렸다 다시
+                    try:
+                        with AI_LOCK:   # 폴더 이름(거래처·B/L 등)도 힌트로
+                            r = ai_mail.extract_import_doc([block, {"type": "text", "text": f"파일 위치: {d['filename']}"}])
+                        break
+                    except Exception as e:
+                        if attempt == 3 or not re.search(r"rate.?limit|overload|429|529|50\d|timeout|timed out|connection", str(e), re.I):
+                            raise
+                        time.sleep(20 * (attempt + 1))
                 with db() as c:
                     c.execute("UPDATE imp_docs SET status = 'read', extract = ?, error = '' WHERE id = ?",
                               (json.dumps(r, ensure_ascii=False), d["id"]))
@@ -4670,6 +4684,39 @@ def impdoc_read_run():
                     c.execute("UPDATE imp_docs SET status = 'error', error = ? WHERE id = ?", (str(e)[:300], d["id"]))
     finally:
         IMPDOC_LOCK.release()
+
+
+def pdf_for_ai(raw: bytes, max_pages: int = 20) -> bytes:
+    """AI 가 못 읽는 PDF 손보기: 암호(열람 암호 없음) 풀기, 깨진 구조 다시 쓰기, 너무 길면 앞 20쪽만."""
+    import io
+    try:
+        from pypdf import PdfReader, PdfWriter
+        rd = PdfReader(io.BytesIO(raw), strict=False)
+        enc = rd.is_encrypted
+        if enc:
+            rd.decrypt("")
+        if not enc and len(rd.pages) <= max_pages and len(raw) <= 15 * 1024 * 1024:
+            return raw
+        w = PdfWriter()
+        for pg in rd.pages[:max_pages]:
+            w.add_page(pg)
+        buf = io.BytesIO()
+        w.write(buf)
+        return buf.getvalue()
+    except Exception:
+        return raw
+
+
+IMPDOC_ERR = ((r"credit balance|billing", "AI 크레딧 부족 — Anthropic 결제 확인"), (r"authentication|api[_ -]?key|401", "AI 키가 맞지 않음"),
+              (r"rate.?limit|429", "AI 사용량 한도 — 잠시 뒤 다시 읽기"), (r"overload|529|50\d", "AI 서버가 바쁨 — 잠시 뒤 다시 읽기"),
+              (r"too large|413|request_too_large", "파일이 너무 큼"), (r"page", "쪽수가 너무 많음"),
+              (r"password|encrypt", "암호가 걸린 PDF"), (r"could not process|invalid|pdf", "PDF가 손상됐거나 스캔 형식이 이상함"),
+              (r"image", "사진 형식을 읽을 수 없음"), (r"timeout|timed out|connection", "AI 연결 시간 초과 — 다시 읽기"),
+              (r"서버에 파일이 없", "서버에 파일 없음 — 다시 올리기"), (r"refus|거절", "AI가 이 서류 처리를 거절함"))
+
+
+def impdoc_err_text(e: str) -> str:
+    return next((t for pat, t in IMPDOC_ERR if re.search(pat, e or "", re.I)), "읽기 실패")
 
 
 def _invs(v) -> set:
@@ -4893,10 +4940,22 @@ def impdoc_list(user: dict = Depends(current_user)):
                                            " ORDER BY id DESC LIMIT 300")]
     for r in rows:
         x = json.loads(r.pop("extract") or "{}")
+        r["why"] = impdoc_err_text(r["error"]) if r["status"] == "error" else ""
         r.update(kind=IMPDOC_KIND.get(x.get("doc_type"), ""), supplier=x.get("supplier") or "", bl=x.get("bl_no") or "",
                  invoice=x.get("invoice_no") or "", date=x.get("decl_date") or x.get("remit_date") or x.get("invoice_date") or "",
                  notes=x.get("notes") or "")
     return {"docs": rows, "reading": IMPDOC_LOCK.locked()}
+
+
+@app.post("/api/import-ledger/docs/retry")
+def impdoc_retry(user: dict = Depends(admin_user)):
+    """못 읽은 서류를 다시 읽기."""
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다.")
+    with db() as c:
+        n = c.execute("UPDATE imp_docs SET status = 'new', error = '' WHERE status = 'error'").rowcount
+    threading.Thread(target=impdoc_read_run, daemon=True).start()
+    return {"ok": True, "count": n}
 
 
 @app.delete("/api/import-ledger/docs/{did}")
