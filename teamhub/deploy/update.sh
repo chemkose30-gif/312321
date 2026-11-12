@@ -28,8 +28,12 @@ chown -R teamhub:teamhub /opt/teamhub
 
 echo "==> [4/4] 서버 재시작"
 timeout 60 systemctl restart teamhub || true
-sleep 2
-if systemctl is-active --quiet teamhub; then
+up=0
+for i in $(seq 1 20); do   # 실제로 화면이 열리는지 확인 (켜졌다가 바로 꺼지는 경우도 잡게)
+  sleep 1
+  if curl -s -o /dev/null --max-time 3 http://127.0.0.1:8100/; then up=1; break; fi
+done
+if [ "$up" = 1 ] && systemctl is-active --quiet teamhub; then
   echo "✅ 업데이트 완료 (업데이트 전 DB 는 /var/backups/teamhub 에 백업됨)"
   # 이카운트 판매현황 자동 받기용 브라우저: 업데이트를 붙잡지 않게 뒤에서 설치 (처음 한 번 5~10분, 진행은 /var/log/teamhub-browser.log)
   if [ ! -f /opt/teamhub/pw-browsers/.ok ] && ! pgrep -f "playwright install" >/dev/null; then

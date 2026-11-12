@@ -7938,11 +7938,6 @@ def index():
 
 init_db()
 
-if __name__ == "__main__":
-    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8100")),
-                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
-
-
 # ---------------------------------------------------------------- 🤖 이카운트 판매현황 자동 받기 (브라우저 자동 조작)
 ECWEB_DIR = Path(os.getenv("TEAMHUB_ECWEB_DIR", str(Path(DB_PATH).parent / "ecount_web")))
 ECWEB_LOCK = threading.Lock()
@@ -8078,3 +8073,8 @@ def ecweb_shot(rid: str, name: str, _: dict = Depends(admin_user)):
     if not f.exists():
         raise HTTPException(404, "없습니다.")
     return Response(content=f.read_bytes(), media_type="image/png" if name.endswith(".png") else "text/plain; charset=utf-8")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8100")),
+                proxy_headers=True, forwarded_allow_ips="127.0.0.1")
