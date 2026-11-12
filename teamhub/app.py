@@ -4673,7 +4673,7 @@ def impdoc_read_run():
                             r = ai_mail.extract_import_doc([block, {"type": "text", "text": f"파일 위치: {d['filename']}"}])
                         break
                     except Exception as e:
-                        if attempt == 3 or not re.search(r"rate.?limit|overload|429|529|50\d|timeout|timed out|connection", str(e), re.I):
+                        if attempt == 3 or not re.search(r"rate_limit|overloaded|Error code: (429|5\d\d)|timeout|timed out|connection", str(e), re.I):
                             raise
                         time.sleep(20 * (attempt + 1))
                 with db() as c:
@@ -4707,10 +4707,12 @@ def pdf_for_ai(raw: bytes, max_pages: int = 20) -> bytes:
         return raw
 
 
-IMPDOC_ERR = ((r"credit balance|billing", "AI 크레딧 부족 — Anthropic 결제 확인"), (r"authentication|api[_ -]?key|401", "AI 키가 맞지 않음"),
-              (r"rate.?limit|429", "AI 사용량 한도 — 잠시 뒤 다시 읽기"), (r"overload|529|50\d", "AI 서버가 바쁨 — 잠시 뒤 다시 읽기"),
-              (r"too large|413|request_too_large", "파일이 너무 큼"), (r"page", "쪽수가 너무 많음"),
-              (r"password|encrypt", "암호가 걸린 PDF"), (r"could not process|invalid|pdf", "PDF가 손상됐거나 스캔 형식이 이상함"),
+IMPDOC_ERR = ((r"credit balance|billing", "AI 크레딧 부족 — Anthropic 결제 확인"),
+              (r"authentication_error|invalid x-api-key|Error code: 401", "AI 키가 맞지 않음"),
+              (r"rate_limit|Error code: 429", "AI 사용량 한도 — 잠시 뒤 다시 읽기"),
+              (r"overloaded|Error code: 5\d\d", "AI 서버가 바쁨 — 잠시 뒤 다시 읽기"),
+              (r"too large|request_too_large|Error code: 413", "파일이 너무 큼"), (r"maximum of \d+ (pdf )?pages|\bpages?\b.*(limit|exceed)", "쪽수가 너무 많음"),
+              (r"password|encrypt", "암호가 걸린 PDF"), (r"could not process|invalid pdf|pdf", "PDF가 손상됐거나 스캔 형식이 이상함"),
               (r"image", "사진 형식을 읽을 수 없음"), (r"timeout|timed out|connection", "AI 연결 시간 초과 — 다시 읽기"),
               (r"서버에 파일이 없", "서버에 파일 없음 — 다시 올리기"), (r"refus|거절", "AI가 이 서류 처리를 거절함"))
 
