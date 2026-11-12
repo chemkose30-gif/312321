@@ -4453,7 +4453,8 @@ def _imp_rate(rate, currency: str = ""):
 
 
 def import_ledger_rows(c, ym: str) -> list:
-    """그 달(통관 신고일 기준) 수입 건 — 정산서(AI) + 원가계산서 + 입고예정(UNI-PASS). 켐코스 수입 건은 뺌."""
+    """그 달(통관 신고일 기준) 수입이 끝난 건 — 수입신고필증 내용이 있는 정산서·서류 PDF 로만 새 줄을 만들고,
+    원가계산서·송금증·인보이스는 이미 있는 줄의 빈 칸만 채움 (new_ok). 인바운딩·입고예정은 쓰지 않음. 켐코스 수입 건은 뺌."""
     out, seen, used = [], set(), set()
     nb = lambda x: mailin.norm_bl(x or "")
     costs = _cost_groups(c)
@@ -4483,7 +4484,7 @@ def import_ledger_rows(c, ym: str) -> list:
                     "remit_date": remit, "rate": _imp_rate(cost["rate"], r.get("currency")) if ok else None,
                     "kind": ("사전" if remit <= cd else "사후") if remit else "", "decl_date": cd,
                     "office": r.get("customs_office") or "", "tax_base": r.get("tax_base") or None, "vat": r.get("import_vat") or None,
-                    "settle": "" if courier else "O",
+                    "settle": "" if courier else "O", "new_ok": bool(r.get("decl_date") or r.get("tax_base")),
                     "jpy": (r.get("currency") or "").upper() == "JPY" or bool(cost and cost["rate"] and cost["rate"] < 50)})
         if r.get("bl_no"):
             seen.add(nb(r["bl_no"]))
@@ -4496,25 +4497,7 @@ def import_ledger_rows(c, ym: str) -> list:
                     "fx": round(cost["fx"], 2) if cost["fx"] else None, "currency": "", "remit_date": cost["remit_date"] if ok else "",
                     "rate": _imp_rate(cost["rate"]) if ok else None,
                     "kind": ("사전" if cost["remit_date"] <= cd else "사후") if ok else "", "decl_date": cd, "office": "",
-                    "tax_base": None, "vat": None, "settle": "", "jpy": bool(cost["rate"] and cost["rate"] < 50)})
-    for sh in c.execute("SELECT * FROM shipments WHERE substr(cs_cleared_at, 1, 7) = ?", (ym,)):
-        bl = sh["hbl_no"] or sh["bl_no"]
-        courier = sh["spec"] if str(sh["note"] or "").startswith("[특송]") else ""
-        hit = next((x for x in out if nb(x["bl"]) in (nb(bl), nb(sh["bl_no"])) and x["bl"]), None) if bl else None
-        if not hit:   # B/L 없는 원가계산서 건과는 거래처·통관일(±3일)로
-            d = _d(sh["cs_cleared_at"])
-            hit = next((x for x in out if not x["bl"] and _sup_key(x["supplier"]) == _sup_key(sh["supplier"]) and d and _d(x["decl_date"])
-                        and abs((_d(x["decl_date"]) - d).days) <= 3), None)
-        if hit:
-            hit["bl"] = hit["bl"] or bl or ""
-            if courier and not hit["settle"]:
-                hit["settle"] = COURIER_ABBR.get(courier, "")
-            continue
-        if not bl:
-            continue
-        out.append({"src": "입고예정", "supplier": sh["supplier"] or "", "bl": bl, "invoice": "", "invoice_date": "", "fx": None,
-                    "currency": "", "remit_date": "", "rate": None, "kind": "", "decl_date": sh["cs_cleared_at"][:10], "office": "",
-                    "tax_base": None, "vat": None, "settle": COURIER_ABBR.get(courier, ""), "jpy": False})
+                    "tax_base": None, "vat": None, "settle": "", "new_ok": False, "jpy": bool(cost["rate"] and cost["rate"] < 50)})
     impdoc_merge(c, ym, out)
     out.sort(key=lambda x: (x["decl_date"], (x["supplier"] or "").lower()))
     return out
@@ -4608,6 +4591,9 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
                             w.cell(row=r, column=9).value = f"=G{r}*H{r}/100"   # 엔화는 100엔 기준 환율
                 filled += bool(n)
                 x["status"] = ("채움" if n else "그대로") + ("" if w is ws else f" ({w.title})")
+                continue
+            if not x.get("new_ok", True):   # 필증이 아직 없는 건 (송금·인보이스·원가계산서만) → 새 줄은 만들지 않음
+                x["status"] = "필증 없음 — 안 넣음"
                 continue
             if not free:
                 no_room.append(x["bl"] or x["invoice"] or x["supplier"])
@@ -4740,6 +4726,7 @@ def impdoc_merge(c, ym: str, out: list):
                 if v and not hit.get(k):
                     hit[k] = v
             hit["jpy"] = hit.get("jpy") or jpy
+            hit["new_ok"] = hit.get("new_ok") or bool(r["decl_date"] or r["tax_base"])
             if hit["remit_date"] and hit["decl_date"] and not hit["kind"]:
                 hit["kind"] = "사전" if hit["remit_date"] <= hit["decl_date"] else "사후"
             hit["src"] += " + PDF(" + files + ")"
@@ -4749,7 +4736,8 @@ def impdoc_merge(c, ym: str, out: list):
                     "invoice_date": r["invoice_date"], "fx": r["fx"] or None, "currency": r["currency"], "remit_date": r["remit_date"],
                     "rate": rate, "kind": ("사전" if r["remit_date"] <= cd else "사후") if r["remit_date"] and cd else "",
                     "decl_date": cd, "office": r["office"], "tax_base": r["tax_base"] or None, "vat": r["vat"] or None,
-                    "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy})
+                    "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy,
+                    "new_ok": bool(r["decl_date"] or r["tax_base"])})
 
 
 @app.post("/api/import-ledger/docs")

@@ -2989,8 +2989,9 @@ function openImportLedger() {
   const now = new Date(), ymOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   const ym = ymOf(now), ym0 = ymOf(new Date(now.getFullYear(), now.getMonth() - 2, 1));
   openModal(`<h2>📒 수입관리대장 채우기</h2>
-    <div class="muted" style="font-size:13px;line-height:1.6">수입관리대장 엑셀을 양식으로 올려 두면, 고른 기간의 달마다 그 달 시트에 TeamHub가 아는 수입 건을 채워 줍니다 (통관 신고일 기준).
-      <br>· 세관·공급가액·부가세·외화·인보이스·B/L ← 정산서 PDF(AI) · 송금일·환율·인보이스 ← 원가계산서 (자동 작성 후 송금환율 확인 전인 것은 빼고) · 통관일·B/L·특송사 ← 입고예정(UNI-PASS)
+    <div class="muted" style="font-size:13px;line-height:1.6">수입관리대장 엑셀을 양식으로 올려 두면, 고른 기간의 달마다 그 달 시트에 <b>수입이 끝난 건(수입신고필증이 있는 건)</b>만 채워 줍니다 (통관 신고일 기준). 인바운딩·입고예정은 쓰지 않습니다.
+      <br>· 새 줄은 <b>수입신고필증</b>(또는 필증 내용이 있는 수입세금계산서·정산서)이 있어야 만듭니다 — 정산서가 없어도 필증 PDF만 있으면 됩니다. 신고일·B/L·세관·결제금액 ← 필증 · 인보이스 날짜·번호·외화 ← 인보이스 · 공급가액·부가세 ← 수입세금계산서
+      <br>· 송금일·환율 ← 송금증 PDF 또는 송금환율 확인한 원가계산서 — 필증이 아직 없는 건(송금·인보이스만)은 새 줄을 만들지 않고, 대장에 이미 있는 줄의 빈 칸만 채웁니다
       <br>· 이미 있는 줄(B/L · 인보이스 번호 · 거래처+통관일이 같은 줄, 다른 달 시트여도)은 <b>빈 칸만</b> 채우고, 없으면 그 달 빈 줄에 새로 씁니다. 수식 칸과 직접 적은 값은 건드리지 않습니다. 시트가 없는 달은 앞 달 시트를 복사해 만듭니다.</div>
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><label style="margin:0">기간</label><input type="month" id="ilFrom" value="${ym0}" style="width:auto"> ~ <input type="month" id="ilTo" value="${ym}" style="width:auto">
       <span class="spacer"></span>${state.me.role === 'admin' ? '<label class="btn sm" style="margin:0">📤 양식(수입관리대장 엑셀) 올리기<input type="file" id="ilTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
