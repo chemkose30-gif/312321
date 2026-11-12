@@ -8542,6 +8542,17 @@ def _biz(v) -> str:
     return f"{d[:3]}-{d[3:5]}-{d[5:]}" if len(d) == 10 else ""
 
 
+_KO_LETTER = dict(zip("abcdefghijklmnopqrstuvwxyz", "에이 비 씨 디 이 에프 지 에이치 아이 제이 케이 엘 엠 엔 오 피 큐 알 에스 티 유 브이 더블유 엑스 와이 제트".split()))
+
+
+def _ko_key(name) -> str:
+    """거래처 이름 비교용: (주)·주식회사·띄어쓰기 빼고, 영문 약자는 한글 읽기로 (F&S → 에프앤에스, KPC → 케이피씨)."""
+    s = re.sub(r"\(주\)|㈜|주식회사|\(유\)|유한회사|\(합\)", "", str(name or ""))
+    s = s.replace("&", "앤").replace("＆", "앤")
+    s = re.sub(r"(?<![A-Za-z])[A-Z]{1,4}(?![A-Za-z])", lambda m: "".join(_KO_LETTER[ch] for ch in m.group(0).lower()), s)
+    return re.sub(r"[^0-9a-z가-힣]", "", s.lower())
+
+
 def sales_ledger_rows(c, ym: str) -> list:
     """그 달 이알씨 거래명세서(작성중 제외)를 거래처마다 한 줄로: 사업자번호·거래처·작성일자(그 달 마지막 명세서 날짜)·품목·공급가액·부가세."""
     comp = stmt_company(c)
@@ -8558,7 +8569,8 @@ def sales_ledger_rows(c, ym: str) -> list:
             " AND substr(q.quote_date, 1, 7) = ? AND qi.name != '' ORDER BY q.quote_date, q.id, qi.seq", (ym,)):
         if comp(r["wh"], r["ecount_wh"]) != "이알씨":
             continue
-        b = _biz(r["customer_biz_no"]) or biz_by_cd.get(r["cust_cd"] or "") or biz_by_name.get(_norm_company(r["customer_name"]), "")
+        b = (_biz(r["customer_biz_no"]) or biz_by_cd.get(r["cust_cd"] or "") or _biz(r["cust_cd"])   # 이카운트 거래처 코드가 사업자번호인 경우도
+             or biz_by_name.get(_norm_company(r["customer_name"]), ""))
         key = b or _norm_company(r["customer_name"])
         g = groups.setdefault(key, {"biz": b, "name": r["customer_name"], "date": "", "items": [], "supply": 0, "vat": 0, "docs": set()})
         g["date"] = max(g["date"], r["quote_date"])
@@ -8597,7 +8609,7 @@ def sales_ledger_fill(data: bytes, by_month: dict) -> tuple:
     wb = openpyxl.load_workbook(io.BytesIO(data))
     year = next((wb[n] for n in wb.sheetnames if re.search(r"\d{4}년", n)), None)
     # 대장에서 배우기: 사업자번호 → 거래처 이름(최근 월 시트 표기), 이름 → 사업자번호
-    name_of, biz_of = {}, {}
+    name_of, biz_of, seen_cnt, orig = {}, {}, {}, []   # orig: (대장에 적힌 이름 그대로, 사업자번호)
     for n in wb.sheetnames:
         ws = wb[n]
         if ws is year:
@@ -8605,6 +8617,7 @@ def sales_ledger_fill(data: bytes, by_month: dict) -> tuple:
                 b = _biz(ws.cell(row=r, column=2).value)
                 if b and ws.cell(row=r, column=3).value:
                     biz_of.setdefault(_norm_company(ws.cell(row=r, column=3).value), b)
+                    orig.append((str(ws.cell(row=r, column=3).value), b))
             continue
         if not re.match(r"^\d{2}월", n):
             continue
@@ -8614,14 +8627,32 @@ def sales_ledger_fill(data: bytes, by_month: dict) -> tuple:
             if b and nm and "임대료" not in str(ws.cell(row=r, column=5).value or ""):
                 name_of[b] = str(nm)
                 biz_of[_norm_company(nm)] = b
+                seen_cnt[b] = seen_cnt.get(b, 0) + 1
+                orig.append((str(nm), b))
 
     def find_biz(name):
+        """대장의 거래처 이름으로 사업자번호 찾기: (주)위웰F&S = 위웰에프앤에스(주), (주)한빛향료 = 한빛향료 제1공장(주),
+        서울향료(주) 2공장 = 서울향료(주) 인천제2공장 (숫자가 둘 다 있으면 같아야)."""
         k = _norm_company(name)
         if k in biz_of:
             return biz_of[k]
-        digits = re.findall(r"\d+", k)   # '2공장' 과 '인천제2공장' 처럼 숫자가 같아야
-        best = max(((difflib.SequenceMatcher(None, _company_key(name), _company_key(n2)).ratio(), b)
-                    for n2, b in biz_of.items() if re.findall(r"\d+", n2) == digits), default=(0, ""))
+        kk = _ko_key(name)
+        if len(kk) < 2:
+            return ""
+        cands = {(_ko_key(n2), b) for n2, b in orig}
+        dk = re.findall(r"\d+", kk)
+        num_ok = lambda k2: not dk or re.findall(r"\d+", k2) == dk   # '2공장'이면 대장에도 2가 있어야 (서울향료 1·2공장·진천은 다른 거래처)
+        same = {b for k2, b in cands if k2 == kk}
+        if len(same) == 1:
+            return same.pop()
+        # 한쪽 이름이 다른 쪽에 들어 있으면 (한빛향료 ⊂ 한빛향료제1공장) — 사업자번호가 여러 개면(서울향료 → 1·2공장·진천) 고르지 않음
+        inside = {b for k2, b in cands if num_ok(k2) and len(k2) >= 2 and (kk in k2 or k2 in kk)}
+        if inside:
+            return inside.pop() if len(inside) == 1 else ""
+        scored = sorted(((difflib.SequenceMatcher(None, kk, k2).ratio(), b) for k2, b in cands if num_ok(k2)), reverse=True)
+        best = scored[0] if scored else (0, "")
+        if any(sc >= best[0] - 0.05 and b != best[1] for sc, b in scored[1:]):   # 비슷한 후보가 둘 이상이면 고르지 않음
+            return ""
         return best[1] if best[0] >= 0.75 else ""
 
     res = {}
