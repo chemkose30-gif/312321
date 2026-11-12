@@ -8,7 +8,8 @@ import os
 import re
 
 MODEL = os.getenv("TEAMHUB_AI_MODEL", "claude-opus-5-5")
-API_KEY = os.getenv("TEAMHUB_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or ""
+# 설정 파일에 붙여 넣을 때 섞여 들어간 공백·따옴표·윈도우 줄 끝(\r)은 떼어 냄 (그대로면 '키가 맞지 않음')
+API_KEY = (os.getenv("TEAMHUB_ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or "").strip().strip("\"'").strip()
 
 SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨)의 업무 비서입니다. 같은 건으로 주고받은 메일 쓰레드(한 통 이상, 오래된 것부터 시간순)를 읽고 JSON 으로 답합니다.
 쓰레드 전체를 처음부터 끝까지 읽고, 앞 메일에만 나온 정보(품목, 수량, 공급사, B/L 등)도 활용합니다.
