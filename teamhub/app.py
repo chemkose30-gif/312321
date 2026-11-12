@@ -8036,7 +8036,9 @@ def ecweb_get(_: dict = Depends(admin_user)):
     cfg.pop("password")
     try:
         import playwright  # noqa: F401
-        ready = True
+        # 서버에선 update.sh 가 브라우저를 뒤에서 설치하고 다 되면 .ok 를 남김
+        ready = not Path("/opt/teamhub/venv").exists() or Path("/opt/teamhub/pw-browsers/.ok").exists() \
+            or bool(os.getenv("TEAMHUB_CHROMIUM"))
     except ImportError:
         ready = False
     with db() as c:

@@ -17,20 +17,13 @@ git -C "$SRC" log -1 --format="%cd · %h" --date=format:"%Y-%m-%d %H:%M" > /opt/
 systemctl daemon-reload
 
 echo "==> [3/4] 필요한 패키지 확인 (처음엔 1~2분 걸릴 수 있어요)"
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1   # apt 가 화면에 안 보이는 질문을 띄우고 멈추지 않게
 if ! command -v readpst >/dev/null 2>&1; then   # Outlook 메일함(.pst) 가져오기용
-  timeout 300 apt-get install -y -qq pst-utils >/dev/null 2>&1 || \
-    { timeout 120 apt-get update -qq >/dev/null 2>&1; timeout 300 apt-get install -y -qq pst-utils >/dev/null 2>&1; } || \
+  timeout 300 apt-get install -y -qq pst-utils </dev/null >/dev/null 2>&1 || \
+    { timeout 120 apt-get update -qq </dev/null >/dev/null 2>&1; timeout 300 apt-get install -y -qq pst-utils </dev/null >/dev/null 2>&1; } || \
     echo "    ⚠ pst-utils 설치 실패 (Outlook .pst 가져오기만 안 됩니다)"
 fi
 timeout 300 /opt/teamhub/venv/bin/pip install -q --disable-pip-version-check -r /opt/teamhub/requirements.txt
-# 이카운트 판매현황 자동 받기용 브라우저 (처음 한 번 5분 정도). 실패해도 다른 기능은 그대로.
-if [ ! -f /opt/teamhub/pw-browsers/.deps-ok ]; then
-  timeout 900 /opt/teamhub/venv/bin/python -m playwright install-deps chromium >/dev/null 2>&1 && \
-    mkdir -p /opt/teamhub/pw-browsers && touch /opt/teamhub/pw-browsers/.deps-ok || \
-    echo "    ⚠ 브라우저용 패키지 설치 실패 (이카운트 자동 받기만 안 됩니다)"
-fi
-PLAYWRIGHT_BROWSERS_PATH=/opt/teamhub/pw-browsers timeout 900 /opt/teamhub/venv/bin/python -m playwright install chromium >/dev/null 2>&1 || \
-  echo "    ⚠ 브라우저 설치 실패 (이카운트 자동 받기만 안 됩니다)"
 chown -R teamhub:teamhub /opt/teamhub
 
 echo "==> [4/4] 서버 재시작"
@@ -38,6 +31,15 @@ timeout 60 systemctl restart teamhub || true
 sleep 2
 if systemctl is-active --quiet teamhub; then
   echo "✅ 업데이트 완료 (업데이트 전 DB 는 /var/backups/teamhub 에 백업됨)"
+  # 이카운트 판매현황 자동 받기용 브라우저: 업데이트를 붙잡지 않게 뒤에서 설치 (처음 한 번 5~10분, 진행은 /var/log/teamhub-browser.log)
+  if [ ! -f /opt/teamhub/pw-browsers/.ok ] && ! pgrep -f "playwright install" >/dev/null; then
+    echo "   (이카운트 자동 받기용 브라우저를 뒤에서 설치합니다 — 5~10분, 기다리지 않아도 됩니다)"
+    nohup env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 PLAYWRIGHT_BROWSERS_PATH=/opt/teamhub/pw-browsers bash -c '
+      timeout 900 apt-get install -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold fonts-nanum </dev/null
+      timeout 1200 /opt/teamhub/venv/bin/python -m playwright install --with-deps chromium </dev/null &&
+        touch /opt/teamhub/pw-browsers/.ok && chown -R teamhub:teamhub /opt/teamhub/pw-browsers && echo "브라우저 설치 완료"
+    ' > /var/log/teamhub-browser.log 2>&1 &
+  fi
 else
   echo "❌ 서버가 시작되지 않았습니다. 아래 로그를 캡처해서 보내주세요."
   journalctl -u teamhub -n 30 --no-pager
