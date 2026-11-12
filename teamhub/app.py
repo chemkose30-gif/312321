@@ -4541,6 +4541,18 @@ def _imp_bounds(ws) -> tuple:
     return hdr, total
 
 
+def _fmt_cur(fmt: str) -> str:
+    """엑셀 숫자 서식 안의 통화 (예: '[$CHF] #,##0.00' → CHF, '"$"#,##0' → USD)."""
+    f = re.sub(r"\[\$-[0-9A-Fa-f]+\]", "", str(fmt or ""))   # [$-412] 같은 지역 표시는 통화 아님
+    m = re.search(r"\[\$([A-Z]{3})", f) or re.search(r"\b(USD|EUR|CHF|JPY|GBP|CNY|SGD|AUD|CAD|HKD)\b", f)
+    if m:
+        return m.group(1)
+    for sym, c in (("€", "EUR"), ("£", "GBP"), ("¥", "JPY"), ("$", "USD")):
+        if sym in f:
+            return c
+    return ""
+
+
 def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
     """양식 엑셀의 그 달 시트들에 채움. 이미 있는 줄(어느 달 시트든 B/L·인보이스 번호·거래처+통관일이 같은 줄)은 빈 칸만 채우고,
     없으면 그 달 시트 빈 줄에 새로 씀. 수식 칸·직접 적은 값은 그대로."""
@@ -4572,6 +4584,26 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
             if sup and num(v(7)):   # 거래처 + 외화 금액 (이어지는 줄은 위 줄 거래처)
                 by_fx.append((sup, num(v(7)), d, ws, r))
             fx_at[(ws.title, r)] = num(v(7))
+    # 외화 칸 서식: 양식 빈 줄에 남아 있는 다른 통화 서식(예: CHF) 대신 그 건의 통화로.
+    # 이미 적어 둔 줄에서 통화별 서식을 배워서 같은 모양으로 씀 (없으면 [$USD] #,##0.00 처럼)
+    cur_fmt = {}
+    for n in wb.sheetnames:
+        if re.match(r"^\d{2}월$", n):
+            for row in wb[n].iter_rows(min_col=7, max_col=7):
+                cell = row[0]
+                if num(cell.value):
+                    m = _fmt_cur(cell.number_format)
+                    if m:
+                        cur_fmt.setdefault(m, cell.number_format)
+
+    def set_fx_fmt(cell, cur):
+        cur = (cur or "").upper().strip()
+        cur = {"US$": "USD", "$": "USD", "€": "EUR", "¥": "JPY", "£": "GBP", "RMB": "CNY"}.get(cur, cur)
+        if cur in ("", "KRW"):   # 통화를 모르면 통화 표시 없이 숫자만
+            cell.number_format = "#,##0.00" if _fmt_cur(cell.number_format) else cell.number_format
+        else:
+            cell.number_format = cur_fmt.get(cur) or f'[${cur}] #,##0.00'
+
     res, used = {}, set()
     for ym, rows in by_month.items():
         ws = _imp_sheet(wb, ym)
@@ -4608,6 +4640,8 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
                     if v not in (None, "") and w.cell(row=r, column=col).value in (None, ""):
                         w.cell(row=r, column=col).value = v
                         n += 1
+                        if col == 7:
+                            set_fx_fmt(w.cell(row=r, column=7), x.get("currency"))
                         if col == 8 and x["jpy"] and str(w.cell(row=r, column=9).value or "").replace("SUM(G%d)" % r, "G%d" % r) == f"=G{r}*H{r}":
                             w.cell(row=r, column=9).value = f"=G{r}*H{r}/100"   # 엔화는 100엔 기준 환율
                 filled += bool(n)
@@ -4625,10 +4659,13 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
             for col, v in vals.items():
                 if v not in (None, ""):
                     ws.cell(row=r, column=col).value = v
+            if x["fx"]:
+                set_fx_fmt(ws.cell(row=r, column=7), x.get("currency") or ("JPY" if x["jpy"] else ""))
             if x["jpy"]:   # 엔화는 100엔 기준 환율
                 ws.cell(row=r, column=9).value = f"=G{r}*H{r}/100"
             added += 1
-            x["status"] = "새로" + (f" — 같은 거래처 {near.month}/{near.day} 줄 있음, 확인" if near else "")
+            x["status"] = "새로" + (" (통관 전 사전 송금)" if not x["decl_date"] else "") \
+                + (f" — 같은 거래처 {near.month}/{near.day} 줄 있음, 확인" if near else "")
         res[ym] = {"added": added, "filled": filled, "no_room": no_room, "sheet": ws.title}
     buf = io.BytesIO()
     wb.save(buf)
@@ -4841,10 +4878,11 @@ def impdoc_merge(c, ym: str, out: list):
             rate = _imp_rate(first["rate"], r["currency"]) or rate
         out.append({"src": "PDF(" + files + ")", "seq": len(out), "supplier": r["supplier"], "bl": r["bl"], "invoice": r["invoice"],
                     "invoice_date": r["invoice_date"], "fx": r["fx"] or None, "currency": r["currency"], "remit_date": r["remit_date"],
-                    "rate": rate, "kind": ("사전" if r["remit_date"] <= cd else "사후") if r["remit_date"] and cd else "",
+                    "rate": rate, "kind": (("사전" if r["remit_date"] <= cd else "사후") if cd else "사전") if r["remit_date"] else "",
                     "decl_date": cd, "office": r["office"], "tax_base": r["tax_base"] or None, "vat": r["vat"] or None,
                     "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy,
-                    "new_ok": bool(r["decl_date"] or r["tax_base"])})
+                    # 필증이 있거나, 송금증이 있으면 (통관 전 사전 송금 — 송금한 달 시트에) 새 줄
+                    "new_ok": bool(r["decl_date"] or r["tax_base"] or r["remit_date"])})
         for e in invl[1:] if first else []:
             out.append(_imp_cont(out[-1], e, r, jpy))
 
