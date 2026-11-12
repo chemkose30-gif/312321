@@ -4547,6 +4547,13 @@ def import_ledger_rows(c, ym: str) -> list:
                     "tax_base": None, "vat": None, "settle": "", "new_ok": bool(cd), "jpy": bool(cost["rate"] and cost["rate"] < 50)})
     for i, x in enumerate(out):
         x["seq"] = i
+    for x in list(out):
+        nos = [n.strip() for n in re.split(r"\s*[,;/]\s*", x["invoice"] or "") if _inv_key(n)]
+        if len(nos) > 1 and not x.get("cont"):
+            x["invoice"], x["fx_total"] = nos[0], True   # 인보이스별 금액을 모르면 첫 줄 외화는 합계
+            for n in nos[1:]:
+                out.append(_imp_cont(x, {"no": n, "date": "", "fx": None, "remit_date": "", "rate": None},
+                                     {"currency": x.get("currency"), "remit_generic": True}, x.get("jpy")))
     impdoc_merge(c, ym, out)
     # 이어지는 줄(같은 필증의 두 번째 인보이스)은 첫 줄 바로 아래에
     out.sort(key=lambda x: (x["decl_date"], (x.get("grp") or x["supplier"] or "").lower(), x.get("seq", 0)))
@@ -4605,7 +4612,7 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
     nb = lambda x: mailin.norm_bl(str(x or "")) if x not in (None, "") else ""
     by_bl, by_inv, by_sd, by_fx, fx_at = {}, {}, [], [], {}
     num = lambda v: float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
-    by_dno, by_tax, names = {}, [], []
+    by_dno, by_tax, names, info = {}, [], [], {}
     for n in wb.sheetnames:
         if not re.match(r"^\d{2}월$", n):
             continue
@@ -4632,6 +4639,11 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
             if num(v(14)) or num(v(15)):   # 공급가액·부가세 (원 단위까지 같으면 같은 건)
                 by_tax.append((round(num(v(14)) or 0), round(num(v(15)) or 0), d, ws, r))
             fx_at[(ws.title, r)] = num(v(7))
+            k11 = str(v(11) or "")
+            info[(ws.title, r)] = {"sup": str(v(5) or ""), "d": d, "fx": num(v(7)), "bl": "" if _DNO_RE.search(k11) else nb(k11),
+                                   "dnos": {m.replace("-", "") for k in range(1, 20) for m in _DNO_RE.findall(str(v(k) or ""))},
+                                   "tb": round(num(v(14)) or 0), "tv": round(num(v(15)) or 0),
+                                   "invs": _invs(v(4)) | ({_inv_key(v(4))} if _inv_key(v(4)) else set())}
     # 외화 칸 서식: 양식 빈 줄에 남아 있는 다른 통화 서식(예: CHF) 대신 그 건의 통화로.
     # 이미 적어 둔 줄에서 통화별 서식을 배워서 같은 모양으로 씀 (없으면 [$USD] #,##0.00 처럼)
     cur_fmt = {}
@@ -4660,27 +4672,49 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
         added = filled = 0
         no_room = []
         for x in rows:
-            free_ok = lambda h: h and (h[0].title, h[1]) not in used
-            hit = by_bl.get(nb(x["bl"])) if x["bl"] else None
-            dno = (x.get("decl_no") or "").replace("-", "")
-            if not hit and dno:   # 수입신고번호
-                hit = by_dno.get(dno)
-            if not hit and x["bl"] and _DNO_RE.fullmatch(x["bl"]):
-                hit = by_dno.get(x["bl"].replace("-", ""))
-            for k in (_invs(x["invoice"]) | ({_inv_key(x["invoice"])} if _inv_key(x["invoice"]) else set())) if not hit else ():
-                hit = hit or by_inv.get(k)
             d, sname = _d(x["decl_date"]), (x.get("grp") or x["supplier"] or "")
             tb, tv = round(x["tax_base"] or 0), round(x["vat"] or 0)
+            dno = (x.get("decl_no") or "").replace("-", "")
+            xbl = nb(x["bl"]) if x["bl"] and not _DNO_RE.fullmatch(x["bl"]) else ""
+            xinv = _invs(x["invoice"]) | ({_inv_key(x["invoice"])} if _inv_key(x["invoice"]) else set())
+            fx_eq = lambda a_, b_: abs(a_ - b_) <= max(1, max(a_, b_) * 0.005)
+
+            def differs(key):
+                """이미 적은 줄과 다른 건이라는 근거 — 둘 다 값이 있는데 다르면 다른 수입 건."""
+                i = info.get(key) or {}
+                return ((sname and i.get("sup") and not _sup_same(i["sup"], sname))
+                        or (xbl and i.get("bl") and xbl != i["bl"])
+                        or (dno and i.get("dnos") and dno not in i["dnos"])
+                        or (tb > 10000 and i.get("tb", 0) > 10000 and abs(tb - i["tb"]) > 1)
+                        or (tv > 1000 and i.get("tv", 0) > 1000 and abs(tv - i["tv"]) > 1)
+                        or (xinv and i.get("invs") and not (xinv & i["invs"]))
+                        or (x["fx"] and i.get("fx") and not fx_eq(x["fx"], i["fx"]))
+                        or (d and i.get("d") and abs((i["d"] - d).days) > 60))
+
+            ok = lambda w, r: (w.title, r) not in used and not differs((w.title, r))
+            hit, why = None, ""
+            if xbl and by_bl.get(xbl):
+                hit, why = by_bl[xbl], "B/L 같음"
+            if not hit and dno and by_dno.get(dno):
+                hit, why = by_dno[dno], "신고번호 같음"
+            if not hit and x["bl"] and _DNO_RE.fullmatch(x["bl"]) and by_dno.get(x["bl"].replace("-", "")):
+                hit, why = by_dno[x["bl"].replace("-", "")], "신고번호 같음"
+            for k in xinv if not hit else ():
+                h = by_inv.get(k)
+                if h and ok(*h):
+                    hit, why = h, "인보이스 번호 같음"
+                    break
             if not hit and (tb > 10000 or tv > 1000):   # 공급가액이나 부가세가 원 단위까지 같고 통관일이 가까우면 같은 건
                 hit = next(((w, r) for b_, v_, dd, w, r in by_tax if ((tb > 10000 and b_ == tb) or (tv > 1000 and v_ == tv))
-                            and (not d or not dd or abs((dd - d).days) <= 15) and (w.title, r) not in used), None)
-            if not hit and sname and x["fx"]:   # 같은 거래처 · 같은 외화 금액 (통관일이 조금 달라도, 60일 안)
-                hit = next(((w, r) for s_, f, dd, w, r in by_fx if _sup_same(s_, sname) and abs(f - x["fx"]) <= max(1, x["fx"] * 0.005)
-                            and (not d or not dd or abs((dd - d).days) <= 60) and (w.title, r) not in used), None)
-            if not hit and sname and not x.get("cont"):   # 같은 거래처 · 통관일 ±7일 (외화가 둘 다 있으면 같아야)
-                same_fx = lambda f: not f or not x["fx"] or abs(f - x["fx"]) <= max(1, x["fx"] * 0.005)
-                hit = next(((w, r) for s_, dd, w, r in by_sd if _sup_same(s_, sname) and d and abs((dd - d).days) <= 7
-                            and (w.title, r) not in used and same_fx(fx_at.get((w.title, r)))), None)
+                            and (not d or not dd or abs((dd - d).days) <= 15) and ok(w, r)), None)
+                why = "공급가액·부가세 같음" if hit else ""
+            if not hit and sname and x["fx"]:   # 같은 거래처 · 같은 외화 금액 · 통관일 15일 안
+                hit = next(((w, r) for s_, f, dd, w, r in by_fx if _sup_same(s_, sname) and fx_eq(f, x["fx"])
+                            and (not d or not dd or abs((dd - d).days) <= 15) and ok(w, r)), None)
+                why = "거래처·외화 같음" if hit else ""
+            if not hit and sname and not x.get("cont"):   # 같은 거래처 · 통관일 ±7일 (다른 건이라는 근거가 없을 때만)
+                hit = next(((w, r) for s_, dd, w, r in by_sd if _sup_same(s_, sname) and d and abs((dd - d).days) <= 7 and ok(w, r)), None)
+                why = "거래처·통관일 가까움" if hit else ""
             near = None
             if not hit and sname and d:   # 새로 넣지만 같은 거래처 줄이 가까이 있으면 확인하라고 표시
                 near = next((dd for s_, dd, w, r in by_sd if _sup_same(s_, sname) and abs((dd - d).days) <= 20), None)
@@ -4705,7 +4739,7 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
                         if col == 8 and x["jpy"] and str(w.cell(row=r, column=9).value or "").replace("SUM(G%d)" % r, "G%d" % r) == f"=G{r}*H{r}":
                             w.cell(row=r, column=9).value = f"=G{r}*H{r}/100"   # 엔화는 100엔 기준 환율
                 filled += bool(n)
-                x["status"] = ("채움" if n else "그대로") + ("" if w is ws else f" ({w.title})")
+                x["status"] = ("채움" if n else "그대로") + f" ({w.title} {r}행 · {why})"
                 continue
             if not x.get("new_ok", True):   # 필증이 아직 없는 건 (송금·인보이스·원가계산서만) → 새 줄은 만들지 않음
                 x["status"] = "필증 없음 — 안 넣음"
@@ -4906,8 +4940,13 @@ def impdoc_merge(c, ym: str, out: list):
         hit = next((x for x in out if (x["bl"] and nb(x["bl"]) in r["bls"]) or (_invs(x["invoice"]) & r["invs"])), None)
         if not hit and r["decl_date"]:
             d = _d(r["decl_date"])
+            def other(x):   # 둘 다 값이 있는데 다르면 다른 수입 건 (같은 거래처 · 같은 주에 두 건 들어온 경우)
+                return ((x["bl"] and r["bl"] and nb(x["bl"]) not in r["bls"])
+                        or (x.get("decl_no") and r["dno"] and x["decl_no"].replace("-", "") != r["dno"])
+                        or (x["fx"] and r["fx"] and abs(x["fx"] - r["fx"]) > max(1, max(x["fx"], r["fx"]) * 0.005))
+                        or (x["tax_base"] and r["tax_base"] and abs(x["tax_base"] - r["tax_base"]) > 1))
             hit = next((x for x in out if _sup_same(x["supplier"], r["supplier"]) and _d(x["decl_date"])
-                        and abs((_d(x["decl_date"]) - d).days) <= 3), None)
+                        and abs((_d(x["decl_date"]) - d).days) <= 3 and not other(x)), None)
         if not hit and month != ym:
             continue
         rate = _imp_rate(r["rate"], r["currency"])
@@ -4925,9 +4964,22 @@ def impdoc_merge(c, ym: str, out: list):
             if hit["remit_date"] and hit["decl_date"] and not hit["kind"]:
                 hit["kind"] = "사전" if hit["remit_date"] <= hit["decl_date"] else "사후"
             hit["src"] += " + PDF(" + files + ")"
-            have = _invs(hit["invoice"])
-            for e in list(r["inv_list"].values())[1:] if len(r["inv_list"]) > 1 else []:
-                if _inv_key(e["no"]) not in have:
+            mine = _invs(hit["invoice"]) | ({_inv_key(hit["invoice"])} if _inv_key(hit["invoice"]) else set())
+            for e in r["inv_list"].values() if len(r["inv_list"]) > 1 else []:
+                k = _inv_key(e["no"])
+                if k in mine:   # 첫 줄 인보이스: 인보이스별 금액을 알면 합계 대신 그 금액
+                    if e["fx"] and hit.get("fx_total"):
+                        hit["fx"], hit["fx_total"] = e["fx"], False
+                    hit["invoice_date"] = hit["invoice_date"] or e["date"]
+                    continue
+                ex = next((y for y in out if y.get("cont") and _inv_key(y["invoice"]) == k
+                           and _sup_same(y.get("grp"), hit["supplier"])), None)
+                if ex:
+                    for f_, v_ in (("fx", e["fx"]), ("invoice_date", e["date"]), ("remit_date", e["remit_date"]),
+                                   ("rate", _imp_rate(e["rate"], r["currency"]))):
+                        if v_ and not ex.get(f_):
+                            ex[f_] = v_
+                else:
                     out.append(_imp_cont(hit, e, r, jpy))
             continue
         cd = r["decl_date"]
@@ -4944,8 +4996,9 @@ def impdoc_merge(c, ym: str, out: list):
                     "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy,
                     # 필증이 있거나, 송금증이 있으면 (통관 전 사전 송금 — 송금한 달 시트에) 새 줄
                     "new_ok": bool(r["decl_date"] or r["tax_base"] or r["remit_date"])})
-        for e in invl[1:] if first else []:
-            out.append(_imp_cont(out[-1], e, r, jpy))
+        main = out[-1]
+        for e in invl[1:] if first else []:   # 둘째 인보이스부터: 필증 줄 바로 아래에 차례로
+            out.append(_imp_cont(main, e, r, jpy))
 
 
 @app.post("/api/import-ledger/docs")
