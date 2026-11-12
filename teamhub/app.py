@@ -42,6 +42,7 @@ async def lifespan(_app):
     mailer.start_scheduler(run_daily_reminders)
     threading.Thread(target=unipass_loop, daemon=True).start()
     threading.Thread(target=ecweb_loop, daemon=True).start()
+    threading.Thread(target=imp_auto_loop, daemon=True).start()
     try:
         with db() as c:
             merge_auto_bl_shipments(c)       # 예전에 따로 생긴 B/L 자동 등록 건 정리
@@ -4071,12 +4072,13 @@ def _outbox(c) -> list:
         return []
 
 
-def cost_outbox_add(c, company: str, name: str, data: bytes):
+def cost_outbox_add(c, company: str, name: str, data: bytes, dest: str = "cost", base_sha: str = ""):
+    """사무실 PC 가 받아 갈 파일. dest: cost(원가계산 폴더) / import(수입관리대장 폴더)."""
     COST_OUT_DIR.mkdir(parents=True, exist_ok=True)
     box = [x for x in _outbox(c) if not (x["name"] == name and not x.get("done"))]
     oid = secrets.token_hex(6)
     (COST_OUT_DIR / f"{oid}.xlsx").write_bytes(data)
-    box.append({"id": oid, "company": company, "name": name, "created": now(), "done": ""})
+    box.append({"id": oid, "company": company, "name": name, "created": now(), "done": "", "dest": dest, "base_sha": base_sha})
     set_setting(c, "cost_outbox", json.dumps(box[-300:], ensure_ascii=False))
 
 
@@ -5120,6 +5122,101 @@ def impdoc_delete(did: int, user: dict = Depends(admin_user)):
     return {"ok": True}
 
 
+# ---- 📒 수입관리대장 매일 자동 채우기 → 사무실 PC 가 ★매출.수입관리대장 폴더에 '…_팀허브채움.xlsx' 로 저장 (원본은 안 건드림)
+IMP_AUTO_DEFAULT = {"on": True, "time": "07:50", "months": 3, "mode": "overwrite"}   # overwrite: 원본에 바로 (백업 남김) / copy: …_팀허브채움.xlsx
+
+
+def imp_auto_cfg(c) -> dict:
+    try:
+        return {**IMP_AUTO_DEFAULT, **(json.loads(get_setting(c, "imp_auto", "{}")) or {})}
+    except ValueError:
+        return dict(IMP_AUTO_DEFAULT)
+
+
+def imp_auto_run(by: str = "자동") -> dict:
+    """이번 달 포함 최근 N달을 양식에 채워 받은편지함에 넣음."""
+    if not IMPORT_TPL.exists():
+        return {"ok": False, "message": "수입관리대장 양식이 아직 없습니다."}
+    with db() as c:
+        cfg = imp_auto_cfg(c)
+        now_ = datetime.now()
+        n = max(1, min(int(cfg.get("months") or 3), 12))
+        y, m = now_.year, now_.month
+        months = []
+        for _ in range(n):
+            months.insert(0, f"{y}-{m:02d}")
+            y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        by_month = {ym: import_ledger_rows(c, ym) for ym in months}
+        meta = json.loads(get_setting(c, "import_tpl_meta", "{}") or "{}")
+    out, res = import_ledger_fill(IMPORT_TPL.read_bytes(), by_month)
+    orig = re.sub(r"[\\/]", "_", meta.get("filename") or "수입관리대장.xlsx")
+    overwrite = cfg.get("mode", "overwrite") == "overwrite" and orig.lower().endswith(".xlsx")
+    name = orig if overwrite else orig.rsplit(".", 1)[0] + "_팀허브채움.xlsx"
+    added = sum(r["added"] for r in res.values())
+    filled = sum(r["filled"] for r in res.values())
+    if overwrite and not added and not filled:   # 더할 게 없으면 원본을 건드리지 않음
+        info = {"at": now(), "by": by, "file": name, "months": months, "added": 0, "filled": 0, "skipped": "더할 내용 없음"}
+        with db() as c:
+            set_setting(c, "imp_auto_last", json.dumps(info, ensure_ascii=False))
+        return {"ok": True, **info}
+    with db() as c:
+        # 원본에 덮어쓸 때는 사무실 PC 가 '지금 폴더의 원본 = 서버가 채운 원본'인지 확인하고, 백업을 남긴 뒤 저장
+        cost_outbox_add(c, "이알씨", name, out, dest="import", base_sha=meta.get("sha", "") if overwrite else "")
+        info = {"at": now(), "by": by, "file": name, "months": months, "added": added, "filled": filled}
+        set_setting(c, "imp_auto_last", json.dumps(info, ensure_ascii=False))
+    return {"ok": True, **info}
+
+
+def imp_auto_loop():
+    while True:
+        time.sleep(60)
+        try:
+            with db() as c:
+                cfg = imp_auto_cfg(c)
+                last = get_setting(c, "imp_auto_day", "")
+            today = datetime.now().strftime("%Y-%m-%d")
+            if cfg.get("on") and last != today and datetime.now().strftime("%H:%M") >= (cfg.get("time") or "07:50"):
+                with db() as c:
+                    set_setting(c, "imp_auto_day", today)
+                if not IMPDOC_LOCK.locked():
+                    imp_auto_run("자동")
+                else:   # AI 가 서류를 읽는 중이면 다 읽고 나서
+                    with db() as c:
+                        set_setting(c, "imp_auto_day", "")
+        except Exception:
+            pass
+
+
+@app.get("/api/import-ledger/auto")
+def imp_auto_get(user: dict = Depends(admin_user)):
+    with db() as c:
+        return {"cfg": imp_auto_cfg(c), "last": json.loads(get_setting(c, "imp_auto_last", "{}") or "{}")}
+
+
+@app.put("/api/import-ledger/auto")
+def imp_auto_put(body: dict, user: dict = Depends(admin_user)):
+    with db() as c:
+        cfg = imp_auto_cfg(c)
+        if "on" in body:
+            cfg["on"] = bool(body["on"])
+        if re.match(r"^\d{2}:\d{2}$", str(body.get("time") or "")):
+            cfg["time"] = body["time"]
+        if body.get("months"):
+            cfg["months"] = max(1, min(int(body["months"]), 12))
+        if body.get("mode") in ("overwrite", "copy"):
+            cfg["mode"] = body["mode"]
+        set_setting(c, "imp_auto", json.dumps(cfg))
+        return {"cfg": cfg}
+
+
+@app.post("/api/import-ledger/auto/run")
+def imp_auto_now(user: dict = Depends(admin_user)):
+    r = imp_auto_run(user["name"])
+    if not r["ok"]:
+        raise HTTPException(400, r["message"])
+    return r
+
+
 IMP_READ = {"left": 0, "done": 0, "error": ""}
 IMP_READ_LOCK = threading.Lock()
 
@@ -5179,7 +5276,9 @@ async def import_ledger_template(file: UploadFile = File(...), user: dict = Depe
     IMPORT_TPL.parent.mkdir(parents=True, exist_ok=True)
     IMPORT_TPL.write_bytes(data)
     with db() as c:
-        set_setting(c, "import_tpl_meta", json.dumps({"filename": name, "uploaded_at": now(), "by": user["name"]}, ensure_ascii=False))
+        import hashlib
+        set_setting(c, "import_tpl_meta", json.dumps({"filename": name.replace("\\", "/").split("/")[-1], "uploaded_at": now(),
+                                                      "by": user["name"], "sha": hashlib.sha256(data).hexdigest()}, ensure_ascii=False))
     return {"ok": True}
 
 
