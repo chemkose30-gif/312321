@@ -2496,7 +2496,7 @@ async function openInvSettings() {
   const s = await api('/api/inventory/settings');
   const host = location.origin;
   // 사무실 PC에서 도는 PowerShell 스크립트. -Install 로 실행하면 작업 스케줄러에 매일 등록까지 한다.
-  const script = (key, time, invDir, ledDir, inbDir, costDir, settleDir) => `param([switch]$Install, [switch]$Pull)
+  const script = (key, time, invDir, ledDir, inbDir, costDir, settleDir, impTplDir, impDocDir) => `param([switch]$Install, [switch]$Pull)
 # TeamHub 자동 업로드: 폴더마다 파일 이름의 날짜가 가장 최근인 엑셀을 올립니다
 # (예: 재고 2026.10.01.xlsx → 다음 날 재고 2026.10.02.xlsx 가 생기면 그 파일. 날짜가 없으면 수정한 시각 기준)
 $jobs = @(
@@ -2504,7 +2504,9 @@ $jobs = @(
   @{ Name = "매입매출장"; Dir = "${(ledDir || '').replace(/"/g, '')}"; Url = "${host}/api/ledger/upload";    Ext = @('.xls', '.xlsx', '.xlsm'); Like = '*'; Depth = 2; All = $true },
   @{ Name = "인바운딩";   Dir = "${(inbDir || '').replace(/"/g, '')}"; Url = "${host}/api/inbound/upload";   Ext = @('.xlsx', '.xlsm'); Like = '*Inbound*'; Depth = 0 },
   @{ Name = "원가계산서"; Dir = "${(costDir || '').replace(/"/g, '')}"; Url = "${host}/api/costs/upload";     Ext = @('.xls', '.xlsx'); Like = '*'; Depth = 2; All = $true },
-  @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 3; All = $true; Top = 40; Known = "${host}/api/settlements/known" }
+  @{ Name = "정산서";     Dir = "${(settleDir || '').replace(/"/g, '')}"; Url = "${host}/api/settlements/upload"; Ext = @('.pdf'); Like = '*'; Depth = 3; All = $true; Top = 40; Known = "${host}/api/settlements/known" },
+  @{ Name = "수입관리대장"; Dir = "${(impTplDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/template"; Ext = @('.xlsx', '.xlsm'); Like = '*수입관리대장*'; Depth = 0 },
+  @{ Name = "통관서류";   Dir = "${(impDocDir || '').replace(/"/g, '')}"; Url = "${host}/api/import-ledger/docs/upload"; Ext = @('.pdf', '.jpg', '.jpeg', '.png'); Like = '*'; Depth = 4; All = $true; Top = 30; MaxAge = 60; Known = "${host}/api/import-ledger/docs/known" }
 )
 $key = "${key || '(키 만들기 필요)'}"
 $log = "C:\\TeamHub\\log.txt"
@@ -2555,7 +2557,7 @@ foreach ($job in $jobs) {
   }
   $top = if ($job.Top) { $job.Top } else { 5 }
   $files = Get-ChildItem -LiteralPath $job.Dir -File -Recurse -Depth $job.Depth -ErrorAction SilentlyContinue |
-           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like -and $known -notcontains $_.Name } |
+           Where-Object { $job.Ext -contains $_.Extension.ToLower() -and $_.Name -notlike '~$*' -and $_.Name -like $job.Like -and $known -notcontains $_.Name -and (-not $job.MaxAge -or $_.LastWriteTime -gt (Get-Date).AddDays(-$job.MaxAge)) } |
            Sort-Object @{ Expression = { Get-FileDate $_.BaseName }; Descending = $true }, @{ Expression = 'LastWriteTime'; Descending = $true } |
            Select-Object -First $top
   }
@@ -2575,7 +2577,7 @@ foreach ($job in $jobs) {
   const installer = (key, time) => ['@echo off', 'if not exist C:\\TeamHub mkdir C:\\TeamHub', 'set "SELF=%~f0"',
     `powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:SELF,[Text.Encoding]::UTF8); $i=$s.IndexOf('#'+'PS-START'); [IO.File]::WriteAllText('C:\\TeamHub\\teamhub_inventory.ps1', $s.Substring($i), (New-Object Text.UTF8Encoding $true))"`,
     'powershell -NoProfile -ExecutionPolicy Bypass -File C:\\TeamHub\\teamhub_inventory.ps1 -Install',
-    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#costDir').value, $('#settleDir').value).replace(/\n/g, '\r\n') + '\r\n';
+    'echo.', 'pause', 'exit /b', '#PS-START'].join('\r\n') + '\r\n' + script(key, time, $('#invDir').value, $('#ledDir').value, $('#inbDir').value, $('#costDir').value, $('#settleDir').value, $('#impTplDir').value, $('#impDocDir').value).replace(/\n/g, '\r\n') + '\r\n';
   const download = (name, text, bom) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([(bom ? '\ufeff' : '') + text], {type: 'application/octet-stream'}));
@@ -2594,6 +2596,8 @@ foreach ($job in $jobs) {
       <label>💰 일계장(매입매출장) 폴더 <small class="muted">— 비워 두면 안 올림</small></label><input id="ledDir" value="${esc(s.ledger_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\회계\\일계장">
       <label>🧮 원가계산서 폴더 <small class="muted">— 수입 통관 원가 계산서 엑셀, 새 파일이 생기면 올림 (비워 두면 안 올림)</small></label><input id="costDir" value="${esc(s.cost_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨">
       <label>📑 통관 정산서·청구서 폴더 <small class="muted">— 관세사 정산서 PDF, 원가계산서 없는 건 찾기용 (비워 두면 안 올림)</small></label><input id="settleDir" value="${esc(s.settle_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서">
+      <label>📒 수입관리대장 폴더 <small class="muted">— 이름에 '수입관리대장'이 들어간 최신 엑셀을 양식으로 올림 (비워 두면 안 올림)</small></label><input id="impTplDir" value="${esc(s.imp_tpl_dir || '')}" placeholder="예: Z:\\VOL1\\공유문서\\★매출.수입관리대장">
+      <label>📎 통관서류 폴더 <small class="muted">— 수입신고필증·인보이스·송금증 PDF, 최근 60일 안에 생긴 새 파일만 올려 AI가 읽음 (비워 두면 안 올림)</small></label><input id="impDocDir" value="${esc(s.imp_doc_dir || '')}" placeholder="예: Z:\\VOL1\\업무용 파일\\aaa이알씨통관서류aaa\\주 이알씨 통관서류">
       <label>📋 인바운딩(수입 예정) 파일이 있는 곳 <small class="muted">— 공유문서 폴더(이름에 'Inbound' 가 들어간 엑셀을 찾음) 또는 파일 경로 그대로</small></label><input id="inbDir" value="${esc(s.inbound_dir || '')}">
       <div class="muted" style="font-size:12px;margin-top:4px">탐색기 주소창의 경로를 그대로 붙여넣으세요. 폴더 안에서 파일 이름 날짜가 가장 최근인 파일을 올립니다.</div>
     </div>
@@ -2630,10 +2634,10 @@ foreach ($job in $jobs) {
       await save({new_key: true}); toast('키를 만들었습니다. 이제 ② 폴더 확인 → ③ 설치 파일을 받으세요.');
     };
     const key = () => { const k = $('#upKey', bg).value; if (!k) toast('먼저 ① 키 만들기를 누르세요.'); return k; };
-    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', costDir: 'cost_dir', settleDir: 'settle_dir'};
+    const DIRK = {invDir: 'inv_dir', ledDir: 'ledger_dir', inbDir: 'inbound_dir', costDir: 'cost_dir', settleDir: 'settle_dir', impTplDir: 'imp_tpl_dir', impDocDir: 'imp_doc_dir'};
     Object.keys(DIRK).forEach(id => $('#' + id, bg).onchange = e => save({[DIRK[id]]: e.target.value}));
     $('#dlInstall', bg).onclick = () => { const k = key(); if (k) download('TeamHub_install.cmd', installer(k, $('#upTime', bg).value || '18:00'), false); };
-    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#costDir', bg).value, $('#settleDir', bg).value).replace(/\n/g, '\r\n'), true); };
+    $('#dlScript', bg).onclick = () => { const k = key(); if (k) download('teamhub_inventory.ps1', script(k, $('#upTime', bg).value, $('#invDir', bg).value, $('#ledDir', bg).value, $('#inbDir', bg).value, $('#costDir', bg).value, $('#settleDir', bg).value, $('#impTplDir', bg).value, $('#impDocDir', bg).value).replace(/\n/g, '\r\n'), true); };
   });
 }
 
@@ -2991,17 +2995,40 @@ function openImportLedger() {
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><label style="margin:0">기간</label><input type="month" id="ilFrom" value="${ym0}" style="width:auto"> ~ <input type="month" id="ilTo" value="${ym}" style="width:auto">
       <span class="spacer"></span>${state.me.role === 'admin' ? '<label class="btn sm" style="margin:0">📤 양식(수입관리대장 엑셀) 올리기<input type="file" id="ilTpl" accept=".xlsx,.xlsm" hidden></label>' : ''}</div>
     <div id="ilRead" style="margin-top:8px"></div>
+    <div class="ec-box" style="margin-top:8px"><div class="row" style="gap:8px;flex-wrap:wrap"><b style="font-size:14px">📎 서류 PDF로 채우기</b>
+      <span class="muted" style="font-size:12px">인보이스 · 송금증(외국환거래계산서) · 수입신고필증 · 수입세금계산서 · 정산서 — 여러 개를 한꺼번에 올리면 AI가 읽어 같은 수입 건끼리 묶습니다</span><span class="spacer"></span>
+      ${state.me.role === 'admin' ? '<label class="btn sm primary" style="margin:0">📎 PDF 올리기<input type="file" id="ilDocFile" accept=".pdf,.jpg,.jpeg,.png" multiple hidden></label>' : ''}</div>
+      <div id="ilDocs" style="font-size:12px;margin-top:6px"></div></div>
     <div id="ilBody" class="muted" style="margin-top:10px">불러오는 중…</div><div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="ilGo" disabled>📥 채운 엑셀 받기</button></div>`, (bg, close) => {
     bg.firstElementChild.classList.add('wide');
     let timer = null;
     const q = () => `month=${$('#ilFrom', bg).value}&month_to=${$('#ilTo', bg).value}`;
+    let docsOpen = false;
+    const loadDocs = async () => {
+      const r = await api('/api/import-ledger/docs').catch(() => null);
+      if (!r || !document.body.contains(bg)) return false;
+      const wait = r.docs.filter(x => x.status === 'new').length, bad = r.docs.filter(x => x.status === 'error').length;
+      $('#ilDocs', bg).innerHTML = !r.docs.length ? '<span class="muted">아직 올린 서류가 없습니다.</span>'
+        : `<a href="#" id="ilDocTog">${r.docs.length}개 올림${wait ? ` · <b>AI가 읽는 중 ${wait}개</b>` : ''}${bad ? ` · <span class="down">못 읽음 ${bad}개</span>` : ''} ${docsOpen ? '▴' : '▾'}</a>
+          ${docsOpen ? `<div class="qscroll" style="max-height:240px;overflow:auto;margin-top:4px"><table class="an-table"><thead><tr><th>파일</th><th>종류</th><th>거래처</th><th>B/L</th><th>인보이스</th><th>날짜</th><th></th></tr></thead><tbody>
+            ${r.docs.map(x => `<tr><td><small>${esc(x.filename)}</small></td><td>${x.status === 'new' ? '<span class="muted">읽는 중…</span>' : x.status === 'error' ? `<span class="down" title="${esc(x.error)}">못 읽음</span>` : esc(x.kind)}</td>
+              <td>${esc(x.supplier)}</td><td><small>${esc(x.bl)}</small></td><td><small>${esc(x.invoice)}</small></td><td><small>${esc(x.date)}</small></td>
+              <td>${state.me.role === 'admin' ? `<button class="btn sm" data-ddel="${x.id}">✕</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+      if ($('#ilDocTog', bg)) $('#ilDocTog', bg).onclick = e => { e.preventDefault(); docsOpen = !docsOpen; loadDocs(); };
+      $$('[data-ddel]', bg).forEach(b => b.onclick = async () => {
+        if (!confirm('이 서류를 지울까요? (대장에서 이 서류로 채운 값도 빠집니다)')) return;
+        await api(`/api/import-ledger/docs/${b.dataset.ddel}`, {method: 'DELETE'}); load();
+      });
+      return r.reading || wait > 0;
+    };
     const load = async () => {
       clearTimeout(timer);
       $('.err', bg).textContent = '';
       try {
-        const d = await api(`/api/import-ledger?${q()}`);
+        const [d, docBusy] = await Promise.all([api(`/api/import-ledger?${q()}`), loadDocs()]);
         if (!document.body.contains(bg)) return;
+        if (docBusy) timer = setTimeout(load, 5000);
         const fmt = v => v ? won(v) : '';
         $('#ilRead', bg).innerHTML = d.reading
           ? `<div class="muted" style="font-size:13px">🤖 정산서 읽는 중… 남은 ${d.read.left}건 (읽은 ${d.read.done}건) — 다 읽으면 아래 표가 다시 채워집니다.</div>`
@@ -3025,11 +3052,19 @@ function openImportLedger() {
                 <td><small class="muted">${esc(x.src)}</small></td><td><small class="${x.status === '자리 없음' ? 'down' : 'muted'}">${esc(x.status || '')}</small></td></tr>`).join('') || '<tr><td colspan="12" class="empty">이 달에 TeamHub가 아는 수입 건이 없습니다.</td></tr>'}
               </tbody></table></div>`;
           }).join('')
-          + `<div class="muted" style="font-size:12px;margin-top:6px">송금일·환율은 원가계산서에 송금환율이 들어간 건만 들어갑니다 (자동 작성된 원가계산서는 🧮 원가계산서에서 송금환율을 확인·저장한 뒤). 엔화는 100엔 기준 환율로 적습니다.</div>`;
+          + `<div class="muted" style="font-size:12px;margin-top:6px">송금일·환율은 올린 송금증(외국환거래계산서) PDF나, 송금환율이 들어간 원가계산서에서 들어갑니다 (자동 작성된 원가계산서는 🧮 원가계산서에서 송금환율을 확인·저장한 뒤). 엔화는 100엔 기준 환율로 적습니다.</div>`;
         $('#ilGo', bg).disabled = !d.template;
       } catch (err) { $('#ilBody', bg).textContent = ''; $('.err', bg).textContent = err.message; }
     };
     $('#ilFrom', bg).onchange = load; $('#ilTo', bg).onchange = load;
+    if ($('#ilDocFile', bg)) $('#ilDocFile', bg).onchange = async e => {
+      const fd = new FormData(); [...e.target.files].forEach(f => fd.append('files', f));
+      const res = await fetch('/api/import-ledger/docs', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});
+      const r = await res.json();
+      if (!res.ok) { $('.err', bg).textContent = r.detail || '올리지 못했습니다.'; return; }
+      toast(`서류 ${r.added}개를 올렸습니다${r.skipped ? ` (이미 있음·형식 안 맞음 ${r.skipped}개 건너뜀)` : ''}. AI가 하나에 10~30초씩 읽습니다.`);
+      e.target.value = ''; load();
+    };
     if ($('#ilTpl', bg)) $('#ilTpl', bg).onchange = async e => {
       const fd = new FormData(); fd.append('file', e.target.files[0]);
       const res = await fetch('/api/import-ledger/template', {method: 'POST', headers: {Authorization: 'Bearer ' + state.token}, body: fd});

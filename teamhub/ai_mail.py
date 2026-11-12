@@ -198,3 +198,47 @@ def extract_costs(blocks: list) -> dict:
     if response.stop_reason == "max_tokens":
         raise RuntimeError("서류가 너무 길어 끝까지 읽지 못했습니다.")
     return json.loads(next((b.text for b in response.content if b.type == "text"), "{}"))
+
+
+IMPDOC_SYSTEM = """당신은 향료·화학 원료 수입 회사(이알씨/켐코스)의 회계 비서입니다. 수입관리대장에 적을 서류 한 건(PDF·스캔본)을 읽고 JSON 으로 답합니다.
+- doc_type: 서류 종류 — "invoice"(공급사 인보이스·Proforma), "remittance"(은행 외국환거래계산서·해외송금 확인서·송금증),
+  "import_declaration"(수입신고필증), "tax_invoice"(세관 수입세금계산서), "settlement"(관세사 통관 정산서·청구서), "other"(그 밖).
+- importer: 수입자/송금인 회사 (예: "주식회사 이알씨"). supplier: 해외 공급사 짧은 이름 (예: JIAXING SUNLONG INDUSTRIAL & TRADING → "Sunlong",
+  Firmenich SA → "Firmenich"). 송금증이면 수취인(Beneficiary).
+- invoice_no / invoice_date(YYYY-MM-DD): 공급사 인보이스 번호·날짜 (송금증·신고필증에 적혀 있어도 채움, 여러 개면 쉼표로).
+- currency, amount_fx: 외화 금액 (인보이스 합계, 송금 외화 금액, 신고필증 결제금액).
+- remit_date(YYYY-MM-DD) / remit_rate / remit_krw: 송금일·적용 환율·원화 금액 (송금증만).
+- bl_no: B/L 또는 AWB 번호. decl_no / decl_date(YYYY-MM-DD): 수입신고번호·신고일. customs_office: 세관 이름 (예: "부산세관", "인천공항세관").
+- tax_base: 수입세금계산서 공급가액(과세표준, 원), import_vat: 수입 부가가치세(원), tax_date: 수입세금계산서 작성일자(YYYY-MM-DD).
+- 없는 값은 "" 또는 0. notes: 확인이 필요한 점 한 줄."""
+
+IMPDOC_SCHEMA = {
+    "type": "object",
+    "properties": {k: {"type": "number"} if k in ("amount_fx", "remit_rate", "remit_krw", "tax_base", "import_vat") else {"type": "string"}
+                   for k in ("doc_type", "importer", "supplier", "invoice_no", "invoice_date", "currency", "amount_fx", "remit_date",
+                             "remit_rate", "remit_krw", "bl_no", "decl_no", "decl_date", "customs_office", "tax_base", "import_vat",
+                             "tax_date", "notes")},
+    "required": ["doc_type", "importer", "supplier", "invoice_no", "invoice_date", "currency", "amount_fx", "remit_date", "remit_rate",
+                 "remit_krw", "bl_no", "decl_no", "decl_date", "customs_office", "tax_base", "import_vat", "tax_date", "notes"],
+    "additionalProperties": False,
+}
+
+
+def extract_import_doc(blocks: list) -> dict:
+    """수입 서류 한 건(인보이스·송금증·수입신고필증·수입세금계산서·정산서) → IMPDOC_SCHEMA 결과."""
+    global _client
+    import anthropic
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=API_KEY, timeout=300.0)
+    response = _client.beta.messages.create(
+        model=MODEL,
+        max_tokens=4000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",
+        system=IMPDOC_SYSTEM,
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": IMPDOC_SCHEMA}},
+        messages=[{"role": "user", "content": list(blocks) + [{"type": "text", "text": "이 서류에서 수입관리대장에 적을 값을 뽑아 주세요."}]}],
+    )
+    if response.stop_reason == "refusal":
+        raise RuntimeError("AI 가 이 서류 처리를 거절했습니다.")
+    return json.loads(next((b.text for b in response.content if b.type == "text"), "{}"))

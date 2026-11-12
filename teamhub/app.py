@@ -312,6 +312,16 @@ def init_db():
                 note TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_inv_ships_date ON inv_ships(ship_date);
+            CREATE TABLE IF NOT EXISTS imp_docs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'new',
+                extract TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                uploaded_by TEXT NOT NULL DEFAULT '',
+                uploaded_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS lot_docs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lot_key TEXT NOT NULL,
@@ -3085,7 +3095,7 @@ def inventory_put_settings(body: dict, _: dict = Depends(admin_user)):
             set_setting(c, "inv_upload_key", secrets.token_urlsafe(24))
         if "profit_public" in body:
             set_setting(c, "profit_public", "1" if body["profit_public"] else "0")
-        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir", "settle_dir"):
+        for k in ("inv_dir", "ledger_dir", "inbound_dir", "bank_dir", "cost_dir", "settle_dir", "imp_tpl_dir", "imp_doc_dir"):
             if k in body:
                 set_setting(c, k, str(body[k] or "").strip())
         return inv_settings(c)
@@ -3096,7 +3106,9 @@ def inv_settings(c) -> dict:
             "inv_dir": get_setting(c, "inv_dir", "Z:\\VOL1\\공유문서\\창고관리"), "ledger_dir": get_setting(c, "ledger_dir", ""),
             "inbound_dir": get_setting(c, "inbound_dir", "Z:\\VOL1\\공유문서"), "bank_dir": get_setting(c, "bank_dir", ""),
             "cost_dir": get_setting(c, "cost_dir", "Z:\\VOL1\\공유문서\\이알씨\\주식회사 이알씨\\원가계산_이알씨"),
-            "settle_dir": get_setting(c, "settle_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서")}
+            "settle_dir": get_setting(c, "settle_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장\\통관 청구서 및 정산서"),
+            "imp_tpl_dir": get_setting(c, "imp_tpl_dir", "Z:\\VOL1\\공유문서\\★매출.수입관리대장"),
+            "imp_doc_dir": get_setting(c, "imp_doc_dir", "Z:\\VOL1\\업무용 파일\\aaa이알씨통관서류aaa\\주 이알씨 통관서류")}
 
 
 # ---- 📑 소비기한 임박 로트의 서류 갱신 (식향/향장) — 재고 엑셀은 올릴 때마다 바뀌므로 재고번호 기준으로 따로 보관
@@ -4503,6 +4515,7 @@ def import_ledger_rows(c, ym: str) -> list:
         out.append({"src": "입고예정", "supplier": sh["supplier"] or "", "bl": bl, "invoice": "", "invoice_date": "", "fx": None,
                     "currency": "", "remit_date": "", "rate": None, "kind": "", "decl_date": sh["cs_cleared_at"][:10], "office": "",
                     "tax_base": None, "vat": None, "settle": COURIER_ABBR.get(courier, ""), "jpy": False})
+    impdoc_merge(c, ym, out)
     out.sort(key=lambda x: (x["decl_date"], (x["supplier"] or "").lower()))
     return out
 
@@ -4579,7 +4592,7 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
                             and (w.title, r) not in used), None)
             vals = {2: x["kind"] or None, 3: _d(x["invoice_date"]), 4: x["invoice"] or None, 5: x["supplier"] or None,
                     6: _d(x["remit_date"]), 7: x["fx"] or None, 8: x["rate"], 10: _d(x["decl_date"]), 11: x["bl"] or None,
-                    12: _d(x["decl_date"]) if x["tax_base"] else None, 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"],
+                    12: _d(x.get("tax_date") or x["decl_date"]) if x["tax_base"] else None, 13: x["office"] or None, 14: x["tax_base"], 15: x["vat"],
                     19: x["settle"] or None}
             if hit:
                 w, r = hit
@@ -4613,6 +4626,200 @@ def import_ledger_fill(data: bytes, by_month: dict) -> tuple:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue(), res
+
+
+# ---- 📎 수입 서류 PDF (인보이스 · 송금증 · 수입신고필증 · 수입세금계산서 · 정산서) → AI 로 읽어 수입관리대장 줄로
+IMP_DOC_DIR = Path(os.getenv("TEAMHUB_IMP_DOC_DIR", str(Path(DB_PATH).parent / "imp_docs")))
+IMPDOC_LOCK = threading.Lock()
+IMPDOC_KIND = {"invoice": "인보이스", "remittance": "송금증", "import_declaration": "수입신고필증", "tax_invoice": "수입세금계산서",
+               "settlement": "정산서", "other": "기타"}
+
+
+def impdoc_read_run():
+    """아직 안 읽은 서류를 AI 로 읽어 둠."""
+    import base64
+    import mimetypes
+    if not IMPDOC_LOCK.acquire(blocking=False):
+        return
+    try:
+        while True:
+            with db() as c:
+                d = c.execute("SELECT id, filename FROM imp_docs WHERE status = 'new' ORDER BY id LIMIT 1").fetchone()
+            if not d:
+                break
+            f = IMP_DOC_DIR / str(d["id"])
+            try:
+                mt = mimetypes.guess_type(d["filename"])[0] or "application/pdf"
+                data = base64.b64encode(f.read_bytes()).decode()
+                block = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}} \
+                    if mt == "application/pdf" else {"type": "image", "source": {"type": "base64", "media_type": mt, "data": data}}
+                with AI_LOCK:
+                    r = ai_mail.extract_import_doc([block])
+                with db() as c:
+                    c.execute("UPDATE imp_docs SET status = 'read', extract = ?, error = '' WHERE id = ?",
+                              (json.dumps(r, ensure_ascii=False), d["id"]))
+            except Exception as e:
+                with db() as c:
+                    c.execute("UPDATE imp_docs SET status = 'error', error = ? WHERE id = ?", (str(e)[:300], d["id"]))
+    finally:
+        IMPDOC_LOCK.release()
+
+
+def _invs(v) -> set:
+    return {k for k in (_inv_key(x) for x in re.split(r"[,/;\s]+", str(v or ""))) if len(k) >= 3}
+
+
+def impdoc_records(c) -> list:
+    """읽은 서류들을 수입 건 단위로 묶음 — B/L · 인보이스 번호 · 신고번호가 같으면 한 건, 송금증은 인보이스 번호나 거래처+외화 금액으로."""
+    nb = lambda x: mailin.norm_bl(x or "") if x else ""
+    docs = []
+    for d in c.execute("SELECT id, filename, extract FROM imp_docs WHERE status = 'read'"):
+        r = json.loads(d["extract"] or "{}")
+        if "켐코스" in (r.get("importer") or "").replace(" ", ""):
+            continue
+        docs.append((d["id"], d["filename"], r))
+    order = {"import_declaration": 0, "tax_invoice": 1, "settlement": 2, "invoice": 3, "remittance": 4, "other": 5}
+    docs.sort(key=lambda x: order.get(x[2].get("doc_type"), 9))
+    recs = []
+    for did, fname, r in docs:
+        bl, invs, dno = nb(r.get("bl_no")), _invs(r.get("invoice_no")), (r.get("decl_no") or "").replace("-", "")
+        fx = r.get("amount_fx") or 0
+        hit = next((x for x in recs if (bl and bl in x["bls"]) or (invs & x["invs"]) or (dno and dno == x["dno"])), None)
+        if not hit and r.get("doc_type") == "remittance" and fx:
+            hit = next((x for x in recs if _sup_key(x["supplier"]) == _sup_key(r.get("supplier")) and x["fx"]
+                        and abs(x["fx"] - fx) <= max(1, x["fx"] * 0.01) and not x["remit_date"]), None)
+        if not hit:
+            hit = {"bls": set(), "invs": set(), "dno": "", "supplier": "", "bl": "", "invoice": "", "invoice_date": "", "fx": None,
+                   "currency": "", "remit_date": "", "rate": None, "decl_date": "", "office": "", "tax_base": None, "vat": None,
+                   "tax_date": "", "docs": [], "settle": False}
+            recs.append(hit)
+        if bl:
+            hit["bls"].add(bl)
+        hit["invs"] |= invs
+        hit["dno"] = hit["dno"] or dno
+        put = lambda k, v: hit.__setitem__(k, hit[k] or v or hit[k])
+        put("supplier", r.get("supplier"))
+        put("bl", (r.get("bl_no") or "").strip())
+        put("invoice", r.get("invoice_no"))
+        put("invoice_date", r.get("invoice_date"))
+        put("currency", r.get("currency"))
+        if r.get("doc_type") in ("invoice", "import_declaration", "remittance"):
+            put("fx", fx)
+        if r.get("doc_type") == "remittance":
+            put("remit_date", r.get("remit_date"))
+            put("rate", r.get("remit_rate"))
+        put("decl_date", r.get("decl_date"))
+        put("office", r.get("customs_office"))
+        put("tax_base", r.get("tax_base"))
+        put("vat", r.get("import_vat"))
+        put("tax_date", r.get("tax_date"))
+        hit["settle"] = hit["settle"] or r.get("doc_type") == "settlement"
+        hit["docs"].append({"id": did, "kind": IMPDOC_KIND.get(r.get("doc_type"), "기타"), "file": fname})
+    return recs
+
+
+def impdoc_merge(c, ym: str, out: list):
+    """그 달(신고일, 없으면 송금일·인보이스 날짜) 서류 건을 정산서·원가계산서 줄에 합치거나 새 줄로."""
+    nb = lambda x: mailin.norm_bl(x or "") if x else ""
+    for r in impdoc_records(c):
+        month = (r["decl_date"] or r["tax_date"] or r["remit_date"] or r["invoice_date"] or "")[:7]
+        hit = next((x for x in out if (x["bl"] and nb(x["bl"]) in r["bls"]) or (_invs(x["invoice"]) & r["invs"])), None)
+        if not hit and r["decl_date"]:
+            d = _d(r["decl_date"])
+            hit = next((x for x in out if _sup_key(x["supplier"]) == _sup_key(r["supplier"]) and _d(x["decl_date"])
+                        and abs((_d(x["decl_date"]) - d).days) <= 3), None)
+        if not hit and month != ym:
+            continue
+        rate = _imp_rate(r["rate"], r["currency"])
+        jpy = (r["currency"] or "").upper() == "JPY" or bool(r["rate"] and r["rate"] < 50)
+        files = ", ".join(f"{x['kind']}" for x in r["docs"])
+        if hit:
+            for k, v in (("supplier", r["supplier"]), ("bl", r["bl"]), ("invoice", r["invoice"]), ("invoice_date", r["invoice_date"]),
+                         ("fx", r["fx"]), ("remit_date", r["remit_date"]), ("rate", rate), ("decl_date", r["decl_date"]),
+                         ("office", r["office"]), ("tax_base", r["tax_base"]), ("vat", r["vat"]), ("tax_date", r["tax_date"])):
+                if v and not hit.get(k):
+                    hit[k] = v
+            hit["jpy"] = hit.get("jpy") or jpy
+            if hit["remit_date"] and hit["decl_date"] and not hit["kind"]:
+                hit["kind"] = "사전" if hit["remit_date"] <= hit["decl_date"] else "사후"
+            hit["src"] += " + PDF(" + files + ")"
+            continue
+        cd = r["decl_date"]
+        out.append({"src": "PDF(" + files + ")", "supplier": r["supplier"], "bl": r["bl"], "invoice": r["invoice"],
+                    "invoice_date": r["invoice_date"], "fx": r["fx"] or None, "currency": r["currency"], "remit_date": r["remit_date"],
+                    "rate": rate, "kind": ("사전" if r["remit_date"] <= cd else "사후") if r["remit_date"] and cd else "",
+                    "decl_date": cd, "office": r["office"], "tax_base": r["tax_base"] or None, "vat": r["vat"] or None,
+                    "tax_date": r["tax_date"], "settle": "O" if r["settle"] else "", "jpy": jpy})
+
+
+@app.post("/api/import-ledger/docs")
+async def impdoc_upload(files: List[UploadFile] = File(...), user: dict = Depends(admin_user)):
+    """서류 PDF·사진 여러 개 → 저장하고 AI 로 차례로 읽음 (같은 이름·크기는 건너뜀)."""
+    if not ai_mail.enabled():
+        raise HTTPException(400, "AI 키가 없어 PDF를 읽을 수 없습니다.")
+    added = skipped = 0
+    for f in files:
+        if impdoc_save(f.filename or "", await f.read(), user["name"]):
+            added += 1
+        else:
+            skipped += 1
+    threading.Thread(target=impdoc_read_run, daemon=True).start()
+    return {"ok": True, "added": added, "skipped": skipped}
+
+
+def impdoc_save(name: str, data: bytes, by: str) -> bool:
+    """서류 하나 저장 (형식이 안 맞거나 같은 이름·크기가 이미 있으면 False)."""
+    name = name.split("/")[-1].split("\\")[-1]
+    if not name.lower().endswith((".pdf", ".jpg", ".jpeg", ".png")) or not data or len(data) > 30 * 1024 * 1024:
+        return False
+    IMP_DOC_DIR.mkdir(parents=True, exist_ok=True)
+    with db() as c:
+        if c.execute("SELECT 1 FROM imp_docs WHERE filename = ? AND size = ?", (name, len(data))).fetchone():
+            return False
+        did = c.execute("INSERT INTO imp_docs (filename, size, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?)",
+                        (name, len(data), by, now())).lastrowid
+    (IMP_DOC_DIR / str(did)).write_bytes(data)
+    return True
+
+
+@app.post("/api/import-ledger/docs/upload")
+async def impdoc_upload_one(file: UploadFile = File(...), user: dict = Depends(upload_user), x_file_name: str = Header(default="")):
+    """사무실 PC 자동 업로드: 통관서류 폴더(필증·인보이스·송금증)의 새 파일."""
+    name = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    ok = impdoc_save(name, await file.read(), user["name"])
+    if ok and ai_mail.enabled():
+        threading.Thread(target=impdoc_read_run, daemon=True).start()
+    return {"ok": True, "skipped": "" if ok else "이미 있음 또는 PDF·사진 아님"}
+
+
+@app.get("/api/import-ledger/docs/known")
+def impdoc_known(user: dict = Depends(upload_user)):
+    """이미 올라온 서류 파일 이름 (사무실 PC 가 새 파일만 올리게)."""
+    with db() as c:
+        return [urllib.parse.quote(r[0]) for r in c.execute("SELECT filename FROM imp_docs")]
+
+
+@app.get("/api/import-ledger/docs")
+def impdoc_list(user: dict = Depends(current_user)):
+    with db() as c:
+        if not can_see_cost(c, user):
+            raise HTTPException(403, "이익 분석은 관리자만 볼 수 있습니다.")
+        rows = [dict(r) for r in c.execute("SELECT id, filename, status, extract, error, uploaded_by, uploaded_at FROM imp_docs"
+                                           " ORDER BY id DESC LIMIT 300")]
+    for r in rows:
+        x = json.loads(r.pop("extract") or "{}")
+        r.update(kind=IMPDOC_KIND.get(x.get("doc_type"), ""), supplier=x.get("supplier") or "", bl=x.get("bl_no") or "",
+                 invoice=x.get("invoice_no") or "", date=x.get("decl_date") or x.get("remit_date") or x.get("invoice_date") or "",
+                 notes=x.get("notes") or "")
+    return {"docs": rows, "reading": IMPDOC_LOCK.locked()}
+
+
+@app.delete("/api/import-ledger/docs/{did}")
+def impdoc_delete(did: int, user: dict = Depends(admin_user)):
+    with db() as c:
+        c.execute("DELETE FROM imp_docs WHERE id = ?", (did,))
+    (IMP_DOC_DIR / str(did)).unlink(missing_ok=True)
+    return {"ok": True}
 
 
 IMP_READ = {"left": 0, "done": 0, "error": ""}
@@ -4664,14 +4871,17 @@ def imp_read_run(ids: list):
 
 
 @app.post("/api/import-ledger/template")
-async def import_ledger_template(file: UploadFile = File(...), user: dict = Depends(admin_user)):
+async def import_ledger_template(file: UploadFile = File(...), user: dict = Depends(upload_user),
+                                 x_file_name: str = Header(default="")):
+    """수입관리대장 엑셀(양식) — 관리자가 올리거나 사무실 PC 자동 업로드가 ★매출.수입관리대장 폴더의 최신 파일을 올림."""
     data = await file.read()
-    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+    name = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
+    if not name.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "수입관리대장 엑셀(.xlsx)을 올려 주세요.")
     IMPORT_TPL.parent.mkdir(parents=True, exist_ok=True)
     IMPORT_TPL.write_bytes(data)
     with db() as c:
-        set_setting(c, "import_tpl_meta", json.dumps({"filename": file.filename, "uploaded_at": now()}, ensure_ascii=False))
+        set_setting(c, "import_tpl_meta", json.dumps({"filename": name, "uploaded_at": now(), "by": user["name"]}, ensure_ascii=False))
     return {"ok": True}
 
 
