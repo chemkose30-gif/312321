@@ -3,37 +3,34 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;800;900&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap">
 <style>
-/* Layout: brief on top, two role desks side by side, then the merged lead sheet with a player and the session log. */
+/* Layout: brief on top, two role desks side by side, then the Suno hand-off sheet (title / style / lyrics) and the session log. */
 :root{
   --paper:#f3f5f8; --surface:#ffffff; --sunk:#e9edf2; --ink:#18202c; --muted:#5b6575; --line:#d9dee6;
-  --lyric:#b0245a; --lyric-soft:#f7e3eb; --compose:#0b6e66; --compose-soft:#dcf1ee;
-  --now:#ffe08a; --now-ink:#18202c; --danger:#b42318;
+  --lyric:#b0245a; --lyric-soft:#f7e3eb; --compose:#0b6e66; --compose-soft:#dcf1ee; --danger:#b42318;
   --display:"Gothic A1","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   --body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --paper:#11151b; --surface:#1a1f27; --sunk:#232a34; --ink:#e7eaf0; --muted:#9aa3b2; --line:#2d3540;
-  --lyric:#f27aa3; --lyric-soft:#3a1f2b; --compose:#45c7b6; --compose-soft:#16332f;
-  --now:#f5c84c; --now-ink:#11151b; --danger:#f97066; color-scheme:dark}}
+  --lyric:#f27aa3; --lyric-soft:#3a1f2b; --compose:#45c7b6; --compose-soft:#16332f; --danger:#f97066; color-scheme:dark}}
 :root[data-theme="dark"]{
   --paper:#11151b; --surface:#1a1f27; --sunk:#232a34; --ink:#e7eaf0; --muted:#9aa3b2; --line:#2d3540;
-  --lyric:#f27aa3; --lyric-soft:#3a1f2b; --compose:#45c7b6; --compose-soft:#16332f;
-  --now:#f5c84c; --now-ink:#11151b; --danger:#f97066; color-scheme:dark}
+  --lyric:#f27aa3; --lyric-soft:#3a1f2b; --compose:#45c7b6; --compose-soft:#16332f; --danger:#f97066; color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{background:var(--paper);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.6}
 .wrap{max-width:1080px;margin:0 auto;padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:22px}
 header h1{font-family:var(--display);font-weight:900;font-size:clamp(28px,5vw,40px);letter-spacing:-.02em;margin:0;line-height:1.15;text-wrap:balance}
 header h1 .a{color:var(--lyric)} header h1 .b{color:var(--compose)}
-header p{margin:6px 0 0;color:var(--muted);max-width:60ch}
+header p{margin:6px 0 0;color:var(--muted);max-width:62ch}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px}
 .label{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.04em}
 .brief{display:grid;gap:14px}
 .brief-row{display:grid;grid-template-columns:2fr 1fr;gap:14px}
 .brief-row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .field{display:grid;gap:6px;min-width:0}
-textarea,input[type=text],input[type=number],select{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:9px 11px;width:100%}
+textarea,input[type=text],select{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:9px 11px;width:100%}
 textarea{resize:vertical;min-height:64px}
 textarea:focus,input:focus,select:focus,button:focus-visible{outline:2px solid var(--compose);outline-offset:1px}
 .field.lyr textarea:focus,.field.lyr input:focus{outline-color:var(--lyric)}
@@ -43,6 +40,7 @@ button:hover:not(:disabled){border-color:var(--ink)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink);padding:10px 18px}
 button.small{font-size:13px;padding:5px 10px}
+button.copy{font-size:12px;padding:3px 10px;color:var(--compose);border-color:var(--compose)}
 .check{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--muted)}
 .notice{font-size:13px;color:var(--muted)}
 .notice.err{color:var(--danger)}
@@ -59,29 +57,24 @@ button.small{font-size:13px;padding:5px 10px}
 .stream{font-family:var(--body);white-space:pre-wrap;background:var(--sunk);border-radius:8px;padding:10px 12px;max-height:240px;overflow:auto;font-size:14px;margin:0}
 .memo{margin:0;font-size:14px}
 .memo b{color:var(--c);font-weight:600}
-.specs{display:flex;flex-wrap:wrap;gap:6px}
-.spec{font-family:var(--mono);font-size:12px;background:var(--cs);color:var(--c);padding:2px 8px;border-radius:6px}
+.style-preview{font-family:var(--mono);font-size:13px;background:var(--cs);color:var(--c);padding:8px 10px;border-radius:8px;margin:0;overflow-wrap:anywhere}
 .sheet-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px;border-bottom:1px solid var(--line);padding-bottom:14px}
+.eyebrow{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--compose)}
 .sheet-head h2{font-family:var(--display);font-weight:900;font-size:clamp(24px,4vw,32px);margin:0;line-height:1.2;text-wrap:balance}
 .example{font-size:12px;font-weight:600;color:var(--muted);border:1px dashed var(--muted);border-radius:6px;padding:1px 8px;margin-left:8px;vertical-align:middle}
 .credits{font-size:13px;color:var(--muted);margin-top:4px}
 .credits .a{color:var(--lyric);font-weight:600}.credits .b{color:var(--compose);font-weight:600}
-.player{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.player label{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
-.player input[type=number]{width:72px;padding:5px 8px;font-family:var(--mono)}
-button.play{background:var(--compose);border-color:var(--compose);color:var(--surface);min-width:96px}
-.sections{display:grid;gap:22px;padding-top:16px}
-.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-.sec-name{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.sec-play{font-size:12px;padding:1px 8px;border-radius:6px}
-.line{padding:4px 0 10px;min-width:0}
-.chords{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:2px}
-.chord{font-family:var(--mono);font-weight:600;font-size:13px;color:var(--compose);border-left:2px solid var(--line);padding:0 6px;border-radius:2px;transition:background .1s}
-.chord.now{background:var(--compose);color:var(--surface);border-left-color:var(--compose)}
-.lyricline{font-size:clamp(17px,2.4vw,20px);font-weight:500;overflow-wrap:anywhere}
-.u{border-radius:3px;transition:background .08s}
-.u.now{background:var(--now);color:var(--now-ink)}
-.u.done{color:var(--lyric)}
+.suno{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:18px;padding-top:16px}
+.slot{display:grid;gap:6px;align-content:start;min-width:0}
+.slot-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.slot-head .label{color:var(--ink)}
+.count{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:6px;font-weight:500}
+.count.over{color:var(--danger)}
+.box{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.lyrics-box{font-family:var(--body);font-size:15px;max-height:620px;overflow:auto}
+.lyrics-box .tag{font-family:var(--mono);font-size:12.5px;color:var(--compose);font-weight:600}
+.left-col{display:grid;gap:16px;align-content:start;min-width:0}
+.howto{font-size:13px;color:var(--muted);margin:0;padding-left:18px}
 .log{display:grid;gap:10px;margin:0;padding:0;list-style:none}
 .log li{display:grid;grid-template-columns:72px 1fr;gap:10px;font-size:14px;align-items:baseline}
 .who{font-size:12px;font-weight:700;text-align:right}
@@ -89,14 +82,14 @@ button.play{background:var(--compose);border-color:var(--compose);color:var(--su
 .log li span:last-child{min-width:0;overflow-wrap:anywhere}
 h3{font-family:var(--display);font-weight:800;font-size:17px;margin:0 0 12px}
 .empty{color:var(--muted);font-size:14px}
-@media (max-width:760px){.desks,.brief-row,.brief-row2{grid-template-columns:1fr}.log li{grid-template-columns:56px 1fr}}
-@media (prefers-reduced-motion:reduce){.pill.on::before{animation:none}.u,.chord{transition:none}}
+@media (max-width:760px){.desks,.brief-row,.brief-row2,.suno{grid-template-columns:1fr}.log li{grid-template-columns:56px 1fr}}
+@media (prefers-reduced-motion:reduce){.pill.on::before{animation:none}}
 </style>
 
 <div class="wrap">
   <header>
     <h1><span class="a">작사가</span>와 <span class="b">작곡가</span>, 둘이서 쓰는 노래</h1>
-    <p>주제를 주면 AI 작사가가 가사를 쓰고, AI 작곡가가 그 가사에 코드와 멜로디를 붙입니다. 작곡가가 가사 수정을 요청하면 작사가가 한 번 더 다듬어요.</p>
+    <p>AI 작사가가 가사를 쓰면, AI 작곡가가 그 가사를 읽고 Suno에 넣을 스타일 프롬프트와 곡 구성 태그를 붙입니다. 결과를 복사해 Suno의 Custom 모드에 붙여 넣으면 돼요.</p>
   </header>
 
   <section class="panel brief" aria-label="곡 브리프">
@@ -109,7 +102,7 @@ h3{font-family:var(--display);font-weight:800;font-size:17px;margin:0 0 12px}
         <label class="label" for="genre">장르</label>
         <select id="genre">
           <option>발라드</option><option selected>인디 포크</option><option>시티팝</option>
-          <option>댄스 팝</option><option>R&amp;B</option><option>밴드 록</option><option>동요</option>
+          <option>댄스 팝</option><option>R&amp;B</option><option>밴드 록</option><option>힙합</option><option>트로트</option><option>동요</option>
         </select>
       </div>
     </div>
@@ -120,7 +113,7 @@ h3{font-family:var(--display);font-weight:800;font-size:17px;margin:0 0 12px}
       </div>
       <div class="field">
         <label class="label" for="dirCompose">작곡가에게 한마디 (선택)</label>
-        <input type="text" id="dirCompose" placeholder="예: 느린 템포, 후렴에서 확 올라가게">
+        <input type="text" id="dirCompose" placeholder="예: 여성 보컬, 느린 템포, 후렴에서 밴드가 터지게">
       </div>
     </div>
     <div class="actions">
@@ -139,32 +132,53 @@ h3{font-family:var(--display);font-weight:800;font-size:17px;margin:0 0 12px}
       <div id="editBox" hidden class="field">
         <label class="label" for="editArea">가사 직접 고치기 · [섹션 이름] 아래에 한 줄씩</label>
         <textarea id="editArea" rows="12"></textarea>
-        <div class="actions"><button class="small" id="editApply">이 가사로 작곡 맡기기</button><button class="small" id="editCancel">취소</button></div>
+        <div class="actions"><button class="small" id="editApply">이 가사로 작곡가에게 넘기기</button><button class="small" id="editCancel">취소</button></div>
       </div>
       <div class="actions"><button class="small" id="relyricBtn">다시 작사</button><button class="small" id="editBtn">가사 직접 고치기</button></div>
     </section>
     <section class="panel desk cmp" aria-label="작곡가">
-      <div class="desk-head"><h2>작곡가<small>Composer</small></h2><span class="pill" id="cmpStatus">대기</span></div>
-      <div class="specs" id="cmpSpecs"></div>
+      <div class="desk-head"><h2>작곡가<small>Suno 프롬프트</small></h2><span class="pill" id="cmpStatus">대기</span></div>
+      <p class="style-preview" id="cmpStyle"></p>
       <p class="memo" id="cmpMemo"></p>
       <p class="memo" id="cmpReq"></p>
-      <div class="actions"><button class="small" id="recomposeBtn">이 가사로 다시 작곡</button></div>
+      <div class="actions"><button class="small" id="recomposeBtn">이 가사로 프롬프트 다시 쓰기</button></div>
     </section>
   </div>
 
-  <section class="panel" aria-label="리드시트">
+  <section class="panel" aria-label="Suno에 붙여 넣기">
     <div class="sheet-head">
       <div>
+        <div class="eyebrow">SUNO · CUSTOM MODE</div>
         <h2 id="songTitle"></h2>
         <div class="credits" id="credits"></div>
       </div>
-      <div class="player">
-        <button class="play" id="playBtn">▶ 재생</button>
-        <label for="bpm">BPM <input type="number" id="bpm" min="50" max="180"></label>
-        <label><input type="checkbox" id="drums" checked> 드럼</label>
+      <button class="primary" id="copyAll">전체 복사</button>
+    </div>
+    <div class="suno">
+      <div class="left-col">
+        <div class="slot">
+          <div class="slot-head"><span class="label">Song Title</span><button class="copy" data-copy="title">복사</button></div>
+          <p class="box" id="outTitle"></p>
+        </div>
+        <div class="slot">
+          <div class="slot-head"><span class="label">Style of Music<span class="count" id="styleCount"></span></span><button class="copy" data-copy="style">복사</button></div>
+          <p class="box" id="outStyle"></p>
+        </div>
+        <div class="slot">
+          <div class="slot-head"><span class="label">Exclude Styles</span><button class="copy" data-copy="exclude">복사</button></div>
+          <p class="box" id="outExclude"></p>
+        </div>
+        <ol class="howto">
+          <li>Suno에서 Create를 누르고 Custom 모드를 켭니다.</li>
+          <li>Lyrics, Style of Music, Title 칸에 각각 붙여 넣습니다.</li>
+          <li>Exclude Styles 칸이 보이면(More Options) 거기에도 넣어 주세요.</li>
+        </ol>
+      </div>
+      <div class="slot">
+        <div class="slot-head"><span class="label">Lyrics<span class="count" id="lyricCount"></span></span><button class="copy" data-copy="lyrics">복사</button></div>
+        <pre class="box lyrics-box" id="outLyrics"></pre>
       </div>
     </div>
-    <div class="sections" id="sections"></div>
   </section>
 
   <section class="panel" aria-label="작업 대화">
@@ -176,186 +190,116 @@ h3{font-family:var(--display);font-weight:800;font-size:17px;margin:0 0 12px}
 <script>
 (() => {
 const $ = id => document.getElementById(id);
+const STYLE_MAX = 1000;
+const LYRICS_MAX = 5000;
 
 /* ---------- example song (shown until you make your own) ---------- */
 const EXAMPLE = {
   example: true,
   title: "첫차",
-  key: "C major", bpm: 84,
-  feel: "어쿠스틱 기타 스트로크 위에 담담한 보컬, 후렴에서 한 옥타브 가까이 올라감",
   brief: { topic: "새벽 첫차를 타고 새 출발하는 마음", genre: "인디 포크" },
   sections: [
-    { name: "Verse", lines: [
-      { text: "새벽 공기 사이로", chords: ["C","G"], notes: [["R",1],["E4",.5],["E4",.5],["G4",1],["E4",.5],["D4",.5],["C4",1],["D4",3]] },
-      { text: "첫차가 불을 켜면", chords: ["Am","F"], notes: [["R",1],["C4",.5],["D4",.5],["E4",1],["G4",.5],["A4",.5],["G4",1],["E4",3]] },
-      { text: "어제의 나는 두고 가", chords: ["Dm","G"], notes: [["R",.5],["D4",.5],["E4",.5],["F4",.5],["A4",1],["G4",.5],["F4",.5],["E4",1],["D4",3]] }
-    ]},
-    { name: "Chorus", lines: [
-      { text: "달려 달려 첫차야", chords: ["F","G"], notes: [["C5",1],["A4",1],["C5",1],["A4",1],["G4",.5],["A4",.5],["C5",3]] },
-      { text: "아직 늦지 않았어", chords: ["Em","Am"], notes: [["B4",.5],["C5",.5],["D5",1],["C5",.5],["B4",.5],["A4",1],["G4",4]] },
-      { text: "해가 뜨는 쪽으로", chords: ["Dm7","G","C","C"], notes: [["A4",1],["G4",1],["F4",1],["E4",1],["D4",1],["E4",1],["C4",10]] }
-    ]}
+    { name: "Verse 1", lines: ["새벽 공기 사이로", "첫차가 불을 켜면", "어제의 나는 두고 가", "창밖이 밝아 와"] },
+    { name: "Chorus", lines: ["달려 달려 첫차야", "아직 늦지 않았어", "해가 뜨는 쪽으로", "나를 데려가 줘"] },
+    { name: "Verse 2", lines: ["졸린 눈을 비비며", "낯선 역을 세어 봐", "주머니 속 작은 용기", "꼭 쥐고 있어"] },
+    { name: "Chorus", lines: ["달려 달려 첫차야", "아직 늦지 않았어", "해가 뜨는 쪽으로", "나를 데려가 줘"] }
   ],
+  style: "Korean indie folk, acoustic guitar strumming, warm intimate male vocal, soft piano, light brushed drums, hopeful, early-morning mood, gentle build into an uplifting chorus with group harmonies, 84 BPM, Korean lyrics",
+  exclude: "heavy drums, autotune, EDM synths",
+  structure: [
+    { tag: "[Intro: fingerpicked acoustic guitar, birds and train ambience]" },
+    { section: 0, tag: "[Verse 1: soft, close-mic vocal, sparse guitar]" },
+    { section: 1, tag: "[Chorus: full band enters, bright and lifting]" },
+    { section: 2, tag: "[Verse 2: add light percussion]" },
+    { tag: "[Bridge: instrumental, harmonica melody]" },
+    { section: 3, tag: "[Final Chorus: group harmonies, claps]" },
+    { tag: "[Outro: guitar fades with train sound]" },
+    { tag: "[End]" }
+  ],
+  request: "",
   log: [
     { who: "you", text: "주제: 새벽 첫차를 타고 새 출발하는 마음 · 인디 포크" },
-    { who: "lyricist", text: "후렴은 '달려 달려'를 반복해서 부르기 쉽게 했어요. 마지막 줄에서 방향이 보이도록 썼습니다." },
-    { who: "composer", text: "C장조 84BPM. 벌스는 낮게 말하듯, 후렴은 C5에서 시작해 밝게 열었어요." }
+    { who: "lyricist", text: "후렴은 '달려 달려'를 반복해서 따라 부르기 쉽게 했어요. 마지막 줄에서 방향이 보이도록 썼습니다." },
+    { who: "composer", text: "어쿠스틱 기타로 조용히 열고, 후렴에서 밴드와 합창을 더해 아침이 밝아 오는 느낌을 냈어요. 브리지는 하모니카 간주로 비웠습니다." }
   ]
 };
 
 /* ---------- state ---------- */
-let song = null;
-let busy = false;
-let ctl = null;
-let samplePromise = (window.claude && claude.use) ? claude.use("sample") : Promise.resolve(null);
+let song = null, busy = false, ctl = null;
+const samplePromise = (window.claude && claude.use) ? claude.use("sample") : Promise.resolve(null);
 
 function load() {
-  try { const s = JSON.parse(localStorage.getItem("duet-song") || "null"); if (s && s.sections) return s; } catch (e) {}
+  try { const s = JSON.parse(localStorage.getItem("duet-suno") || "null"); if (s && s.sections && s.style) return s; } catch (e) {}
   return JSON.parse(JSON.stringify(EXAMPLE));
 }
-function save() { try { localStorage.setItem("duet-song", JSON.stringify(song)); } catch (e) {} }
+function save() { try { localStorage.setItem("duet-suno", JSON.stringify(song)); } catch (e) {} }
 
-/* ---------- syllable units ---------- */
-const V = "aeiouyAEIOUY";
-function splitLatin(w) {
-  const re = new RegExp(`[^${V}]*[${V}]+(?:[^${V}]+$)?`, "g");
-  let parts = w.match(re) || [w];
-  const joined = parts.join("");
-  if (joined.length < w.length) parts[parts.length - 1] += w.slice(joined.length);
-  if (parts.length > 1 && /^[^aeiouy]*e$/i.test(parts[parts.length - 1])) { const l = parts.pop(); parts[parts.length - 1] += l; }
-  return parts;
-}
-function tokenize(text) {
-  const out = [];
-  const re = /[가-힣]|[A-Za-z']+|[0-9]|[^가-힣A-Za-z0-9]+/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const t = m[0];
-    if (/^[가-힣]$/.test(t) || /^[0-9]$/.test(t)) out.push({ t, unit: true });
-    else if (/^[A-Za-z']+$/.test(t)) splitLatin(t).forEach(p => out.push({ t: p, unit: true }));
-    else out.push({ t, unit: false });
+/* ---------- Suno lyrics assembly ---------- */
+const cleanTag = t => { t = String(t || "").trim(); if (!t) return ""; if (!/^\[.*\]$/.test(t)) t = "[" + t.replace(/^\[|\]$/g, "") + "]"; return t; };
+function suno(s) {
+  const used = new Set(), blocks = [];
+  (s.structure || []).forEach(it => {
+    const tag = cleanTag(it.tag);
+    if (Number.isInteger(it.section) && s.sections[it.section] && !used.has(it.section)) {
+      used.add(it.section);
+      blocks.push([tag || `[${s.sections[it.section].name}]`, ...s.sections[it.section].lines]);
+    } else if (!Number.isInteger(it.section) && tag) blocks.push([tag]);
+  });
+  // any section the composer skipped goes in order before [Outro]/[End]
+  const missing = s.sections.map((x, i) => i).filter(i => !used.has(i));
+  if (missing.length) {
+    let at = blocks.findIndex(b => b.length === 1 && /^\[(Outro|End|Fade)/i.test(b[0]));
+    if (at < 0) at = blocks.length;
+    blocks.splice(at, 0, ...missing.map(i => [`[${s.sections[i].name}]`, ...s.sections[i].lines]));
   }
-  return out;
-}
-const unitsOf = text => tokenize(text).filter(x => x.unit).map(x => x.t);
-
-/* ---------- music helpers ---------- */
-const NOTE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-function midiOf(p) {
-  const m = /^([A-G])([#b]?)(\d)$/.exec(String(p).trim());
-  if (!m) return null;
-  return 12 * (+m[3] + 1) + NOTE[m[1]] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
-}
-const QUAL = [
-  ["maj7",[0,4,7,11]],["M7",[0,4,7,11]],["m7b5",[0,3,6,10]],["m7",[0,3,7,10]],["m6",[0,3,7,9]],["m9",[0,3,7,10,14]],
-  ["madd9",[0,3,7,14]],["min",[0,3,7]],["m",[0,3,7]],["dim7",[0,3,6,9]],["dim",[0,3,6]],["aug",[0,4,8]],["+",[0,4,8]],
-  ["sus4",[0,5,7]],["sus2",[0,2,7]],["sus",[0,5,7]],["add9",[0,4,7,14]],["9",[0,4,7,10,14]],["7",[0,4,7,10]],["6",[0,4,7,9]],["",[0,4,7]]
-];
-function parseChord(sym) {
-  const m = /^([A-G])([#b]?)([^/]*)(?:\/([A-G])([#b]?))?$/.exec(String(sym).trim());
-  if (!m) return null;
-  const root = NOTE[m[1]] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
-  let ivs = null;
-  for (const [q, iv] of QUAL) if (m[3] === q) { ivs = iv; break; }
-  if (!ivs) ivs = (/^m(?!aj)/.test(m[3]) ? [0,3,7] : [0,4,7]);
-  const bass = m[4] ? NOTE[m[4]] + (m[5] === "#" ? 1 : m[5] === "b" ? -1 : 0) : root;
-  return { root: (root + 12) % 12, ivs, bass: (bass + 12) % 12 };
-}
-const DURS = d => { d = Number(d); return isFinite(d) && d > 0 && d <= 16 ? d : null; };
-
-/* normalize one composed line against its lyric text */
-function normalizeLine(text, data) {
-  const units = unitsOf(text);
-  let notes = Array.isArray(data && data.notes) ? data.notes : [];
-  notes = notes.map(n => Array.isArray(n) ? [String(n[0]).trim(), DURS(n[1])] : null)
-               .filter(n => n && n[1] && (n[0] === "R" || midiOf(n[0]) !== null));
-  let chords = Array.isArray(data && data.chords) ? data.chords.map(String).filter(c => parseChord(c)) : [];
-  if (!notes.length) { // fallback melody
-    const pool = ["E4","G4","A4","G4","E4","D4","C4","D4"];
-    notes = units.map((_, i) => [pool[i % pool.length], 1]);
-  }
-  let sung = notes.filter(n => n[0] !== "R").length;
-  const last = [...notes].reverse().find(n => n[0] !== "R");
-  while (sung < units.length) { notes.push([last ? last[0] : "C4", .5]); sung++; }
-  const beats = notes.reduce((a, n) => a + n[1], 0);
-  const bars = Math.max(chords.length || 1, Math.ceil(beats / 4 - 1e-6));
-  if (!chords.length) chords = ["C"];
-  return { text, chords, notes, bars };
+  return blocks.map(b => b.join("\n")).join("\n\n");
 }
 
 /* ---------- rendering ---------- */
 function render() {
-  $("songTitle").textContent = song.title || "제목 없음";
-  if (song.example) { const s = document.createElement("span"); s.className = "example"; s.textContent = "예시 곡"; $("songTitle").append(s); }
-  $("credits").innerHTML = "";
-  const c = $("credits");
+  const t = $("songTitle"); t.textContent = song.title || "제목 없음";
+  if (song.example) { const s = document.createElement("span"); s.className = "example"; s.textContent = "예시 곡"; t.append(s); }
+  const c = $("credits"); c.textContent = "";
   c.append("작사 "); const a = document.createElement("span"); a.className = "a"; a.textContent = "AI 작사가"; c.append(a);
-  c.append(" · 작곡 "); const b = document.createElement("span"); b.className = "b"; b.textContent = "AI 작곡가"; c.append(b);
-  c.append(` · ${song.key || ""} · ${song.brief ? song.brief.genre : ""}`);
-  $("bpm").value = song.bpm || 90;
+  c.append(" · 스타일 "); const b = document.createElement("span"); b.className = "b"; b.textContent = "AI 작곡가"; c.append(b);
+  if (song.brief && song.brief.genre) c.append(" · " + song.brief.genre);
 
-  const box = $("sections"); box.innerHTML = "";
-  song.sections.forEach((sec, si) => {
-    const el = document.createElement("div");
-    const head = document.createElement("div"); head.className = "sec-head";
-    const nm = document.createElement("span"); nm.className = "sec-name"; nm.textContent = sec.name;
-    const pb = document.createElement("button"); pb.className = "sec-play small"; pb.textContent = "▶ 여기부터";
-    pb.setAttribute("aria-label", `${sec.name}부터 재생`);
-    pb.onclick = () => play(si);
-    head.append(nm, pb); el.append(head);
-    sec.lines.forEach((ln, li) => {
-      const L = normalizeLine(ln.text, ln);
-      const row = document.createElement("div"); row.className = "line";
-      const ch = document.createElement("div"); ch.className = "chords";
-      for (let bi = 0; bi < L.bars; bi++) {
-        const s = document.createElement("span"); s.className = "chord"; s.id = `c-${si}-${li}-${bi}`;
-        s.textContent = L.chords[bi % L.chords.length]; ch.append(s);
-      }
-      const ly = document.createElement("div"); ly.className = "lyricline";
-      let ui = 0;
-      tokenize(ln.text).forEach(tok => {
-        const s = document.createElement("span"); s.textContent = tok.t;
-        if (tok.unit) { s.className = "u"; s.id = `u-${si}-${li}-${ui++}`; }
-        ly.append(s);
-      });
-      row.append(ch, ly); el.append(row);
-    });
-    box.append(el);
+  $("outTitle").textContent = song.title || "";
+  $("outStyle").textContent = song.style || "";
+  $("outExclude").textContent = song.exclude || "(없음)";
+  const sc = $("styleCount"); sc.textContent = `${(song.style || "").length}/${STYLE_MAX}자`; sc.classList.toggle("over", (song.style || "").length > STYLE_MAX);
+  const lyr = suno(song);
+  const lc = $("lyricCount"); lc.textContent = `${lyr.length}/${LYRICS_MAX}자`; lc.classList.toggle("over", lyr.length > LYRICS_MAX);
+  const box = $("outLyrics"); box.textContent = "";
+  lyr.split("\n").forEach((ln, i, arr) => {
+    if (/^\[.*\]$/.test(ln.trim())) { const s = document.createElement("span"); s.className = "tag"; s.textContent = ln; box.append(s); }
+    else box.append(ln);
+    if (i < arr.length - 1) box.append("\n");
   });
 
-  // desks
-  $("lyrMemo").innerHTML = "";
+  $("lyrMemo").textContent = "";
   const lyrNote = (song.log || []).filter(x => x.who === "lyricist").pop();
   if (lyrNote) { const b2 = document.createElement("b"); b2.textContent = "작사 노트 "; $("lyrMemo").append(b2, lyrNote.text); }
-  $("cmpSpecs").innerHTML = "";
-  [song.key, song.bpm ? song.bpm + " BPM" : null, "4/4"].filter(Boolean).forEach(t => {
-    const s = document.createElement("span"); s.className = "spec"; s.textContent = t; $("cmpSpecs").append(s);
-  });
-  $("cmpMemo").innerHTML = "";
-  if (song.feel) { const b3 = document.createElement("b"); b3.textContent = "편곡 "; $("cmpMemo").append(b3, song.feel); }
-  $("cmpReq").innerHTML = "";
+  $("cmpStyle").textContent = song.style || "";
+  $("cmpMemo").textContent = "";
+  const cmpNote = (song.log || []).filter(x => x.who === "composer" && !x.text.startsWith("작사가에게 요청")).pop();
+  if (cmpNote) { const b3 = document.createElement("b"); b3.textContent = "작곡 노트 "; $("cmpMemo").append(b3, cmpNote.text); }
+  $("cmpReq").textContent = "";
   if (song.request) { const b4 = document.createElement("b"); b4.textContent = "작사가에게 "; $("cmpReq").append(b4, song.request); }
 
-  const log = $("log"); log.innerHTML = "";
+  const log = $("log"); log.textContent = "";
   const names = { you: "나", lyricist: "작사가", composer: "작곡가" };
   (song.log || []).forEach(x => {
     const li = document.createElement("li");
     const w = document.createElement("span"); w.className = "who " + x.who; w.textContent = names[x.who] || x.who;
-    const t = document.createElement("span"); t.textContent = x.text;
-    li.append(w, t); log.append(li);
+    const tx = document.createElement("span"); tx.textContent = x.text;
+    li.append(w, tx); log.append(li);
   });
   if (!(song.log || []).length) log.innerHTML = '<li class="empty">아직 대화가 없어요.</li>';
 }
 
-function setStatus(role, text, on) {
-  const el = $(role === "lyricist" ? "lyrStatus" : "cmpStatus");
-  el.textContent = text; el.classList.toggle("on", !!on);
-}
-function setBusy(b) {
-  busy = b;
-  ["makeBtn","relyricBtn","recomposeBtn","editBtn","editApply"].forEach(id => $(id).disabled = b);
-  $("stopBtn").hidden = !b;
-}
+function setStatus(role, text, on) { const el = $(role === "lyricist" ? "lyrStatus" : "cmpStatus"); el.textContent = text; el.classList.toggle("on", !!on); }
+function setBusy(b) { busy = b; ["makeBtn","relyricBtn","recomposeBtn","editBtn","editApply"].forEach(id => $(id).disabled = b); $("stopBtn").hidden = !b; }
 function notice(msg, err) { $("notice").textContent = msg || ""; $("notice").classList.toggle("err", !!err); }
 
 const ERR = {
@@ -364,54 +308,48 @@ const ERR = {
   rate_limited: "요청이 많아요. 잠시 뒤에 다시 눌러 주세요.",
   session_expired: "다시 로그인한 뒤 시도해 주세요.",
   refused: "이 주제로는 곡을 쓰기 어렵다고 해요. 주제를 바꿔 보세요.",
-  invalid_json: "작곡가의 악보를 읽지 못했어요. '이 가사로 다시 작곡'을 눌러 주세요.",
+  invalid_json: "작곡가의 답을 읽지 못했어요. '이 가사로 프롬프트 다시 쓰기'를 눌러 주세요.",
   empty_completion: "답이 비어 있어요. 다시 시도해 주세요.",
 };
 const errMsg = e => ERR[e && e.code] || "연결이 끊겼어요. 다시 시도해 주세요.";
 
 /* ---------- lyric text format ---------- */
-function lyricsToText(sections) {
-  return sections.map(s => `[${s.name}]\n` + s.lines.map(l => typeof l === "string" ? l : l.text).join("\n")).join("\n\n");
-}
+const lyricsToText = sections => sections.map(s => `[${s.name}]\n` + s.lines.join("\n")).join("\n\n");
 function parseLyrics(raw) {
   const out = { title: "", intent: "", sections: [] };
   let cur = null;
   raw.split(/\r?\n/).forEach(line => {
-    const t = line.trim();
-    if (!t) return;
+    const t = line.trim(); if (!t) return;
     let m;
     if ((m = /^제목\s*[:：]\s*(.+)$/.exec(t))) { out.title = m[1].replace(/^["'「『]|["'」』]$/g, ""); return; }
     if ((m = /^(의도|노트|수정)\s*[:：]\s*(.+)$/.exec(t))) { out.intent = m[2]; return; }
-    if ((m = /^\[(.+)\]$/.exec(t))) { cur = { name: m[1].trim(), lines: [] }; out.sections.push(cur); return; }
+    if ((m = /^\[(.+)\]$/.exec(t))) { cur = { name: m[1].split(":")[0].trim(), lines: [] }; out.sections.push(cur); return; }
     if (!cur) { cur = { name: "Verse", lines: [] }; out.sections.push(cur); }
-    if (cur.lines.length < 6) cur.lines.push(t.replace(/^[-*•]\s*/, ""));
+    if (cur.lines.length < 8) cur.lines.push(t.replace(/^[-*•]\s*/, ""));
   });
-  out.sections = out.sections.filter(s => s.lines.length).slice(0, 7);
+  out.sections = out.sections.filter(s => s.lines.length).slice(0, 8);
   return out;
 }
 
 /* ---------- the two roles ---------- */
-async function getSample() {
-  const s = await samplePromise;
-  if (!s) throw { code: "unavailable" };
-  return s;
-}
+async function getSample() { const s = await samplePromise; if (!s) throw { code: "unavailable" }; return s; }
 
 async function lyricist({ brief, prev, request }) {
   const sample = await getSample();
   setStatus("lyricist", prev ? "고치는 중" : "쓰는 중", true);
   const st = $("lyrStream"); st.hidden = false; st.textContent = "생각 중…";
-  const base = `당신은 한국 대중가요 작사가입니다. 노래로 부를 가사를 씁니다. 멜로디는 다른 작곡가가 붙입니다.
+  const base = `당신은 한국 대중가요 작사가입니다. 노래로 부를 가사를 씁니다. 이 가사는 다른 작곡가가 Suno(AI 작곡 서비스)용 프롬프트를 붙여 노래로 만듭니다.
 주제: ${brief.topic}
 장르: ${brief.genre}
 ${brief.dirLyric ? "의뢰인 요청: " + brief.dirLyric + "\n" : ""}`;
   const rules = `조건:
-- 3~5개 섹션 (예: Verse 1, Pre-Chorus, Chorus, Verse 2, Chorus). 섹션당 2~4줄, 전체 16줄 이하.
-- 한 줄은 6~12음절. 소리 내어 부르기 쉽게, 받침이 너무 많은 단어는 줄 끝에 피하세요.
-- 후렴(Chorus)은 기억에 남는 짧은 훅을 반복하세요.
+- 4~6개 섹션 (예: Verse 1, Pre-Chorus, Chorus, Verse 2, Bridge, Chorus). 섹션당 2~6줄.
+- 한 줄은 6~14음절. 소리 내어 부르기 쉽게.
+- 후렴(Chorus)은 기억에 남는 짧은 훅을 반복하세요. 반복되는 후렴도 섹션으로 다시 적으세요.
+- 섹션 이름은 영어(Verse 1, Pre-Chorus, Chorus, Bridge 등)로, 가사는 한국어로.
 출력 형식 (이 형식 밖의 말은 쓰지 마세요):
 제목: <노래 제목>
-의도: <작곡가에게 전하는 한두 문장: 분위기, 힘을 줄 줄>
+의도: <작곡가에게 전하는 한두 문장: 분위기, 힘을 줄 부분>
 [섹션 이름]
 가사 한 줄
 가사 한 줄`;
@@ -431,82 +369,72 @@ async function composer(lyr, brief) {
   const sample = await getSample();
   setStatus("composer", "작곡 중", true);
   const started = Date.now();
-  const listing = lyr.sections.map((s, si) => `섹션 ${si + 1} [${s.name}]\n` + s.lines.map((l, li) => {
-    const u = unitsOf(l);
-    return `  줄 ${li + 1}: "${l}" → 음절 ${u.length}개: ${u.join("|")}`;
-  }).join("\n")).join("\n");
-  const prompt = `당신은 한국 대중가요 작곡가입니다. 작사가가 쓴 가사에 코드 진행과 보컬 멜로디를 붙입니다.
+  const listing = lyr.sections.map((s, i) => `#${i} [${s.name}]\n` + s.lines.join("\n")).join("\n\n");
+  const prompt = `당신은 Suno(AI 작곡 서비스)를 잘 다루는 작곡가/프로듀서입니다. 작사가가 쓴 가사를 읽고, Suno Custom 모드에 넣을 프롬프트를 만듭니다. 가사 자체는 바꾸지 않습니다.
 장르: ${brief.genre}
 곡 주제: ${brief.topic}
 ${brief.dirCompose ? "의뢰인 요청: " + brief.dirCompose + "\n" : ""}작사가의 메모: ${lyr.intent || "없음"}
 제목: ${lyr.title}
 
-가사 (음절은 제가 미리 나눴습니다):
+가사 (#번호는 섹션 번호):
 ${listing}
 
-규칙:
-- 4/4박자. 각 줄마다 chords(한 마디에 코드 하나)와 notes를 씁니다.
-- notes는 [음이름, 박자] 배열. 음이름은 "C4", "F#4", "Bb3" 형식, 쉼표는 "R". 박자는 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4 중 하나.
-- 쉼표를 뺀 음표 개수 = 그 줄의 음절 개수, 정확히 맞추세요. 음표 하나에 음절 하나가 순서대로 붙습니다.
-- 한 줄의 박자 합 = 4 × chords 개수.
-- 음역은 A3~E5. 멜로디 음은 그 마디 코드와 어울리게. 후렴은 벌스보다 높고 기억에 남게. 같은 이름의 섹션은 멜로디를 재사용해도 됩니다.
-- 코드는 C, Am, F#m, Bb, G7, Cmaj7, Dm7, Gsus4, Cadd9, C/E 같은 표기만.
-- 가사가 멜로디에 얹기 어려운 곳이 있으면 request에 작사가에게 구체적으로 요청하세요 (예: "후렴 2번째 줄을 7음절로 줄여 주세요"). 충분히 좋으면 빈 문자열.
+만들 것:
+1. style: Suno "Style of Music" 칸에 넣을 영어 프롬프트. 쉼표로 구분. 세부 장르, 분위기, 주요 악기, 보컬(성별·음색·창법), 템포(BPM), 곡의 흐름, "Korean lyrics"를 포함. 120~300자. 실존 가수·밴드 이름은 쓰지 마세요(Suno가 거부합니다).
+2. exclude: 피하고 싶은 스타일을 쉼표로 짧게 (영어, 없으면 빈 문자열).
+3. structure: Suno 가사 칸의 곡 구성 순서. 각 항목은
+   - 가사 섹션: {"section": 섹션번호, "tag": "[Verse 1: soft breathy vocal, sparse piano]"} 처럼 섹션 이름 뒤에 콜론과 짧은 영어 연출 지시
+   - 가사 없는 부분: {"tag": "[Intro: ...]"}, {"tag": "[Instrumental Break: ...]"}, {"tag": "[Outro: ...]"}, 마지막에 {"tag": "[End]"}
+   모든 가사 섹션을 번호 순서대로 한 번씩 넣으세요.
+4. memo: 한국어로 작곡 의도 한두 문장.
+5. request: 가사가 노래로 만들기 어려운 곳(너무 긴 줄, 후렴 훅이 약함 등)이 있으면 작사가에게 한국어로 구체적인 수정 요청. 충분히 좋으면 빈 문자열.
 
 JSON 하나로만 답하세요:
-{"key":"C major","bpm":88,"feel":"편곡 한 문장","memo":"작곡 의도 한두 문장","request":"","sections":[{"name":"Verse 1","lines":[{"chords":["C","G"],"notes":[["R",1],["E4",0.5]]}]}]}
-sections와 lines의 순서와 개수는 위 가사와 똑같이.`;
+{"style":"...","exclude":"...","structure":[{"tag":"[Intro: ...]"},{"section":0,"tag":"[Verse 1: ...]"}],"memo":"...","request":""}`;
   ctl = new AbortController();
   const timer = setInterval(() => setStatus("composer", `작곡 중 ${Math.round((Date.now() - started) / 1000)}초`, true), 1000);
   try {
     const comp = await sample.json(prompt, { signal: ctl.signal, cache: false });
-    if (!comp || !Array.isArray(comp.sections)) throw { code: "invalid_json" };
+    if (!comp || typeof comp.style !== "string" || !comp.style.trim()) throw { code: "invalid_json" };
     setStatus("composer", "완료", false);
     return comp;
   } finally { clearInterval(timer); }
 }
 
 function merge(lyr, comp, brief, log) {
-  const bpm = Math.min(180, Math.max(50, Math.round(Number(comp.bpm) || 90)));
+  const structure = (Array.isArray(comp.structure) ? comp.structure : []).map(it => ({
+    section: Number.isInteger(Number(it && it.section)) && it.section !== null && it.section !== undefined && it.section !== "" ? Number(it.section) : undefined,
+    tag: String((it && it.tag) || "")
+  }));
   return {
-    example: false,
-    title: lyr.title, key: String(comp.key || "C major"), bpm,
-    feel: String(comp.feel || ""), request: String(comp.request || "").trim(),
-    brief,
-    sections: lyr.sections.map((s, si) => ({
-      name: s.name,
-      lines: s.lines.map((text, li) => {
-        const c = comp.sections[si] && comp.sections[si].lines && comp.sections[si].lines[li];
-        const L = normalizeLine(text, c || {});
-        return { text, chords: L.chords, notes: L.notes };
-      })
-    })),
+    example: false, title: lyr.title, brief,
+    sections: lyr.sections,
+    style: String(comp.style).trim(),
+    exclude: String(comp.exclude || "").trim(),
+    structure,
+    request: String(comp.request || "").trim(),
+    intent: lyr.intent || "",
     log
   };
 }
-const lyrOfSong = s => ({ title: s.title, intent: ((s.log || []).filter(x => x.who === "lyricist").pop() || {}).text || "", sections: s.sections.map(x => ({ name: x.name, lines: x.lines.map(l => l.text) })) });
-
-function readBrief() {
-  return { topic: $("topic").value.trim() || "자유 주제", genre: $("genre").value, dirLyric: $("dirLyric").value.trim(), dirCompose: $("dirCompose").value.trim() };
-}
+const lyrOfSong = s => ({ title: s.title, intent: s.intent || "", sections: s.sections });
+function readBrief() { return { topic: $("topic").value.trim() || "자유 주제", genre: $("genre").value, dirLyric: $("dirLyric").value.trim(), dirCompose: $("dirCompose").value.trim() }; }
 
 async function run(job) {
   if (busy) return;
-  stop();
   setBusy(true); notice("");
-  try { await job(); notice("완성됐어요. ▶ 재생을 눌러 들어 보세요."); }
+  try { await job(); notice("완성됐어요. 아래 내용을 복사해서 Suno에 붙여 넣으세요."); }
   catch (e) {
     if (e && e.code === "cancelled") notice("멈췄어요.");
     else if (e && e.code === "unavailable") notice("Claude 앱이나 claude.ai에서 이 페이지를 열면 작사가와 작곡가를 부를 수 있어요.", true);
     else notice(errMsg(e), true);
-    setStatus("lyricist", $("lyrStatus").classList.contains("on") ? "멈춤" : $("lyrStatus").textContent, false);
-    setStatus("composer", $("cmpStatus").classList.contains("on") ? "멈춤" : $("cmpStatus").textContent, false);
-  } finally { setBusy(false); ctl = null; }
+    ["lyricist","composer"].forEach(r => { const el = $(r === "lyricist" ? "lyrStatus" : "cmpStatus"); if (el.classList.contains("on")) setStatus(r, "멈춤", false); });
+  } finally { setBusy(false); ctl = null; $("lyrStream").hidden = true; }
 }
 
 async function compose(lyr, brief, log) {
   const comp = await composer(lyr, brief);
-  log.push({ who: "composer", text: `${comp.key || ""} ${comp.bpm || ""}BPM. ${comp.memo || comp.feel || ""}`.trim() });
+  log.push({ who: "composer", text: String(comp.memo || "스타일 프롬프트를 붙였어요.") });
   if (String(comp.request || "").trim()) log.push({ who: "composer", text: "작사가에게 요청: " + String(comp.request).trim() });
   return comp;
 }
@@ -526,22 +454,22 @@ $("makeBtn").onclick = () => run(async () => {
     comp = await compose(lyr, brief, log);
     song = merge(lyr, comp, brief, log); song.request = ""; render(); save();
   }
-  $("lyrStream").hidden = true;
 });
 
 $("relyricBtn").onclick = () => run(async () => {
-  const brief = song.example ? readBrief() : { ...readBrief(), ...song.brief, dirLyric: readBrief().dirLyric, dirCompose: readBrief().dirCompose };
+  const cur = readBrief();
+  const brief = song.example ? cur : { ...song.brief, dirLyric: cur.dirLyric, dirCompose: cur.dirCompose };
   const log = [...(song.example ? [] : song.log || []), { who: "you", text: "작사가에게: 가사를 새로 써 주세요." }];
   const lyr = await lyricist({ brief });
   log.push({ who: "lyricist", text: lyr.intent || "새 가사를 넘깁니다." });
   const comp = await compose(lyr, brief, log);
   song = merge(lyr, comp, brief, log); render(); save();
-  $("lyrStream").hidden = true;
 });
 
 $("recomposeBtn").onclick = () => run(async () => {
-  const brief = { ...(song.brief || readBrief()), dirCompose: readBrief().dirCompose, genre: readBrief().genre };
-  const log = [...(song.log || []), { who: "you", text: `작곡가에게: 같은 가사로 다시 작곡해 주세요 (${brief.genre}).` }];
+  const cur = readBrief();
+  const brief = { ...(song.brief || cur), genre: cur.genre, dirCompose: cur.dirCompose };
+  const log = [...(song.log || []), { who: "you", text: `작곡가에게: 같은 가사로 프롬프트를 다시 써 주세요 (${brief.genre}${brief.dirCompose ? ", " + brief.dirCompose : ""}).` }];
   const lyr = lyrOfSong(song);
   const comp = await compose(lyr, brief, log);
   song = merge(lyr, comp, brief, log); render(); save();
@@ -553,8 +481,7 @@ $("editApply").onclick = () => run(async () => {
   const parsed = parseLyrics($("editArea").value);
   if (!parsed.sections.length) throw { code: "empty_completion" };
   if (!parsed.title) parsed.title = song.title;
-  const prevIntent = lyrOfSong(song).intent;
-  parsed.intent = parsed.intent || prevIntent;
+  parsed.intent = parsed.intent || song.intent || "";
   const brief = { ...(song.brief || readBrief()), dirCompose: readBrief().dirCompose };
   const log = [...(song.log || []), { who: "you", text: "가사를 직접 고쳐서 작곡가에게 넘겼어요." }];
   $("editBox").hidden = true;
@@ -564,108 +491,27 @@ $("editApply").onclick = () => run(async () => {
 
 $("stopBtn").onclick = () => { if (ctl) ctl.abort(); };
 
-/* ---------- playback (Web Audio) ---------- */
-let ac = null, voices = [], raf = 0, playing = false, master = null;
-const freq = m => 440 * Math.pow(2, (m - 69) / 12);
-
-function tone(t, dur, f, type, gain, attack, release, dest) {
-  const o = ac.createOscillator(), g = ac.createGain();
-  o.type = type; o.frequency.value = f;
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(gain, t + attack);
-  g.gain.setTargetAtTime(gain * 0.7, t + attack, 0.2);
-  g.gain.setTargetAtTime(0, t + Math.max(attack, dur - release * 0.5), release / 3);
-  o.connect(g); g.connect(dest);
-  o.start(t); o.stop(t + dur + release + 0.1);
-  voices.push(o);
+/* ---------- copy ---------- */
+function textFor(kind) {
+  if (kind === "title") return song.title || "";
+  if (kind === "style") return song.style || "";
+  if (kind === "exclude") return song.exclude || "";
+  if (kind === "lyrics") return suno(song);
+  return `Title: ${song.title}\n\nStyle of Music:\n${song.style}\n` + (song.exclude ? `\nExclude Styles:\n${song.exclude}\n` : "") + `\nLyrics:\n${suno(song)}`;
 }
-let noiseBuf = null;
-function hat(t, dest) {
-  if (!noiseBuf) { noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.05, ac.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
-  const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
-  s.buffer = noiseBuf; f.type = "highpass"; f.frequency.value = 7000;
-  g.gain.setValueAtTime(0.05, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
-  s.connect(f); f.connect(g); g.connect(dest); s.start(t); voices.push(s);
+function copy(btn, kind) {
+  const text = textFor(kind), old = btn.textContent;
+  const done = ok => { btn.textContent = ok ? "복사됨" : "선택됨 · Ctrl+C"; setTimeout(() => btn.textContent = old, 1600); };
+  try {
+    navigator.clipboard.writeText(text).then(() => done(true), () => { selectFallback(kind); done(false); });
+  } catch (e) { selectFallback(kind); done(false); }
 }
-function kick(t, dest) {
-  const o = ac.createOscillator(), g = ac.createGain();
-  o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
-  g.gain.setValueAtTime(0.35, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
-  o.connect(g); g.connect(dest); o.start(t); o.stop(t + 0.3); voices.push(o);
+function selectFallback(kind) {
+  const el = { title: "outTitle", style: "outStyle", exclude: "outExclude", lyrics: "outLyrics" }[kind] || "outLyrics";
+  const r = document.createRange(); r.selectNodeContents($(el)); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
 }
-
-function play(fromSection = 0) {
-  stop();
-  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { notice("이 브라우저에서는 소리를 낼 수 없어요.", true); return; }
-  if (ac.state === "suspended") ac.resume();
-  const bpm = Math.min(180, Math.max(50, Number($("bpm").value) || song.bpm || 90));
-  const spb = 60 / bpm;
-  master = ac.createGain(); master.gain.value = 0.8; master.connect(ac.destination);
-  const padBus = ac.createBiquadFilter(); padBus.type = "lowpass"; padBus.frequency.value = 1100; padBus.connect(master);
-  const t0 = ac.currentTime + 0.2;
-  const events = []; // {t, end, id}
-  let beat = 0;
-  const drums = $("drums").checked;
-  song.sections.forEach((sec, si) => {
-    if (si < fromSection) return;
-    sec.lines.forEach((ln, li) => {
-      const L = normalizeLine(ln.text, ln);
-      const nUnits = unitsOf(ln.text).length;
-      // chords per bar
-      for (let b = 0; b < L.bars; b++) {
-        const ch = parseChord(L.chords[b % L.chords.length]);
-        const t = t0 + (beat + b * 4) * spb, d = 4 * spb;
-        events.push({ t, end: t + d, id: `c-${si}-${li}-${b}`, kind: "c" });
-        if (ch) {
-          ch.ivs.forEach(iv => tone(t, d, freq(48 + ch.root + iv), "sawtooth", 0.035, 0.08, 0.4, padBus));
-          tone(t, d * 0.95, freq(36 + ch.bass), "triangle", 0.18, 0.02, 0.15, master);
-        }
-        if (drums) for (let k = 0; k < 8; k++) { hat(t + k * spb / 2, master); if (k === 0 || k === 4) kick(t + k * spb / 2, master); }
-      }
-      // melody
-      let nb = beat, sung = 0;
-      L.notes.forEach(([p, d]) => {
-        const t = t0 + nb * spb, dur = d * spb;
-        if (p !== "R") {
-          const m = midiOf(p);
-          tone(t, dur * 0.92, freq(m), "triangle", 0.22, 0.015, 0.12, master);
-          tone(t, dur * 0.92, freq(m) * 2, "sine", 0.04, 0.015, 0.12, master);
-          const ui = Math.min(sung, nUnits - 1);
-          if (ui >= 0) events.push({ t, end: t + dur, id: `u-${si}-${li}-${ui}`, kind: "u" });
-          sung++;
-        }
-        nb += d;
-      });
-      beat += L.bars * 4;
-    });
-  });
-  const endT = t0 + beat * spb + 0.5;
-  playing = true;
-  $("playBtn").textContent = "■ 정지";
-  document.querySelectorAll(".u.done").forEach(e => e.classList.remove("done"));
-  const tick = () => {
-    if (!playing) return;
-    const now = ac.currentTime;
-    events.forEach(ev => {
-      const el = document.getElementById(ev.id); if (!el) return;
-      const on = now >= ev.t && now < ev.end;
-      el.classList.toggle("now", on);
-      if (ev.kind === "u" && now >= ev.end) el.classList.add("done");
-    });
-    if (now > endT) { stop(); return; }
-    raf = requestAnimationFrame(tick);
-  };
-  raf = requestAnimationFrame(tick);
-}
-function stop() {
-  playing = false; cancelAnimationFrame(raf);
-  voices.forEach(v => { try { v.stop(); } catch (e) {} }); voices = [];
-  if (master) { try { master.disconnect(); } catch (e) {} master = null; }
-  document.querySelectorAll(".now").forEach(e => e.classList.remove("now"));
-  $("playBtn").textContent = "▶ 재생";
-}
-$("playBtn").onclick = () => playing ? stop() : play(0);
-$("bpm").onchange = () => { const v = Math.min(180, Math.max(50, Number($("bpm").value) || 90)); $("bpm").value = v; song.bpm = v; save(); };
+document.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => copy(b, b.dataset.copy));
+$("copyAll").onclick = () => copy($("copyAll"), "all");
 
 /* ---------- boot ---------- */
 song = load();
@@ -674,6 +520,6 @@ if (song.brief && !song.example) {
   if ([...$("genre").options].some(o => o.value === song.brief.genre)) $("genre").value = song.brief.genre;
 }
 render();
-samplePromise.then(s => { if (!s) notice("이 화면에서는 AI를 부를 수 없어요. 예시 곡은 재생할 수 있습니다."); });
+samplePromise.then(s => { if (!s) notice("이 화면에서는 AI를 부를 수 없어요. 예시 곡만 볼 수 있습니다."); });
 })();
 </script>
