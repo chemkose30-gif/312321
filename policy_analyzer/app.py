@@ -1190,7 +1190,8 @@ def customer_page(request: Request, cid: int):
     return page(c.get("name") or "고객", f"""
 <p class="no-print"><a href="/">← 고객 목록</a></p>
 <div class="row between"><h1>{customer_title(c)}</h1>
-<div class="row no-print"><a class="btn" href="/customers/{cid}/matrix" target="_blank">보장분석표</a>
+<div class="row no-print"><a class="btn" href="/customers/{cid}/pillars" target="_blank">기둥 체크리스트</a>
+<a class="btn" href="/customers/{cid}/matrix" target="_blank">보장분석표</a>
 <a class="btn" href="/customers/{cid}/report" target="_blank">고객용 리포트</a>
 <form method="post" action="/customers/{cid}/delete" onsubmit="return confirm('이 고객과 모든 계약 정보를 삭제할까요? 되돌릴 수 없습니다.')">
 <button class="btn-danger btn-sm">고객 삭제</button></form></div></div>
@@ -1358,6 +1359,154 @@ def matrix(request: Request, cid: int):
 {head}
 <div class="card">{matrix2_html(c, policies)}
 <p class="muted">★ 는 핵심 보장. '-'는 미가입, '·'는 그 계약에 없음. 세부 담보는 증권의 담보명으로 자동 분류하므로 일부 다를 수 있습니다. 정확한 내용은 증권·약관을 따릅니다.</p></div>""")
+
+
+# ── 기둥 보장 체크리스트 ────────────────────────────────────────────────────────
+# "뿌리(실손) · 기둥(핵심담보) · 가지(특약)" 관점으로 있는 보장/없는 보장을 한눈에.
+# 각 기둥: (표시명, 핵심★, {cat/kw 매칭}, mx=실손식 최대값, note=부족 시 안내)
+def _P(label, star=False, cat=None, kw=None, mx=False, note=""):
+    return {"label": label, "star": star, "cat": cat, "kw": kw or [], "mx": mx, "note": note}
+
+PILLARS = [
+ ("뿌리", "실손의료비 (모든 치료비의 바탕)", "#27ae60", [
+    _P("실손의료비", True, cat="실손의료비", mx=True, note="치료비 전반을 실비로 보장하는 기본 담보입니다. 없으면 가장 먼저 준비하세요."),
+ ]),
+ ("기둥", "3대 진단비 (암·뇌·심장)", "#2e4a8b", [
+    _P("일반암 진단비", True, cat="일반암", note="암 진단 시 목돈. 핵심 중의 핵심입니다."),
+    _P("유사암 진단비(갑상선·경계성·제자리암)", False, kw=["갑상선", "경계성", "제자리", "상피내", "유사암", "소액암"]),
+    _P("뇌혈관질환 진단비(I60-I69 전체)", True, cat="뇌혈관질환", note="뇌졸중보다 넓은 범위. 뇌 쪽 핵심 기둥입니다."),
+    _P("뇌졸중 진단비", False, kw=["뇌졸중", "뇌출혈"]),
+    _P("허혈성심장질환 진단비(I20-I25 전체)", True, cat="허혈성심장질환", note="급성심근경색보다 넓은 범위. 심장 쪽 핵심 기둥입니다."),
+    _P("급성심근경색 진단비", False, kw=["심근경색"]),
+ ]),
+ ("기둥", "수술·치료비", "#8e44ad", [
+    _P("질병수술비", True, cat="질병수술비", note="질병으로 수술할 때 지급. 자주 쓰이는 핵심 담보입니다."),
+    _P("상해수술비", True, cat="상해수술비"),
+    _P("종(대)수술비·N차수술", False, kw=["종수술", "대수술", "특정수술", "N차", "횟수"]),
+    _P("항암치료비(방사선·약물)", True, kw=["방사선", "약물치료", "항암약물", "항암방사선", "항암치료"]),
+    _P("표적항암치료비", False, kw=["표적"]),
+ ]),
+ ("기둥", "입원·간병", "#e67e22", [
+    _P("질병 입원일당", False, kw=["질병입원", "질병 입원"]),
+    _P("상해 입원일당", False, kw=["상해입원", "상해 입원"]),
+    _P("간병인 사용일당", True, kw=["간병인", "간병 사용", "간호간병"], note="입원 시 간병비 부담이 큽니다. 요즘 많이 찾는 담보입니다."),
+    _P("장기요양·치매", False, cat="치매·간병", kw=["치매", "장기요양", "요양"]),
+ ]),
+ ("기둥", "사망·후유장해", "#c0392b", [
+    _P("일반사망(생명보험)", True, cat="일반사망", kw=["일반사망"], note="가족 생활비·대출 상환 대비. 가장의 핵심 기둥입니다."),
+    _P("질병·상해 사망", False, cat="질병사망", kw=["질병사망", "상해사망"]),
+    _P("질병후유장해(3%~)", True, cat="질병후유장해", kw=["질병후유장해"], note="장해율만큼 지급돼 활용도가 높습니다."),
+    _P("상해후유장해(3%~)", True, cat="상해후유장해", kw=["상해후유장해"]),
+ ]),
+ ("기둥", "골절·화상·배상", "#16a085", [
+    _P("골절 진단비", False, kw=["골절"]),
+    _P("화상 진단비", False, kw=["화상"]),
+    _P("일상생활 배상책임", True, cat="배상책임", kw=["배상책임", "일상생활"], note="타인·물건에 피해를 줬을 때. 보험료 대비 활용도가 높습니다."),
+ ]),
+ ("가지", "운전자 특약", "#2c3e50", [
+    _P("자동차부상치료비", False, kw=["자동차부상", "부상치료"]),
+    _P("교통사고처리지원금", False, kw=["교통사고처리"]),
+    _P("운전자 벌금·변호사선임", False, kw=["벌금", "변호사"]),
+ ]),
+]
+PILLAR_COUNT = sum(len(items) for _, _, _, items in PILLARS)  # 기둥 수(뿌리·가지 포함)
+
+
+def _pillar_hit(active: list[dict], row: dict):
+    """활성 계약에서 이 기둥의 보장 합계와 가입 보험사 목록. 없으면 (None, [])."""
+    tot, cos = 0, []
+    for p in active:
+        v = _row_amount(p, row)
+        if v is not None:
+            tot = max(tot, v) if row["mx"] else tot + v
+            co = (p.get("company") or "?")
+            if co not in cos:
+                cos.append(co)
+    return (tot, cos) if cos else (None, [])
+
+
+def pillars_html(c: dict, policies: list[dict]) -> str:
+    today = datetime.now().date()
+    active = [p for p in policies if analysis.is_active(p, today)]
+    have, missing_core, sections = 0, [], []
+    for kind, title, color, items in PILLARS:
+        rows = []
+        for row in items:
+            tot, cos = _pillar_hit(active, row)
+            if tot is not None:
+                have += 1
+                amt = won(tot) if tot else "보장"
+                status = f'<span class="pill-ok">있음</span>'
+                detail = f'<span class="enough">{amt}</span> <span class="muted small">{e(", ".join(cos[:4]))}</span>'
+            else:
+                status = f'<span class="pill-no">없음</span>'
+                detail = (f'<span class="muted small">{e(row["note"])}</span>' if row["note"]
+                          else '<span class="under">미가입</span>')
+                if row["star"]:
+                    missing_core.append(row["label"])
+            rows.append(f'<tr><td>{status}</td>'
+                        f'<td class="mx-l">{"★ " if row["star"] else ""}{e(row["label"])}</td>'
+                        f'<td>{detail}</td></tr>')
+        badge = {"뿌리": "🌱 뿌리", "기둥": "🏛️ 기둥", "가지": "🌿 가지"}.get(kind, kind)
+        sections.append(
+            f'<div class="card pillar-sec"><div class="row between" style="align-items:center">'
+            f'<h2 style="margin:0"><span class="kind-badge" style="background:{color}">{badge}</span> {e(title)}</h2></div>'
+            f'<div class="tbl-wrap"><table class="matrix pillars">{"".join(rows)}</table></div></div>')
+    pct = round(have / PILLAR_COUNT * 100) if PILLAR_COUNT else 0
+    miss_box = ""
+    if missing_core:
+        chips = "".join(f'<span class="miss-chip">{e(m)}</span>' for m in missing_core)
+        miss_box = (f'<div class="card miss-card"><h2 style="margin-top:0">먼저 챙기면 좋은 핵심 기둥 '
+                    f'{len(missing_core)}개</h2><div class="chips">{chips}</div>'
+                    f'<p class="muted small">★ 핵심 보장 중 비어 있는 항목입니다. 상담 때 우선 안내해 보세요.</p></div>')
+    elif active:
+        miss_box = '<div class="card miss-card ok"><h2 style="margin:0">핵심 기둥이 모두 채워져 있습니다 👍</h2></div>'
+    summary = (f'<div class="card"><div class="row between" style="align-items:center;flex-wrap:wrap;gap:8px">'
+               f'<div><b style="font-size:1.3em">{have}</b> <span class="muted">/ {PILLAR_COUNT} 기둥 확인</span></div>'
+               f'<div class="bar"><span style="width:{pct}%"></span></div>'
+               f'<div class="muted">유지계약 {len(active)}건</div></div></div>')
+    note = ('' if active else
+            '<div class="card"><p class="muted">유지 중인 계약이 없어 체크리스트가 비어 있습니다. 증권을 먼저 올려 주세요.</p></div>')
+    return summary + miss_box + note + "".join(sections)
+
+
+PILLAR_STYLE = """
+.pill-ok{display:inline-block;min-width:38px;text-align:center;padding:1px 8px;border-radius:999px;background:var(--line-soft);color:#176b3a;font-size:.82em;font-weight:700}
+.pill-no{display:inline-block;min-width:38px;text-align:center;padding:1px 8px;border-radius:999px;background:#f6dcdc;color:#a33;font-size:.82em;font-weight:700}
+table.pillars td{padding:7px 8px}
+.kind-badge{color:#fff;padding:2px 10px;border-radius:999px;font-size:.62em;vertical-align:middle;margin-right:6px}
+.bar{flex:1;min-width:140px;height:12px;border-radius:999px;background:var(--line-soft);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent)}
+.miss-card{border:1px solid #e3b7b7;background:#fdf3f3}
+.miss-card.ok{border:1px solid var(--line);background:var(--card)}
+:root[data-theme="dark"] .pill-no{background:#5a2a2a;color:#f3bcbc}
+:root[data-theme="dark"] .miss-card{background:#3a2626;border-color:#6b3a3a}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+.miss-chip{display:inline-block;padding:4px 12px;border-radius:999px;background:#fff;border:1px solid #e3b7b7;color:#a33;font-weight:600;font-size:.9em}
+:root[data-theme="dark"] .miss-chip{background:#4a2e2e;color:#f3bcbc;border-color:#6b3a3a}
+"""
+
+
+@app.get("/customers/{cid}/pillars", response_class=HTMLResponse)
+def pillars(request: Request, cid: int):
+    pid = planner_id(request)
+    c = get_customer_or_404(pid, cid)
+    log(request, pid, "view_report", f"고객#{cid} 기둥체크")
+    me = store.get_planner(pid)
+    policies = store.list_policies(pid, cid)
+    a = analysis.analyze(c, policies)
+    head = f"""<div class="card"><div class="row between"><h1>기둥 보장 체크리스트</h1></div>
+<p><b>{e(c.get('name') or '')}</b> 님 · {ymd(c.get('birth_date'))} · {e(c.get('gender') or '')} · 보험나이 {a['age'] if a['age'] is not None else '-'}세<br>
+<span class="muted">작성일 {datetime.now():%Y.%m.%d} · 담당 {e(me['name'])} · 유지계약 {a['active_count']}건</span></p></div>"""
+    return page(f"{c.get('name') or '고객'} 기둥 체크리스트", f"""
+<style>{PILLAR_STYLE}</style>
+<p class="no-print"><a href="/customers/{cid}">← 고객 화면</a></p>
+<div class="row between no-print" style="margin-bottom:12px">
+<span class="muted">🌱 뿌리 = 실손 · 🏛️ 기둥 = 핵심담보 · 🌿 가지 = 특약. ★ 는 특히 중요한 보장입니다.</span>
+<button onclick="print()">인쇄 / PDF 저장</button></div>
+{head}
+{pillars_html(c, policies)}
+<div class="card"><p class="muted small">증권의 담보명으로 자동 분류하므로 일부 항목이 실제와 다를 수 있습니다. '있음/없음'은 상담 참고용이며, 정확한 보장은 증권·약관을 따릅니다. 권장 금액은 회사·고객 상황에 맞게 조정하세요.</p></div>""")
 
 
 # 후유장해 보험금 계산기: 가입금액 × 지급률(%). 계산은 브라우저에서(서버 전송 없음).
