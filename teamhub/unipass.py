@@ -153,3 +153,28 @@ def lookup(key: str, mbl: str = "", hbl: str = "", year: int = 0) -> dict:
 def lookup_cargo(key: str, cargo_no: str) -> dict:
     root = _get({"crkyCn": key, "cargMtNo": cargo_no})
     return _detail(root) if _check(root) >= 1 else {"found": False}
+
+
+# ---- 입항보고내역조회: 해상 API021 / 항공 API044 (서비스마다 인증키가 따로)
+#   요청: ioprSbmtNo 입출항제출번호(= 적하목록관리번호 MRN, 화물관리번호 앞 11자리)
+#   응답: etprDttm 입항일시(YYYYMMDDHHmm), shipFlgtNm 선박·편명, shipLamrPlcNm 계선장소(해상), acptDttm/aprePermDttm 수리·승인일시
+ETPR_SEA = "https://unipass.customs.go.kr:38010/ext/rest/etprRprtQryBrkdQry/retrieveetprRprtQryBrkd"
+ETPR_AIR = "https://unipass.customs.go.kr:38010/ext/rest/etprRprtQryBrkdQry/retrieveFlghEtprRprtBrkd"
+
+
+def lookup_etpr(key: str, mrn: str, air: bool = False) -> dict:
+    """입항보고(입항 예정·입항 일시). 못 찾으면 {}."""
+    mrn = (mrn or "").strip().upper()[:11]
+    if not key or len(mrn) < 8:
+        return {}
+    url = (ETPR_AIR if air else ETPR_SEA) + "?" + urllib.parse.urlencode({"crkyCn": key, "ioprSbmtNo": mrn})
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            root = ET.fromstring(r.read())
+    except (urllib.error.URLError, ET.ParseError) as e:
+        raise UnipassError(f"UNI-PASS 입항보고 조회 실패: {e}") from e
+    vo = next((el for el in root.iter() if el.find("etprDttm") is not None), None)
+    if vo is None:
+        return {}
+    return {"etpr": _dttm(_t(vo, "etprDttm")), "ship": _t(vo, "shipFlgtNm"), "berth": _t(vo, "shipLamrPlcNm"),
+            "accepted": _dttm(_t(vo, "acptDttm") or _t(vo, "aprePermDttm")), "air": air}
