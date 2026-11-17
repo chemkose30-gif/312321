@@ -5645,7 +5645,8 @@ def ledger_build(c, upto: str, company: str) -> dict:
                 row["note"] = lot
         if "purchase" not in row:
             row["purchase"] = round((row["buy_price"] or 0) * qty)
-        row["profit"] = row["sales"] - row["purchase"]
+        # 매입단가를 못 찾은 줄은 매입 0으로 두면 매출 전부가 이익이 되므로 이익에서 뺌 (0)
+        row["profit"] = 0 if row["src"] == "none" else row["sales"] - row["purchase"]
         row["internal"] = other in ckey(row["customer"]) or _norm_company(other) in _norm_company(row["customer"])
         out.append(row)
     return {"rows": out, "other": other, "year": year, "no_wh": no_wh}
@@ -5727,6 +5728,12 @@ def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
                 ws.cell(row=hdr + m, column=2 + k, value=round(v))
         for k, v in enumerate(tot[:4] if not prev else tot):
             ws.cell(row=hdr + 13, column=2 + k, value=round(v))
+        from openpyxl.comments import Comment
+        for m in range(1, 14):   # 이익 칸: 매입단가 확인 필요 줄이 있으면 메모로 알림
+            miss = [x for x in rows if x["src"] == "none" and (m == 13 or int(x["date"][5:7]) == m)]
+            cell = ws.cell(row=hdr + m, column=5)
+            cell.comment = Comment(f"매입단가 확인 필요 {len(miss)}건 (매출 {round(sum(x['sales'] for x in miss)):,}원)은 "
+                                   "이익에서 뺐습니다. 매입단가를 채우면 다시 만들어 주세요.", "팀허브") if miss else None
         for c in range(1, 15):   # 작성일
             if str(ws.cell(row=hdr - 1, column=c).value or "").replace(" ", "").startswith("작성일"):
                 ws.cell(row=hdr - 1, column=c + 1, value=datetime.strptime(date, "%Y-%m-%d"))
@@ -5809,7 +5816,7 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     tpl = LEDGER_TPL_DIR / f"{company}.xls"
     stat = {"template": tpl.exists(), "rows": len(rows), "sales": sum(r["sales"] for r in rows),
             "ledger": sum(r["src"] == "ledger" for r in rows), "lot": sum(r["src"] == "lot" for r in rows),
-            "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows),
+            "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows), "none_sales": sum(r["sales"] for r in rows if r["src"] == "none"),
             "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"],
             "cost": sum(r["src"] == "cost" for r in rows),
             "purchase": sum(r["purchase"] for r in rows), "profit": sum(r["profit"] for r in rows),
