@@ -5354,25 +5354,75 @@ def cost_index(c) -> dict:
     return idx
 
 
+_CODE_TOKEN = re.compile(r"\b[A-Za-z]{0,3}\d{5,}\b")
+
+
+def _cost_cands(idx: dict, item: str) -> list:
+    """판매 품목 → 원가계산서 후보 줄. 이름이 정확히 같으면 그것, 아니면 제품코드(F16408)가 같거나,
+    한쪽 이름이 다른 쪽에 들어 있거나(Vanillin ⊂ Vanillin 99%), 아주 비슷한 이름."""
+    import difflib
+    key = _item_key(item_base(item))
+    if idx.get(key):
+        return idx[key]
+    if len(key) < 4:
+        return []
+    codes = {m.lower() for m in _CODE_TOKEN.findall(item or "")}
+    hits = []
+    for k, rows in idx.items():
+        if codes and any(cd in k for cd in codes):
+            hits += rows
+        elif min(len(k), len(key)) >= 6 and (k in key or key in k):
+            hits += rows
+    if not hits:
+        best = max(((difflib.SequenceMatcher(None, key, k).ratio(), k) for k in idx), default=(0, ""))
+        if best[0] >= 0.88:
+            hits = idx[best[1]]
+    return sorted(hits, key=lambda x: (x["customs_date"] or "", x["id"]))
+
+
 def cost_lookup(idx: dict, item: str, sale_date: str, hint: str = "") -> Optional[dict]:
-    """판매 줄 → 원가계산서 줄. hint(이카운트 통관일자 'Hocheng 260102' / 일계장 매입처 'LYS 260915')의 날짜가 맞으면 그것,
-    아니면 공급사 이름이 맞고 판매일 전에 통관된 것 중 가장 최근."""
-    cand = idx.get(_item_key(item_base(item)), [])
+    """판매 줄 → 원가계산서 줄. hint(이카운트 통관일자 'Hocheng 260102' / 일계장 매입처 'LYS 260915')의 날짜가 맞으면(±7일) 그것,
+    아니면 공급사가 맞는 것 중 판매일 전 1년 안(선납 판매는 판매일 뒤 45일까지)에 통관된 가장 가까운 것."""
+    cand = _cost_cands(idx, item)
     if not cand:
         return None
+    word = re.sub(r"\(.*?\)|재고|제품|서류|내자|ERC|이알씨|켐코스|OEM|[-_/]|\d+", " ", hint or "", flags=re.I).split()
+    words = [w for w in word if len(w) >= 2]
+    match = lambda x: any(_sup_same(w, x["supplier"] or "") or w[:4].lower() in (x["supplier"] or "").lower() for w in words)
+    guess = bool(words) and not any(match(x) for x in cand)   # 통관일자 칸 글자가 어느 공급사와도 안 맞음 → 공급사 무시하고 찾되 표시
+    sup_ok = (lambda x: True) if (not words or guess) else match
+    tag = {"sup_guess": True} if guess else {}
     m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", hint or "")
     if m:
-        cd = f"20{m[1]}-{m[2]}-{m[3]}"
-        hit = [x for x in cand if x["customs_date"] == cd]
-        if hit:
-            return {**hit[-1], "exact": True}
-    word = re.sub(r"\(.*?\)|재고|제품|서류|내자|ERC|이알씨|켐코스|[-_/]", " ", hint or "", flags=re.I).split()
-    sup = word[0].lower() if word else ""
-    # 날짜 표시가 없으면: 판매일 전 1년 안에 통관된 것만 (몇 년 전 원가계산서와 엮이지 않게)
-    lo = (datetime.strptime(sale_date, "%Y-%m-%d") - timedelta(days=366)).strftime("%Y-%m-%d") if sale_date else ""
-    before = [x for x in cand if (not sale_date or lo <= (x["customs_date"] or "0") <= sale_date)]
-    pool = [x for x in before if sup and sup[:4] in (x["supplier"] or "").lower()] or (before if not sup else [])
-    return {**pool[-1], "exact": False} if pool else None
+        try:
+            cd = datetime(2000 + int(m[1]), int(m[2]), int(m[3]))
+        except ValueError:
+            cd = None
+        if cd:
+            near = sorted((abs((datetime.strptime(x["customs_date"], "%Y-%m-%d") - cd).days), i, x)
+                          for i, x in enumerate(cand) if re.match(r"\d{4}-\d{2}-\d{2}$", x["customs_date"] or "") and sup_ok(x))
+            if near and near[0][0] <= 7:
+                return {**near[0][2], **tag, "exact": near[0][0] == 0}
+    if not sale_date:
+        pool = [x for x in cand if sup_ok(x)]
+        return {**pool[-1], **tag, "exact": False} if pool else None
+    sd = datetime.strptime(sale_date, "%Y-%m-%d")
+    lo = (sd - timedelta(days=366)).strftime("%Y-%m-%d")
+    before = [x for x in cand if lo <= (x["customs_date"] or "0") <= sale_date and sup_ok(x)]
+    if before:
+        return {**before[-1], **tag, "exact": False}
+    hi = (sd + timedelta(days=45)).strftime("%Y-%m-%d")   # 선납(통관 전에 판매)
+    after = [x for x in cand if sale_date < (x["customs_date"] or "") <= hi and sup_ok(x)]
+    return {**after[0], **tag, "exact": False, "presale": True} if after else None
+
+
+def cost_miss_reason(idx: dict, item: str, sale_date: str, hint: str = "") -> str:
+    """원가계산서를 못 붙인 이유 (일계장 비고용)."""
+    cand = _cost_cands(idx, item)
+    if not cand:
+        return "같은 품목 원가계산서 없음"
+    last = cand[-1]
+    return f"원가계산서 통관일이 판매일과 멀어 못 붙임 (가장 가까운 {last['supplier']} {last['customs_date']})"
 
 
 @app.get("/api/costs/check")
@@ -5567,7 +5617,10 @@ def ledger_build(c, upto: str, company: str) -> dict:
         elif (ch := cost_lookup(cidx, r["name"], r["quote_date"], r["lot"])) and not (
                 other in ckey(r["customer_name"]) or _norm_company(other) in _norm_company(r["customer_name"])):
             row.update(supplier=f"{ch['supplier']} {ch['customs_date'][2:].replace('-', '')}".strip(), buy_price=ch["landed"],
-                       src="cost", note=f"원가계산서 {ch['customs_date']}")
+                       src="cost", note=f"원가계산서 {ch['customs_date']}" + (" (선납 — 통관 뒤 판매분)" if ch.get("presale") else "")
+                       + ("" if ch.get("exact") or _item_key(item_base(ch["item"])) == _item_key(item_base(r["name"]))
+                          else f" · 품목 '{ch['item']}'")
+                       + (" · 공급사 다름 확인" if ch.get("sup_guess") else ""))
         elif other in ckey(r["customer_name"]) or _norm_company(other) in _norm_company(r["customer_name"]):
             # 관계사(켐코스↔이알씨) 넘김은 원가로 넘기므로 매입 = 매출 (이익 0) — 이카운트는 한 달치를 묶어 적어 줄이 안 맞음
             row.update(supplier=f"{other} 이전분", buy_price=r["unit_price"], purchase=sales, src="internal",
@@ -5586,7 +5639,8 @@ def ledger_build(c, upto: str, company: str) -> dict:
             elif h:
                 row.update(supplier=h["supplier"], buy_price=h["buy_price"], origin=h["origin"], src="recent")
             else:
-                row.update(supplier=tok[0] if tok else "", note="매입단가 확인 필요", src="none")
+                row.update(supplier=tok[0] if tok else "", src="none",
+                           note="매입단가 확인 필요 — " + cost_miss_reason(cidx, r["name"], r["quote_date"], r["lot"]))
             if lot and not row["note"]:
                 row["note"] = lot
         if "purchase" not in row:
