@@ -3820,13 +3820,19 @@ async def costs_upload(file: UploadFile = File(...), user: dict = Depends(upload
     filename = urllib.parse.unquote(x_file_name) if x_file_name else (file.filename or "")
     if not filename.lower().endswith((".xls", ".xlsx", ".xlsm")):
         raise HTTPException(400, "엑셀 파일(xls, xlsx)만 올릴 수 있습니다.")
+    def bad(msg):
+        with db() as c:   # 원가계산서가 아닌 엑셀은 기억해 두고 다시 받지 않음
+            lst = json.loads(get_setting(c, "cost_bad_files", "{}") or "{}")
+            lst[filename] = msg
+            set_setting(c, "cost_bad_files", json.dumps(dict(list(lst.items())[-3000:]), ensure_ascii=False))
+        raise HTTPException(400, msg)
     try:
         cs = parse_cost_sheet(filename, data)
     except Exception as e:
-        raise HTTPException(400, f"{filename}: 읽지 못했습니다 ({e})")
+        bad(f"{filename}: 읽지 못했습니다 ({e})")
     items = [i for i in cs["items"] if i["landed"]]
     if not items:
-        raise HTTPException(400, f"{filename}: 원가계산서 표(품목·수량·수입단가)를 찾지 못했습니다.")
+        bad(f"{filename}: 원가계산서 표(품목·수량·수입단가)를 찾지 못했습니다.")
     if cs["company"] and data[:4] == b"\xd0\xcf\x11\xe0":    # 회사별 원가계산서 양식(틀)으로 보관 — 가장 최근 통관 건
         LEDGER_TPL_DIR.mkdir(parents=True, exist_ok=True)
         tp, meta_p = LEDGER_TPL_DIR / f"cost_{cs['company']}.xls", LEDGER_TPL_DIR / f"cost_{cs['company']}.date"
@@ -4314,6 +4320,15 @@ def settle_auto_run():
 
 def settle_auto_soon():
     threading.Thread(target=lambda: (time.sleep(3), settle_auto_run()), daemon=True).start()
+
+
+@app.get("/api/costs/known")
+def costs_known(user: dict = Depends(upload_user)):
+    """이미 올라온(또는 원가계산서가 아니라 못 읽은) 원가계산서 파일 이름 — 사무실 PC 가 새 파일만 올리게."""
+    with db() as c:
+        names = {r[0] for r in c.execute("SELECT DISTINCT filename FROM cost_sheets")}
+        names |= set(json.loads(get_setting(c, "cost_bad_files", "{}") or "{}"))
+    return [urllib.parse.quote(n) for n in names]
 
 
 @app.get("/api/settlements/known")
@@ -5385,7 +5400,7 @@ def cost_lookup(idx: dict, item: str, sale_date: str, hint: str = "") -> Optiona
     아니면 공급사가 맞는 것 중 판매일 전 1년 안(선납 판매는 판매일 뒤 45일까지)에 통관된 가장 가까운 것."""
     cand = _cost_cands(idx, item)
     if not cand:
-        return None
+        return _cost_by_hint(idx, item, hint)
     word = re.sub(r"\(.*?\)|재고|제품|서류|내자|ERC|이알씨|켐코스|OEM|[-_/]|\d+", " ", hint or "", flags=re.I).split()
     words = [w for w in word if len(w) >= 2]
     match = lambda x: any(_sup_same(w, x["supplier"] or "") or w[:4].lower() in (x["supplier"] or "").lower() for w in words)
@@ -5416,10 +5431,48 @@ def cost_lookup(idx: dict, item: str, sale_date: str, hint: str = "") -> Optiona
     return {**after[0], **tag, "exact": False, "presale": True} if after else None
 
 
+def _cost_by_hint(idx: dict, item: str, hint: str) -> Optional[dict]:
+    """품목 이름이 원가계산서와 꽤 달라도, 통관일자 칸('Lluch 260917')의 공급사·날짜(±7일)가 맞는 원가계산서 안에서
+    이름이 가장 비슷한 품목 (단어가 겹치거나 비슷한 정도 0.55 이상)."""
+    import difflib
+    m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", hint or "")
+    words = [w for w in re.sub(r"\(.*?\)|재고|제품|서류|내자|ERC|이알씨|켐코스|OEM|[-_/]|\d+", " ", hint or "", flags=re.I).split() if len(w) >= 2]
+    if not m or not words:
+        return None
+    try:
+        cd = datetime(2000 + int(m[1]), int(m[2]), int(m[3]))
+    except ValueError:
+        return None
+    key = _item_key(item_base(item))
+    toks = {t for t in re.findall(r"[a-z가-힣]{3,}", item_base(item).lower())}
+    best = None
+    for rows in idx.values():
+        for x in rows:
+            if not re.match(r"\d{4}-\d{2}-\d{2}$", x["customs_date"] or ""):
+                continue
+            if abs((datetime.strptime(x["customs_date"], "%Y-%m-%d") - cd).days) > 7:
+                continue
+            if not any(_sup_same(w, x["supplier"] or "") or w[:4].lower() in (x["supplier"] or "").lower() for w in words):
+                continue
+            r = difflib.SequenceMatcher(None, key, _item_key(item_base(x["item"]))).ratio()
+            if toks & {t for t in re.findall(r"[a-z가-힣]{3,}", item_base(x["item"]).lower())}:
+                r = max(r, 0.7)
+            if r >= 0.55 and (not best or r > best[0]):
+                best = (r, x)
+    return {**best[1], "exact": False} if best else None
+
+
 def cost_miss_reason(idx: dict, item: str, sale_date: str, hint: str = "") -> str:
     """원가계산서를 못 붙인 이유 (일계장 비고용)."""
     cand = _cost_cands(idx, item)
     if not cand:
+        m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", hint or "")
+        if m:
+            d = f"20{m[1]}-{m[2]}-{m[3]}"
+            same = sorted({x["item"] for rows in idx.values() for x in rows if x["customs_date"] == d})
+            if same:
+                return f"{d} 통관 원가계산서에 이 품목이 없음 (그 원가계산서 품목: {', '.join(same[:4])})"
+            return f"{d} 통관 원가계산서가 팀허브에 없음 — 원가계산 폴더에 있으면 PC 자동 업로드로 올라옴"
         return "같은 품목 원가계산서 없음"
     last = cand[-1]
     return f"원가계산서 통관일이 판매일과 멀어 못 붙임 (가장 가까운 {last['supplier']} {last['customs_date']})"
