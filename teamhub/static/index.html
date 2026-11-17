@@ -2204,8 +2204,6 @@ function csTag(sh) {
   if (last) return `<span class="tag s-doing" title="${esc(last.shed || sh.cs_shed)}">📦 반입 ${md(last.in_at || last.at)}</span>`;
   if (sh.cs_in_at) return `<span class="tag s-doing" title="${esc(sh.cs_shed)}">📦 반입 ${md(sh.cs_in_at)}</span>`;
   if (sh.cs_arrived) return `<span class="tag s-doing">🛳 입항 ${md(sh.cs_arrived)}</span>`;
-  if (sh.cs_eta) return `<span class="tag s-hold" title="UNI-PASS 입항 예정${sh.cs_berth ? ' · ' + esc(sh.cs_berth) : ''}">🗓 입항 예정 ${md(sh.cs_eta)}${sh.cs_eta.length > 11 ? ' ' + esc(sh.cs_eta.slice(11, 16)) : ''}</span>`;
-  if (sh.eta && sh.eta < today && sh.status !== 'arrived') return `<span class="tag p-urgent" title="ETA 가 지났는데 아직 입항 소식이 없습니다">⏰ ETA 지남</span>`;
   if (sh.cs_error) return '<span class="tag s-todo" title="UNI-PASS 에서 아직 못 찾음">UNI-PASS 대기</span>';
   return '';
 }
@@ -2215,7 +2213,7 @@ function csPanel(sh) {
   return `<div class="row"><b>🛃 UNI-PASS 통관 진행</b><span class="spacer"></span><button type="button" class="btn sm" id="csRefresh">🔄 UNI-PASS 조회</button></div>
     ${sh.cs_checked_at ? `<div class="muted" style="font-size:12px">마지막 확인 ${esc(sh.cs_checked_at.slice(0, 16))}${sh.cs_status ? ' · ' + esc(sh.cs_status) : ''}${sh.cs_cargo_no ? ' · 화물관리번호 ' + esc(sh.cs_cargo_no) : ''}</div>` : '<div class="muted" style="font-size:12px">아직 조회하지 않았습니다. 진행 중인 건은 낮 시간(6~22시)에 25분마다 자동으로 확인합니다 (반출될 때까지).</div>'}
     ${sh.cs_error ? `<div class="muted" style="font-size:12px;color:#b45309">${esc(sh.cs_error)}</div>` : ''}
-    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:nowrap;overflow-x:auto">${step(sh.cs_arrived, '🛳 입항', sh.cs_arrived || (sh.cs_eta ? '예정 ' + sh.cs_eta.slice(5) + (sh.cs_berth ? ' · ' + sh.cs_berth : '') : ''))}${step(sh.cs_in_at, '📦 반입', sh.cs_in_at ? sh.cs_in_at.slice(5) + (sh.cs_shed ? ' ' + sh.cs_shed : '') : '')}${step(sh.cs_cleared_at, '✅ 수입신고 수리', sh.cs_cleared_at && sh.cs_cleared_at.slice(5))}${step(sh.cs_out_at, '🚚 반출', sh.cs_out_at && sh.cs_out_at.slice(5))}</div>
+    <div class="row" style="gap:6px;margin-top:8px;flex-wrap:nowrap;overflow-x:auto">${step(sh.cs_arrived, '🛳 입항', sh.cs_arrived)}${step(sh.cs_in_at, '📦 반입', sh.cs_in_at ? sh.cs_in_at.slice(5) + (sh.cs_shed ? ' ' + sh.cs_shed : '') : '')}${step(sh.cs_cleared_at, '✅ 수입신고 수리', sh.cs_cleared_at && sh.cs_cleared_at.slice(5))}${step(sh.cs_out_at, '🚚 반출', sh.cs_out_at && sh.cs_out_at.slice(5))}</div>
     ${ev.length ? `<details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-size:12px">처리 이력 ${ev.length}건</summary>
       <table class="an-table" style="margin-top:4px"><tbody>${ev.slice().reverse().map(e => `<tr><td>${esc(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.shed || '')}${e.memo ? ' · ' + esc(e.memo) : ''}</td></tr>`).join('')}</tbody></table></details>` : ''}`;
 }
@@ -2224,22 +2222,16 @@ async function openUnipassSettings() {
   openModal(`<h2>🛃 UNI-PASS 연결</h2>
     <div style="font-size:13px;line-height:1.8">관세청 UNI-PASS 의 <b>화물통관진행정보조회</b> 인증키를 넣으면, 입고예정에 적은 <b>M B/L·H B/L</b> 로 입항·반입·통관 수리·반출을 자동으로 확인하고 알림을 보냅니다.<br>
       인증키 받기: unipass.customs.go.kr 로그인 → <b>서비스 → 웹서비스 신청 → OPEN API 사용 신청</b> → "화물통관진행정보조회" 신청 → 승인 후 <b>마이페이지</b>에서 인증키 확인</div>
-    <label>화물통관진행정보조회 인증키 ${st.has_key ? `<small class="muted">(등록됨 · 끝자리 ${esc(st.key_tail)})</small>` : ''}</label>
+    <label>인증키 ${st.has_key ? `<small class="muted">(등록됨 · 끝자리 ${esc(st.key_tail)})</small>` : ''}</label>
     <input id="upKey2" type="password" placeholder="${st.has_key ? '바꿀 때만 입력' : '인증키 붙여넣기'}" autocomplete="off">
-    <div class="muted" style="font-size:12px;margin-top:8px;line-height:1.6">선택: <b>입항보고내역조회</b> 인증키(서비스마다 키가 따로)를 넣으면, 배·비행기의 <b>입항 예정 일시와 계선장소</b>까지 확인해 ETA 를 맞추고 바뀌면 알려 줍니다.</div>
-    <div class="row" style="gap:8px;flex-wrap:wrap"><div style="flex:1;min-width:200px"><label>입항보고내역조회(해상) ${st.has_sea ? `<small class="muted">(등록됨 · ${esc(st.sea_tail)})</small>` : ''}</label>
-      <input id="upKeySea" type="password" placeholder="${st.has_sea ? '바꿀 때만 입력' : '인증키'}" autocomplete="off"></div>
-      <div style="flex:1;min-width:200px"><label>입항보고내역조회(항공) ${st.has_air ? `<small class="muted">(등록됨 · ${esc(st.air_tail)})</small>` : ''}</label>
-      <input id="upKeyAir" type="password" placeholder="${st.has_air ? '바꿀 때만 입력' : '인증키'}" autocomplete="off"></div></div>
     <label>시험 조회 (선택)</label>
     <div class="row" style="flex-wrap:nowrap"><input id="upM" placeholder="M B/L"><input id="upH" placeholder="H B/L"><button class="btn" id="upTest">조회</button></div>
     <pre id="upOut" style="white-space:pre-wrap;font-size:12px;background:var(--bg);padding:8px;border-radius:8px;display:none"></pre>
     <div class="err"></div>
     <div class="actions"><button class="btn" data-close>닫기</button><button class="btn primary" id="upSave">저장</button></div>`, (bg, close) => {
     $('#upSave', bg).onclick = async () => {
-      const body = {key: $('#upKey2', bg).value.trim(), key_sea: $('#upKeySea', bg).value.trim(), key_air: $('#upKeyAir', bg).value.trim()};
-      if (!body.key && !body.key_sea && !body.key_air) { close(); return; }
-      await api('/api/unipass/settings', {method: 'PUT', body}); toast('저장했습니다.'); close();
+      const key = $('#upKey2', bg).value.trim(); if (!key) { close(); return; }
+      await api('/api/unipass/settings', {method: 'PUT', body: {key}}); toast('저장했습니다.'); close();
     };
     $('#upTest', bg).onclick = async () => {
       const key = $('#upKey2', bg).value.trim();
@@ -2247,7 +2239,7 @@ async function openUnipassSettings() {
         if (key) await api('/api/unipass/settings', {method: 'PUT', body: {key}});
         const r = await api('/api/unipass/test', {method: 'POST', body: {mbl: $('#upM', bg).value, hbl: $('#upH', bg).value}});
         $('#upOut', bg).style.display = 'block';
-        $('#upOut', bg).textContent = r.found ? `✅ ${r.item} · ${r.status} / ${r.clearance}\n입항 ${r.arrived || '-'}${r.etpr ? ` · 입항보고 ${r.etpr.etpr}${r.etpr.berth ? ' ' + r.etpr.berth : ''}` : ''} · 반입 ${r.in_at || '-'} ${r.shed || ''}\n수리 ${r.cleared_at || '-'} · 반출 ${r.out_at || '-'}` : '찾지 못했습니다 (번호·연도 확인)';
+        $('#upOut', bg).textContent = r.found ? `✅ ${r.item} · ${r.status} / ${r.clearance}\n입항 ${r.arrived || '-'} · 반입 ${r.in_at || '-'} ${r.shed || ''}\n수리 ${r.cleared_at || '-'} · 반출 ${r.out_at || '-'}` : '찾지 못했습니다 (번호·연도 확인)';
         $('.err', bg).textContent = '';
       } catch (err) { $('.err', bg).textContent = err.message; }
     };

@@ -532,9 +532,6 @@ def init_db():
                                 ("shipments", "src_key", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "bl_found_at", "TEXT NOT NULL DEFAULT ''"),
                                 ("shipments", "track_no", "TEXT NOT NULL DEFAULT ''"),
-                                ("shipments", "cs_eta", "TEXT NOT NULL DEFAULT ''"),       # UNI-PASS 입항 예정(일시)
-                                ("shipments", "cs_berth", "TEXT NOT NULL DEFAULT ''"),     # 계선장소
-                                ("shipments", "eta_late_at", "TEXT NOT NULL DEFAULT ''"),  # 'ETA 지남' 알림 보낸 ETA
                                 ("quotes", "imported", "INTEGER NOT NULL DEFAULT 0")) + tuple(
                 ("ecount_customers", k, "TEXT NOT NULL DEFAULT ''") for k in CUST_FIELDS if k != "memo") + tuple(
                 ("ecount_products", k, "TEXT NOT NULL DEFAULT ''") for k in PROD_TEXT_FIELDS if k not in ("spec", "unit")) + (
@@ -6247,7 +6244,6 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
     with db() as c:
         sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
         key = get_setting(c, "unipass_key", "")
-        key_sea, key_air = get_setting(c, "unipass_key_etpr_sea", ""), get_setting(c, "unipass_key_etpr_air", "")
     if not sh:
         raise HTTPException(404, "입고 예정을 찾을 수 없습니다.")
     try:
@@ -6262,30 +6258,7 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
         if not r.get("found"):
             c.execute("UPDATE shipments SET cs_checked_at = ?, cs_error = ? WHERE id = ?", (now(), err, sid))
             return {"found": False, "error": err}
-        # 적하목록이 올라오면 입항일자가 미리 나옴 → 오늘 이후면 아직 '입항'이 아니라 입항 예정(ETA)
-        etpr = {}
-        if r.get("cargo_no") and (key_sea or key_air) and not r["in_at"]:
-            try:   # 입항보고: 입항 예정 일시·계선장소 (해상 → 항공 순)
-                etpr = unipass.lookup_etpr(key_sea, r["cargo_no"]) if key_sea else {}
-                if not etpr.get("etpr") and key_air:
-                    etpr = unipass.lookup_etpr(key_air, r["cargo_no"], air=True)
-            except unipass.UnipassError:
-                etpr = {}
-        today_s, now_s = date.today().isoformat(), datetime.now().strftime("%Y-%m-%d %H:%M")
-        plan = etpr.get("etpr") or r["arrived"] or ""
-        arrived = r["arrived"] if r["arrived"] and r["arrived"] <= today_s and (not etpr.get("etpr") or etpr["etpr"] <= now_s) else ""
-        if r["in_at"] and not arrived:
-            arrived = r["arrived"] or r["in_at"][:10]
-        r = {**r, "arrived": arrived}
         new = {"cs_arrived": r["arrived"], "cs_in_at": r["in_at"], "cs_cleared_at": r["cleared_at"], "cs_out_at": r["out_at"]}
-        new_eta = plan[:10]
-        if new_eta and new_eta != (sh["eta"] or "") and not r["in_at"] and sh["status"] != "arrived":
-            c.execute("UPDATE shipments SET eta = ?, eta_late_at = '' WHERE id = ?", (new_eta, sid))
-            if not quiet and sh["eta"]:
-                when = f" {plan[11:16]}" if len(plan) > 11 else ""
-                notify(c, sh["created_by"], f"📅 ETA 변경: {sh['item']} {sh['eta'][5:]} → {new_eta[5:]}{when}"
-                                            f"{' · ' + etpr['berth'] if etpr.get('berth') else ''} — UNI-PASS 입항 예정")
-        c.execute("UPDATE shipments SET cs_eta = ?, cs_berth = ? WHERE id = ?", (plan, etpr.get("berth") or sh["cs_berth"] or "", sid))
         status = sh["status"]
         if status in ("ordered", "shipped") and (r["in_at"] or r["arrived"]):
             status = "customs"
@@ -6307,18 +6280,7 @@ def refresh_unipass(sid: int, quiet: bool = False) -> dict:
                 if new[col] and not sh[col]:
                     where = f" · {r['shed']}" if col == "cs_in_at" and r["shed"] else ""
                     notify(c, sh["created_by"], f"{label}: {sh['item']} ({new[col]}{where}) — UNI-PASS")
-    return {"found": True, **r, "eta": plan, "berth": etpr.get("berth", "")}
-
-
-def eta_late_check():
-    """ETA 가 지났는데 입항·반입 소식이 없는 입고예정 → 등록한 사람에게 한 번 알림 (ETA 가 바뀌면 다시)."""
-    today_s = date.today().isoformat()
-    with db() as c:
-        for sh in c.execute("SELECT id, item, eta, created_by, eta_late_at FROM shipments WHERE status != 'arrived' AND eta != ''"
-                            " AND eta < ? AND cs_arrived = '' AND cs_in_at = '' AND cs_cleared_at = '' AND eta_late_at != eta",
-                            (today_s,)).fetchall():
-            notify(c, sh["created_by"], f"⏰ ETA 지남: {sh['item']} (ETA {sh['eta'][5:]}) — 아직 입항 소식이 없습니다. 일정을 확인해 주세요.")
-            c.execute("UPDATE shipments SET eta_late_at = ? WHERE id = ?", (sh["eta"], sh["id"]))
+    return {"found": True, **r}
 
 
 UNIPASS_EVERY_MIN = int(os.getenv("TEAMHUB_UNIPASS_MIN", "25"))    # 같은 화물을 다시 조회하는 간격(분)
@@ -6339,8 +6301,6 @@ def unipass_loop():
                         f" AND cs_out_at = '' AND cs_checked_at < ? AND NOT {stale_courier()}"   # 반출됐거나 출발 안 한 특송은 그만
                         " ORDER BY cs_checked_at LIMIT 200", (cutoff,))] if key else []
                 process_bl_watch()
-                if datetime.now().hour >= 9:
-                    eta_late_check()
                 for sid in ids:
                     try:
                         refresh_unipass(sid)
@@ -6373,13 +6333,7 @@ def watch_bl_numbers(c, mail_id: int, owner_id, it: dict, bulk: bool):
     eta = next((cd["date"] for cd in it["candidates"] if cd["kind"] == "ship" and not
                 re.match(r"(etd|선적|출항)", (cd.get("label") or "").lower())), "")
     for num, kind in nums:
-        sid = shipment_by_number(c, num)
-        if sid:
-            sh = c.execute("SELECT * FROM shipments WHERE id = ?", (sid,)).fetchone()
-            if (eta and not bulk and sh and eta != sh["eta"] and eta >= date.today().isoformat() and not sh["cs_eta"]
-                    and not sh["cs_in_at"] and sh["status"] != "arrived"):
-                c.execute("UPDATE shipments SET eta = ?, eta_late_at = '', updated_at = ? WHERE id = ?", (eta, now(), sid))
-                notify(c, sh["created_by"], f"📅 ETA 변경: {sh['item']} {(sh['eta'] or '')[5:]} → {eta[5:]} — 메일 '{it['subject'][:40]}'")
+        if shipment_by_number(c, num):
             continue
         c.execute("INSERT OR IGNORE INTO bl_watch (number, kind, owner_id, mail_id, subject, sender, eta_hint, created_at)"
                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (num, kind, owner_id, mail_id, it["subject"][:200],
@@ -6673,19 +6627,15 @@ def shipment_unipass(sid: int, _: dict = Depends(current_user)):
 def unipass_settings(_: dict = Depends(admin_user)):
     with db() as c:
         key = get_setting(c, "unipass_key", "")
-        ks, ka = get_setting(c, "unipass_key_etpr_sea", ""), get_setting(c, "unipass_key_etpr_air", "")
-    return {"has_key": bool(key), "key_tail": key[-4:] if key else "", "has_sea": bool(ks), "sea_tail": ks[-4:] if ks else "",
-            "has_air": bool(ka), "air_tail": ka[-4:] if ka else ""}
+    return {"has_key": bool(key), "key_tail": key[-4:] if key else ""}
 
 
 @app.put("/api/unipass/settings")
 def unipass_put_settings(body: dict, _: dict = Depends(admin_user)):
-    with db() as c:   # 넣은 칸만 바꿈 (빈 칸은 그대로)
-        for f, k in (("key", "unipass_key"), ("key_sea", "unipass_key_etpr_sea"), ("key_air", "unipass_key_etpr_air")):
-            v = str(body.get(f) or "").strip()
-            if v:
-                set_setting(c, k, v)
-        return {"ok": True, "has_key": bool(get_setting(c, "unipass_key", ""))}
+    key = str(body.get("key", "")).strip()
+    with db() as c:
+        set_setting(c, "unipass_key", key)
+    return {"ok": True, "has_key": bool(key)}
 
 
 @app.post("/api/unipass/test")
@@ -6694,13 +6644,6 @@ def unipass_test(body: dict, _: dict = Depends(admin_user)):
         key = get_setting(c, "unipass_key", "")
     try:
         r = unipass.lookup(key, body.get("mbl", ""), body.get("hbl", ""), int(body.get("year") or 0))
-        if r.get("found") and r.get("cargo_no"):   # 입항보고 키가 있으면 입항 예정 일시도
-            with db() as c:
-                ks, ka = get_setting(c, "unipass_key_etpr_sea", ""), get_setting(c, "unipass_key_etpr_air", "")
-            e = unipass.lookup_etpr(ks, r["cargo_no"]) if ks else {}
-            if not e.get("etpr") and ka:
-                e = unipass.lookup_etpr(ka, r["cargo_no"], air=True)
-            r["etpr"] = e or None
     except unipass.UnipassError as e:
         raise HTTPException(400, str(e))
     return r
