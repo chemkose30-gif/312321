@@ -5372,7 +5372,29 @@ def cost_index(c) -> dict:
 _CODE_TOKEN = re.compile(r"\b[A-Za-z]{0,3}\d{5,}\b")
 
 
+_CC = {"idx": None, "cands": {}, "bydate": None}
+
+
+def _cc(idx: dict) -> dict:
+    """원가계산서 찾기 캐시 (일계장 한 번 만들 때 같은 idx 로 수천 줄을 찾으므로)."""
+    if _CC["idx"] is not idx:
+        bydate = {}
+        for rows in idx.values():
+            for x in rows:
+                bydate.setdefault(x["customs_date"] or "", []).append(x)
+        _CC.update(idx=idx, cands={}, bydate=bydate)
+    return _CC
+
+
 def _cost_cands(idx: dict, item: str) -> list:
+    key = _item_key(item_base(item))
+    cache = _cc(idx)["cands"]
+    if key not in cache:
+        cache[key] = _cost_cands_raw(idx, item)
+    return cache[key]
+
+
+def _cost_cands_raw(idx: dict, item: str) -> list:
     """판매 품목 → 원가계산서 후보 줄. 이름이 정확히 같으면 그것, 아니면 제품코드(F16408)가 같거나,
     한쪽 이름이 다른 쪽에 들어 있거나(Vanillin ⊂ Vanillin 99%), 아주 비슷한 이름."""
     import difflib
@@ -5389,9 +5411,10 @@ def _cost_cands(idx: dict, item: str) -> list:
         elif min(len(k), len(key)) >= 6 and (k in key or key in k):
             hits += rows
     if not hits:
-        best = max(((difflib.SequenceMatcher(None, key, k).ratio(), k) for k in idx), default=(0, ""))
-        if best[0] >= 0.88:
-            hits = idx[best[1]]
+        near = [k for k in idx if k[:1] == key[:1] and abs(len(k) - len(key)) <= max(2, len(key) // 8)]
+        best = difflib.get_close_matches(key, near, n=1, cutoff=0.88)
+        if best:
+            hits = idx[best[0]]
     return sorted(hits, key=lambda x: (x["customs_date"] or "", x["id"]))
 
 
@@ -5446,19 +5469,16 @@ def _cost_by_hint(idx: dict, item: str, hint: str) -> Optional[dict]:
     key = _item_key(item_base(item))
     toks = {t for t in re.findall(r"[a-z가-힣]{3,}", item_base(item).lower())}
     best = None
-    for rows in idx.values():
-        for x in rows:
-            if not re.match(r"\d{4}-\d{2}-\d{2}$", x["customs_date"] or ""):
-                continue
-            if abs((datetime.strptime(x["customs_date"], "%Y-%m-%d") - cd).days) > 7:
-                continue
-            if not any(_sup_same(w, x["supplier"] or "") or w[:4].lower() in (x["supplier"] or "").lower() for w in words):
-                continue
-            r = difflib.SequenceMatcher(None, key, _item_key(item_base(x["item"]))).ratio()
-            if toks & {t for t in re.findall(r"[a-z가-힣]{3,}", item_base(x["item"]).lower())}:
-                r = max(r, 0.7)
-            if r >= 0.55 and (not best or r > best[0]):
-                best = (r, x)
+    bydate = _cc(idx)["bydate"]
+    near = [x for k in range(-7, 8) for x in bydate.get((cd + timedelta(days=k)).strftime("%Y-%m-%d"), [])]
+    for x in near:
+        if not any(_sup_same(w, x["supplier"] or "") or w[:4].lower() in (x["supplier"] or "").lower() for w in words):
+            continue
+        r = difflib.SequenceMatcher(None, key, _item_key(item_base(x["item"]))).ratio()
+        if toks & {t for t in re.findall(r"[a-z가-힣]{3,}", item_base(x["item"]).lower())}:
+            r = max(r, 0.7)
+        if r >= 0.55 and (not best or r > best[0]):
+            best = (r, x)
     return {**best[1], "exact": False} if best else None
 
 
@@ -5469,7 +5489,7 @@ def cost_miss_reason(idx: dict, item: str, sale_date: str, hint: str = "") -> st
         m = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", hint or "")
         if m:
             d = f"20{m[1]}-{m[2]}-{m[3]}"
-            same = sorted({x["item"] for rows in idx.values() for x in rows if x["customs_date"] == d})
+            same = sorted({x["item"] for x in _cc(idx)["bydate"].get(d, [])})
             if same:
                 return f"{d} 통관 원가계산서에 이 품목이 없음 (그 원가계산서 품목: {', '.join(same[:4])})"
             return f"{d} 통관 원가계산서가 팀허브에 없음 — 원가계산 폴더에 있으면 PC 자동 업로드로 올라옴"
