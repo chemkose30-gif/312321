@@ -5768,7 +5768,12 @@ def _rewrite_rows(ws, first: int, values: list, mark=None):
         for c in range(1, maxc + 1):
             cell = ws.cell(row=r, column=c)
             cell.font, cell.fill, cell.border, cell.alignment, cell.number_format = proto_st[c - 1]
-            cell.value = vals[c - 1] if c - 1 < len(vals) else None
+            v = vals[c - 1] if c - 1 < len(vals) else None
+            if isinstance(v, tuple):     # (수식, 미리 계산한 값)
+                cell.value = v[0]
+                ws.parent.__dict__.setdefault("_th_cache", {})[(ws.title, cell.coordinate)] = v[1]
+            else:
+                cell.value = v
             if mark and mark(i):
                 cell.fill = yellow
     r0 = first + len(values)
@@ -5782,11 +5787,104 @@ def _rewrite_rows(ws, first: int, values: list, mark=None):
     return r0, len(tail)
 
 
+LM = "'매입매출장'"
+
+
+def _put(ws, row: int, col: int, v):
+    """칸에 값 또는 (수식, 값) 을 씀."""
+    cell = ws.cell(row=row, column=col)
+    if isinstance(v, tuple):
+        cell.value = v[0]
+        ws.parent.__dict__.setdefault("_th_cache", {})[(ws.title, cell.coordinate)] = v[1]
+    else:
+        cell.value = v
+    return cell
+
+
+def _lm_row(x: dict, r: int) -> list:
+    """매입매출장 한 줄 (r = 엑셀 행 번호). 매출액·세액·매입액·세액·손익은 수식 — 매입단가를 직접 적으면 바로 다시 계산됨."""
+    q, sp, bp = x["qty"] or 0, x["sale_price"], x["buy_price"]
+    sales, vat, pur = round(x["sales"]), round(x["vat"]), round(x["purchase"])
+    if bp is not None and q and abs(round(q * bp) - pur) > 1:
+        bp = pur / q                     # 일계장 여러 줄 합계 등으로 매입액이 단가×수량과 다르면 단가를 맞춰 둠
+    J = (f"=ROUND(D{r}*G{r},0)", sales) if sp is not None and abs(round(q * sp) - sales) <= 1 else sales
+    K = (f"=ROUND(J{r}*0.1,0)", vat) if abs(round(sales * 0.1) - vat) <= 1 else vat
+    L = (f"=ROUND(D{r}*H{r},0)", pur) if (bp is None and not pur) or (bp is not None and abs(round(q * bp) - pur) <= 1) else pur
+    M = (f"=ROUND(L{r}*0.1,0)", round(pur * 0.1))
+    N = (f'=IF(H{r}="",0,J{r}-L{r})' if x["src"] == "none" else f"=J{r}-L{r}", round(x["profit"]) if x["src"] == "none" else sales - pur)
+    return [int(x["date"][5:7]), int(x["date"][8:]), x["item"], x["qty"], x["customer"], x["supplier"], sp, bp, x["origin"],
+            J, K, L, M, N, None, x["note"]]
+
+
+def _ms_row(x: dict, r: int, mon: int, no: int, lr: int) -> list:
+    """매출품목 한 줄: 매입단가·매입액은 매입매출장 같은 줄을 따라감 (lr = 매입매출장 행, 0 이면 이 시트 안에서 계산)."""
+    q, sp = x["qty"] or 0, x["sale_price"]
+    sales, pur = round(x["sales"]), round(x["purchase"])
+    G = (f"=ROUND(E{r}*F{r},0)", sales) if sp is not None and abs(round(q * sp) - sales) <= 1 else sales
+    if lr:
+        H = (f'=IF({LM}!H{lr}="","",{LM}!H{lr})', x["buy_price"] if x["buy_price"] is not None else "")
+        I = (f"={LM}!L{lr}", pur)
+    else:
+        H, I = x["buy_price"], (f"=ROUND(E{r}*H{r},0)", pur)
+    return [mon, int(x["date"][8:]), no, x["item"], x["qty"], sp, G, H, I, x["customer"], x["supplier"], x["note"]]
+
+
+def _sum_fx(col: str, a: int, b: int, value):
+    return (f"=SUM({col}{a}:{col}{b})", value) if b >= a else value
+
+
+def wb_bytes(wb) -> bytes:
+    """openpyxl 로 저장하면서 수식 칸에 미리 계산한 값도 넣음 (팀허브가 다시 읽거나 미리보기에서도 숫자가 보이게)."""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape
+    buf = io.BytesIO()
+    wb.save(buf)
+    cache = wb.__dict__.get("_th_cache") or {}
+    if not cache:
+        return buf.getvalue()
+    titles = {f"xl/worksheets/sheet{i + 1}.xml": ws.title for i, ws in enumerate(wb.worksheets)}
+    zin = zipfile.ZipFile(io.BytesIO(buf.getvalue()))
+    out = io.BytesIO()
+    pat = re.compile(r'<c r="([A-Z]+\d+)"([^>]*)><f>(.*?)</f>(?:<v\s*/>|<v></v>)</c>', re.S)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            t = titles.get(info.filename)
+            if t:
+                def fill(m, t=t):
+                    v = cache.get((t, m[1]))
+                    if v is None:
+                        return m[0]
+                    if isinstance(v, str):
+                        return f'<c r="{m[1]}"{m[2]} t="str"><f>{m[3]}</f><v>{escape(v)}</v></c>'
+                    return f'<c r="{m[1]}"{m[2]}><f>{m[3]}</f><v>{v:g}</v></c>' if isinstance(v, float) else \
+                        f'<c r="{m[1]}"{m[2]}><f>{m[3]}</f><v>{v}</v></c>'
+                data = pat.sub(fill, data.decode("utf-8")).encode("utf-8")
+            zout.writestr(info, data)
+    return out.getvalue()
+
+
+def _ms_formulas(rows: list, other: str, a: int, b: int):
+    """매출액 시트용: 매입매출장 범위(a~b행)로 월·일 합계를 구하는 수식 만들기. 거래처 이름으로 관계사·서울향료를 가릴 수 있을 때만 수식."""
+    rng = lambda c: f"{LM}!${c}${a}:${c}${b}"
+    seoul_ok = all(("서울향료" in (x["customer"] or "").replace(" ", "")) == ("서울향료" in (x["customer"] or "")) for x in rows)
+    int_ok = all(x["internal"] == (other in (x["customer"] or "")) for x in rows)
+    return rng, seoul_ok, int_ok
+
+
 def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
     """보관한 일계장 양식에 거래명세서로 만든 숫자를 채움 (매출액 · 매출품목 · 매입매출장)."""
     rows, other, y = b["rows"], b["other"], b["year"]
     mon = int(date[5:7])
     seoul = lambda n: "서울향료" in (n or "").replace(" ", "")
+    lm_first = None
+    if "매입매출장" in wb.sheetnames:
+        w_lm = wb["매입매출장"]
+        lm_first = next((r for r in range(2, 10) if isinstance(w_lm.cell(row=r, column=1).value, (int, float))), 3)
+    lm_last = (lm_first or 0) + len(rows) - 1
+    use_fx = bool(lm_first and rows)
+    rng, seoul_ok, int_ok = _ms_formulas(rows, other, lm_first or 0, lm_last)
     if "매출액" in wb.sheetnames:
         ws = wb["매출액"]
         hdr = next((r for r in range(1, 15) if str(ws.cell(row=r, column=1).value or "").strip() == "월"), 3)
@@ -5799,10 +5897,20 @@ def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
                     sum(x["sales"] for x in pv), sum(x["sales"] for x in pv if other in (x["customer"] or "")),
                     sum(x["sales"] for x in pv if seoul(x["customer"]))]
             tot = [a + v for a, v in zip(tot, vals)]
-            for k, v in enumerate(vals[:4] if not prev else vals):   # 작년 일계장을 안 올렸으면 양식에 있던 작년 숫자 그대로
-                ws.cell(row=hdr + m, column=2 + k, value=round(v))
-        for k, v in enumerate(tot[:4] if not prev else tot):
-            ws.cell(row=hdr + 13, column=2 + k, value=round(v))
+            cells = [round(v) for v in vals]
+            if use_fx:   # 올해 4칸은 매입매출장에서 수식으로 (매입단가를 고치면 이익도 바뀜)
+                cells[0] = (f"SUMIF({rng('A')},{m},{rng('J')})", cells[0])
+                if int_ok:
+                    cells[1] = (f'SUMIFS({rng("J")},{rng("A")},{m},{rng("E")},"*{other}*")', cells[1])
+                if seoul_ok:
+                    cells[2] = (f'SUMIFS({rng("J")},{rng("A")},{m},{rng("E")},"*서울향료*")', cells[2])
+                cells[3] = (f"SUMIF({rng('A')},{m},{rng('N')})", cells[3])
+                cells = [("=" + v[0], v[1]) if isinstance(v, tuple) else v for v in cells]
+            for k, v in enumerate(cells[:4] if not prev else cells):   # 작년 일계장을 안 올렸으면 양식에 있던 작년 숫자 그대로
+                _put(ws, hdr + m, 2 + k, v)
+        from openpyxl.utils import get_column_letter as _gl
+        for k, v in enumerate(tot):
+            _put(ws, hdr + 13, 2 + k, _sum_fx(_gl(2 + k), hdr + 1, hdr + 12, round(v)))
         from openpyxl.comments import Comment
         for m in range(1, 14):   # 이익 칸: 매입단가 확인 필요 줄이 있으면 메모로 알림
             miss = [x for x in rows if x["src"] == "none" and (m == 13 or int(x["date"][5:7]) == m)]
@@ -5834,38 +5942,38 @@ def ledger_fill_template(wb, b: dict, prev: list, company: str, date: str):
                     if day <= nd:
                         v = days.get(day, [0, 0])
                         ws.cell(row=r, column=dcol, value=f"{mon}/{day:02d}")
-                        ws.cell(row=r, column=dcol + 1, value=round(v[0]))
-                        ws.cell(row=r, column=dcol + 2, value=round(v[1]))
+                        _put(ws, r, dcol + 1, (f"=SUMIFS({rng('J')},{rng('A')},{mon},{rng('B')},{day})", round(v[0])) if use_fx else round(v[0]))
+                        _put(ws, r, dcol + 2, (f'=SUMIFS({rng("J")},{rng("A")},{mon},{rng("B")},{day},{rng("E")},"*서울향료*")', round(v[1]))
+                             if use_fx and seoul_ok else round(v[1]))
                         # 양식에 남아 있던 다른 달의 주말 색을 지우고, 이 달 주말·공휴일만 다시 칠함
                         for k in range(3):
                             ws.cell(row=r, column=dcol + k).fill = off_fill if is_day_off(y, mon, day) else PatternFill(fill_type=None)
                     else:
                         for k in range(3):
                             ws.cell(row=r, column=dcol + k).value = None
-                ws.cell(row=end, column=dcol + 1, value=round(sum(v[0] for v in days.values())))
-                ws.cell(row=end, column=dcol + 2, value=round(sum(v[1] for v in days.values())))
+                from openpyxl.utils import get_column_letter as _gl
+                for k in (1, 2):
+                    _put(ws, end, dcol + k, _sum_fx(_gl(dcol + k), hdr + 1, end - 1, round(sum(v[k - 1] for v in days.values()))))
     if "매출품목" in wb.sheetnames:
         ws = wb["매출품목"]
         first = next((r for r in range(2, 10) if isinstance(ws.cell(row=r, column=1).value, (int, float))), 3)
+        pos = {id(x): i for i, x in enumerate(rows)}
         cur = [x for x in rows if int(x["date"][5:7]) == mon]
-        _rewrite_rows(ws, first, [[mon, int(x["date"][8:]), i + 1, x["item"], x["qty"], x["sale_price"], round(x["sales"]),
-                                   x["buy_price"], round(x["purchase"]), x["customer"], x["supplier"], x["note"]]
+        _rewrite_rows(ws, first, [_ms_row(x, first + i, mon, i + 1, (lm_first + pos[id(x)]) if lm_first else 0)
                                   for i, x in enumerate(cur)], mark=lambda i: cur[i]["src"] == "none")
     if "매입매출장" in wb.sheetnames:
         ws = wb["매입매출장"]
         first = next((r for r in range(2, 10) if isinstance(ws.cell(row=r, column=1).value, (int, float))), 3)
-        r0, nt = _rewrite_rows(ws, first, [[int(x["date"][5:7]), int(x["date"][8:]), x["item"], x["qty"], x["customer"],
-                                             x["supplier"], x["sale_price"], x["buy_price"], x["origin"], round(x["sales"]),
-                                             round(x["vat"]), round(x["purchase"]), round(x["purchase"] * 0.1),
-                                             round(x["profit"]), None, x["note"]] for x in rows],
+        r0, nt = _rewrite_rows(ws, first, [_lm_row(x, first + i) for i, x in enumerate(rows)],
                                mark=lambda i: rows[i]["src"] == "none")
         sums = {4: sum(x["qty"] for x in rows), 10: sum(x["sales"] for x in rows), 11: sum(x["vat"] for x in rows),
                 12: sum(x["purchase"] for x in rows), 13: sum(x["purchase"] for x in rows) * 0.1,
                 14: sum(x["profit"] for x in rows)}
         for k in range(nt):   # 데이터 아래 합계 줄이 있으면 새 합계로
             if any(isinstance(ws.cell(row=r0 + k, column=c).value, (int, float)) for c in sums):
+                from openpyxl.utils import get_column_letter as _gl
                 for c, v in sums.items():
-                    ws.cell(row=r0 + k, column=c, value=round(v, 2))
+                    _put(ws, r0 + k, c, _sum_fx(_gl(c), first, r0 - 1, round(v, 2)))
                 break
     return wb
 
@@ -5901,9 +6009,7 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     name = f"일계장_{company}_{date.replace('-', '.')}.xlsx"
     if tpl.exists():
         wb = ledger_fill_template(xls_to_openpyxl(tpl.read_bytes()), b, prev, company, date)
-        buf = io.BytesIO()
-        wb.save(buf)
-        return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        return Response(content=wb_bytes(wb), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
     wb = openpyxl.Workbook()
     bold, yellow = Font(bold=True), PatternFill("solid", fgColor="FFF2CC")
@@ -5923,6 +6029,9 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     import calendar
     last_day = calendar.monthrange(y, mon)[1]
     tot = [0] * 7
+    lf, ll = 3, 2 + len(rows)          # 매입매출장 데이터 행 (제목·머리글 2줄 아래)
+    use_fx = bool(rows)
+    rng, seoul_ok, int_ok = _ms_formulas(rows, other, lf, ll)
     for m in range(1, 13):
         cur = [x for x in rows if int(x["date"][5:7]) == m]
         pv = [x for x in prev if x["month"] == m]
@@ -5931,47 +6040,64 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
                 sum(x["sales"] for x in pv), sum(x["sales"] for x in pv if other in (x["customer"] or "")),
                 sum(x["sales"] for x in pv if seoul(x["customer"]))]
         tot = [a + b2 for a, b2 in zip(tot, vals)]
-        dd = f"{y}-{mon:02d}-{m:02d}"
-        ws.append([m, *vals, "", f"{mon}/{m:02d}", *(days.get(dd, [0, 0]))])
-    ws.append(["합계", *tot])
-    for dnum in range(13, last_day + 1):  # 월/일 표는 그달 말일까지 오른쪽에 이어서
+        r = 3 + m
+        ws.cell(row=r, column=1, value=m)
+        cells = [round(v) for v in vals]
+        if use_fx:
+            cells[0] = (f"=SUMIF({rng('A')},{m},{rng('J')})", cells[0])
+            if int_ok:
+                cells[1] = (f'=SUMIFS({rng("J")},{rng("A")},{m},{rng("E")},"*{other}*")', cells[1])
+            if seoul_ok:
+                cells[2] = (f'=SUMIFS({rng("J")},{rng("A")},{m},{rng("E")},"*서울향료*")', cells[2])
+            cells[3] = (f"=SUMIF({rng('A')},{m},{rng('N')})", cells[3])
+        for k, v in enumerate(cells):
+            _put(ws, r, 2 + k, v)
+    ws.cell(row=16, column=1, value="합계")
+    from openpyxl.utils import get_column_letter as _gl
+    for k, v in enumerate(tot):
+        _put(ws, 16, 2 + k, _sum_fx(_gl(2 + k), 4, 15, round(v)))
+    for dnum in range(1, last_day + 1):  # 월/일 표는 그달 말일까지 오른쪽에
         dd = f"{y}-{mon:02d}-{dnum:02d}"
+        v = days.get(dd, [0, 0])
         ws.cell(row=3 + dnum, column=10, value=f"{mon}/{dnum:02d}")
-        ws.cell(row=3 + dnum, column=11, value=days.get(dd, [0, 0])[0])
-        ws.cell(row=3 + dnum, column=12, value=days.get(dd, [0, 0])[1])
+        _put(ws, 3 + dnum, 11, (f"=SUMIFS({rng('J')},{rng('A')},{mon},{rng('B')},{dnum})", round(v[0])) if use_fx else round(v[0]))
+        _put(ws, 3 + dnum, 12, (f'=SUMIFS({rng("J")},{rng("A")},{mon},{rng("B")},{dnum},{rng("E")},"*서울향료*")', round(v[1]))
+             if use_fx and seoul_ok else round(v[1]))
     ws.cell(row=4 + last_day, column=10, value="총")
-    ws.cell(row=4 + last_day, column=11, value=sum(v[0] for v in days.values()))
-    ws.cell(row=4 + last_day, column=12, value=sum(v[1] for v in days.values()))
+    _put(ws, 4 + last_day, 11, _sum_fx("K", 4, 3 + last_day, round(sum(v[0] for v in days.values()))))
+    _put(ws, 4 + last_day, 12, _sum_fx("L", 4, 3 + last_day, round(sum(v[1] for v in days.values()))))
     # 매출품목 (이번 달)
     w2 = wb.create_sheet("매출품목")
     w2.append(["월", "일", "NO", "품          목", "수량(kg)", "매출 단가(\\)", "총매출액(\\)", "매입단가(\\)", "총매입액(\\)", "납품처",
                "Origin", "비고"])
     n = 0
-    for r in rows:
+    for i, r in enumerate(rows):
         if int(r["date"][5:7]) == mon:
             n += 1
-            w2.append([mon, int(r["date"][8:]), n, r["item"], r["qty"], r["sale_price"], r["sales"], r["buy_price"],
-                       r["purchase"], r["customer"], r["supplier"], r["note"]])
+            for c, v in enumerate(_ms_row(r, 1 + n, mon, n, lf + i), 1):
+                _put(w2, 1 + n, c, v)
     # 매입매출장 (1월부터)
     w3 = wb.create_sheet("매입매출장")
     w3.append([f"{y}년도 주식회사 {company} 매입매출장 (TeamHub 거래명세서로 작성, {date} 기준)"])
     w3.append(["월", "일", "품     목", "수량(Kg)", "매 출 처", "매입처", "매출단가", "매입단가", "Origin", "총 매 출 액", "세액",
                "총 매 입 액", "세액", "손익", f"{other} 매입 원가", "비고"])
-    for r in rows:
-        w3.append([int(r["date"][5:7]), int(r["date"][8:]), r["item"], r["qty"], r["customer"], r["supplier"],
-                   r["sale_price"], r["buy_price"], r["origin"], r["sales"], r["vat"], r["purchase"],
-                   round(r["purchase"] * 0.1), r["profit"], "", r["note"]])
-        if r["src"] == "none":
-            for cell in w3[w3.max_row]:
+    for i, r in enumerate(rows):
+        for c, v in enumerate(_lm_row(r, lf + i), 1):
+            cell = _put(w3, lf + i, c, v)
+            if r["src"] == "none":
                 cell.fill = yellow
-    w3.append(["", "", "", sum(r["qty"] for r in rows), "", "", "", "", "", sum(r["sales"] for r in rows),
-               sum(r["vat"] for r in rows), sum(r["purchase"] for r in rows), round(sum(r["purchase"] for r in rows) * 0.1),
-               sum(r["profit"] for r in rows)])
+    tr = lf + len(rows)
+    for c, v in {4: sum(r["qty"] for r in rows), 10: round(sum(r["sales"] for r in rows)), 11: round(sum(r["vat"] for r in rows)),
+                 12: round(sum(r["purchase"] for r in rows)), 13: round(sum(r["purchase"] for r in rows) * 0.1),
+                 14: round(sum(r["profit"] for r in rows))}.items():
+        _put(w3, tr, c, _sum_fx(_gl(c), lf, tr - 1, v))
     for w in (ws, w2, w3):
         for row in w.iter_rows():
             for cell in row:
                 if isinstance(cell.value, float) or isinstance(cell.value, int):
                     cell.number_format = "#,##0" if not (isinstance(cell.value, float) and cell.value % 1) else "#,##0.##"
+                elif isinstance(cell.value, str) and cell.value.startswith("="):
+                    cell.number_format = "#,##0"
         for cell in w[2 if w is ws else 1]:
             cell.font = bold
     ws.column_dimensions["A"].width = 6
@@ -5979,9 +6105,7 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     w3.column_dimensions["E"].width = 18
     w3.column_dimensions["F"].width = 22
     w2.column_dimensions["D"].width = 42
-    buf = io.BytesIO()
-    wb.save(buf)
-    return Response(content=buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    return Response(content=wb_bytes(wb), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
 
 
