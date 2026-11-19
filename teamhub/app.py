@@ -5623,6 +5623,8 @@ def ledger_build(c, upto: str, company: str) -> dict:
     hist = {}
     for r in c.execute("SELECT * FROM ledger WHERE company IN (?, '') ORDER BY date", (company,)):
         r = dict(r)
+        if not (r["buy_price"] or r["purchase"]) or "매입단가 확인 필요" in (r["note"] or ""):
+            continue   # 전에 팀허브가 만든 일계장의 '매입단가 확인 필요' 빈 줄은 베끼지 않고 원가계산서 등에서 다시 찾음
         old.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"]), round(r["qty"] or 0, 2)), []).append(r)
         loose.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"])), []).append(r)
         loose_m.setdefault((r["date"][:7], ckey(r["customer"])), []).append(r)
