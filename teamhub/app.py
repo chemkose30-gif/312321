@@ -5639,12 +5639,20 @@ def ledger_build(c, upto: str, company: str) -> dict:
     no_wh = sum(1 for r in st if not r["wh"] and not r["ecount_wh"])
     st = [r for r in st if comp(r["wh"], r["ecount_wh"]) == company]
     # 1) 이미 올라온 일계장의 같은 줄 (날짜·거래처·품목·수량) → 매입처·매입단가 그대로
-    old, loose, loose_m = {}, {}, {}
+    old, loose, loose_m, blank, by_amt = {}, {}, {}, {}, {}
     hist = {}
-    for r in c.execute("SELECT * FROM ledger WHERE company IN (?, '') ORDER BY date", (company,)):
+    mine = []          # 올린 일계장의 올해 줄 — 거래명세서와 안 맞는 줄(직접 적은 줄)은 그대로 남김
+    for r in c.execute("SELECT * FROM ledger WHERE company IN (?, '') ORDER BY date, src_row", (company,)):
         r = dict(r)
-        if not (r["buy_price"] or r["purchase"]) or "매입단가 확인 필요" in (r["note"] or ""):
-            continue   # 전에 팀허브가 만든 일계장의 '매입단가 확인 필요' 빈 줄은 베끼지 않고 원가계산서 등에서 다시 찾음
+        if r["date"][:4] == str(year) and r["date"] <= upto:
+            mine.append(r)
+        if not (r["buy_price"] or r["purchase"]):
+            # 매입단가가 빈 줄(전에 팀허브가 만든 '매입단가 확인 필요' 줄)은 베끼지 않고 원가계산서 등에서 다시 찾음
+            blank.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"])), []).append(r)
+            continue
+        if "매입단가 확인 필요" in (r["note"] or ""):   # 매입단가를 직접 채웠으면 옛 표시는 지움
+            r["note"] = re.sub(r"\s*/?\s*매입단가 확인 필요.*$", "", r["note"]).strip()
+        by_amt.setdefault((r["date"], ckey(r["customer"]), round(r["qty"] or 0, 2), round(r["sales"] or 0)), []).append(r)
         old.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"]), round(r["qty"] or 0, 2)), []).append(r)
         loose.setdefault((r["date"], ckey(r["customer"]), ikey(r["item"])), []).append(r)
         loose_m.setdefault((r["date"][:7], ckey(r["customer"])), []).append(r)
@@ -5662,7 +5670,12 @@ def ledger_build(c, upto: str, company: str) -> dict:
                "qty": qty, "customer": r["customer_name"], "sale_price": r["unit_price"], "sales": sales, "vat": vat,
                "supplier": "", "buy_price": None, "origin": "", "note": "", "src": ""}
         lk = k[:3]
+        for o in blank.get(lk, []):          # 같은 줄의 빈 옛 줄은 '쓴 것'으로 (아래에서 다시 붙지 않게)
+            if not o.get("_used"):
+                o["_used"] = True
+                break
         pool = [o for o in loose.get(lk, []) if not o.get("_used")]
+        amt = [o for o in by_amt.get((k[0], k[1], k[3], round(sales)), []) if not o.get("_used")]
         if old.get(k) and any(not o.get("_used") for o in old[k]):
             o = next(o for o in old[k] if not o.get("_used"))
             o["_used"] = True
@@ -5676,6 +5689,11 @@ def ledger_build(c, upto: str, company: str) -> dict:
             row.update(supplier=" / ".join(dict.fromkeys(o["supplier"] for o in pool if o["supplier"])),
                        buy_price=round(pur / qty) if qty else None, origin=pool[0]["origin"],
                        note=" / ".join(dict.fromkeys(o["note"] for o in pool if o["note"])), src="ledger", purchase=pur)
+        elif amt and not pool:
+            o = amt[0]                           # 품목 이름만 다르게 적은 줄 (같은 날·거래처·수량·매출액) → 그 줄 그대로
+            o["_used"] = True
+            row.update(supplier=o["supplier"], buy_price=o["buy_price"], origin=o["origin"], note=o["note"], src="ledger",
+                       purchase=o["purchase"])
         elif pool:
             o = pool[0]                          # 같은 날·거래처·품목인데 수량이 다름 → 그 줄의 매입단가로
             o["_used"] = True
@@ -5724,6 +5742,18 @@ def ledger_build(c, upto: str, company: str) -> dict:
         row["profit"] = 0 if row["src"] == "none" else row["sales"] - row["purchase"]
         row["internal"] = other in ckey(row["customer"]) or _norm_company(other) in _norm_company(row["customer"])
         out.append(row)
+    # 올린 일계장에서 거래명세서와 짝이 안 맞은 줄 = 직접 적은 줄 → 그대로 남김 (팀허브가 만든 빈 '매입단가 확인 필요' 줄은 뺌)
+    for o in mine:
+        if o.get("_used") or (not (o["buy_price"] or o["purchase"]) and "매입단가 확인 필요" in (o["note"] or "")):
+            continue
+        sales = float(o["sales"] or 0)
+        out.append({"date": o["date"], "item": o["item"], "qty": float(o["qty"] or 0), "customer": o["customer"],
+                    "sale_price": o["sale_price"], "sales": sales, "vat": round(sales * 0.1), "supplier": o["supplier"],
+                    "buy_price": o["buy_price"], "origin": o["origin"], "purchase": float(o["purchase"] or 0),
+                    "profit": float(o["profit"] if o["profit"] is not None else sales - float(o["purchase"] or 0)),
+                    "note": o["note"], "src": "user",
+                    "internal": other in ckey(o["customer"]) or _norm_company(other) in _norm_company(o["customer"])})
+    out.sort(key=lambda x: x["date"])       # 같은 날 안에서는 거래명세서 줄 다음에 직접 적은 줄
     return {"rows": out, "other": other, "year": year, "no_wh": no_wh}
 
 
@@ -6000,7 +6030,7 @@ def ledger_make(date: str = "", company: str = "이알씨", preview: bool = Fals
     stat = {"template": tpl.exists(), "rows": len(rows), "sales": sum(r["sales"] for r in rows),
             "ledger": sum(r["src"] == "ledger" for r in rows), "lot": sum(r["src"] == "lot" for r in rows),
             "recent": sum(r["src"] == "recent" for r in rows), "none": sum(r["src"] == "none" for r in rows), "none_sales": sum(r["sales"] for r in rows if r["src"] == "none"),
-            "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"],
+            "internal": sum(r["src"] == "internal" for r in rows), "no_wh": b["no_wh"], "user": sum(r["src"] == "user" for r in rows),
             "cost": sum(r["src"] == "cost" for r in rows),
             "purchase": sum(r["purchase"] for r in rows), "profit": sum(r["profit"] for r in rows),
             "company": company, "date": date}
